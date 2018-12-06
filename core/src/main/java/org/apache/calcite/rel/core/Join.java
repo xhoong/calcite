@@ -36,12 +36,12 @@ import org.apache.calcite.sql.validate.SqlValidatorUtil;
 import org.apache.calcite.util.Litmus;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -101,9 +101,9 @@ public abstract class Join extends BiRel {
       Set<CorrelationId> variablesSet,
       JoinRelType joinType) {
     super(cluster, traitSet, left, right);
-    this.condition = Preconditions.checkNotNull(condition);
+    this.condition = Objects.requireNonNull(condition);
     this.variablesSet = ImmutableSet.copyOf(variablesSet);
-    this.joinType = Preconditions.checkNotNull(joinType);
+    this.joinType = Objects.requireNonNull(joinType);
   }
 
   @Deprecated // to be removed before 2.0
@@ -141,15 +141,14 @@ public abstract class Join extends BiRel {
     return joinType;
   }
 
-  // TODO: enable
-  public boolean isValid_(Litmus litmus) {
-    if (!super.isValid(litmus)) {
+  @Override public boolean isValid(Litmus litmus, Context context) {
+    if (!super.isValid(litmus, context)) {
       return false;
     }
     if (getRowType().getFieldCount()
         != getSystemFieldList().size()
         + left.getRowType().getFieldCount()
-        + right.getRowType().getFieldCount()) {
+        + (this instanceof SemiJoin ? 0 : right.getRowType().getFieldCount())) {
       return litmus.fail("field count mismatch");
     }
     if (condition != null) {
@@ -168,7 +167,7 @@ public abstract class Join extends BiRel {
                   .addAll(getLeft().getRowType().getFieldList())
                   .addAll(getRight().getRowType().getFieldList())
                   .build(),
-              litmus);
+              context, litmus);
       condition.accept(checker);
       if (checker.getFailureCount() > 0) {
         return litmus.fail(checker.getFailureCount()
@@ -205,7 +204,7 @@ public abstract class Join extends BiRel {
   @Override public RelWriter explainTerms(RelWriter pw) {
     return super.explainTerms(pw)
         .item("condition", condition)
-        .item("joinType", joinType.name().toLowerCase())
+        .item("joinType", joinType.lowerName)
         .itemIf(
             "systemFields",
             getSystemFieldList(),

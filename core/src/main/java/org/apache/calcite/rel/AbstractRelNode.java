@@ -52,6 +52,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Base class for every relational expression ({@link RelNode}).
@@ -59,11 +60,8 @@ import java.util.Set;
 public abstract class AbstractRelNode implements RelNode {
   //~ Static fields/initializers ---------------------------------------------
 
-  // TODO jvs 10-Oct-2003:  Make this thread safe.  Either synchronize, or
-  // keep this per-VolcanoPlanner.
-
   /** Generator for {@link #id} values. */
-  static int nextId = 0;
+  private static final AtomicInteger NEXT_ID = new AtomicInteger(0);
 
   private static final Logger LOGGER = CalciteTrace.getPlannerTracer();
 
@@ -95,7 +93,7 @@ public abstract class AbstractRelNode implements RelNode {
   /**
    * unique id of this object -- for debugging
    */
-  protected int id;
+  protected final int id;
 
   /**
    * The RelTraitSet that describes the traits of this RelNode.
@@ -112,7 +110,7 @@ public abstract class AbstractRelNode implements RelNode {
     assert cluster != null;
     this.cluster = cluster;
     this.traitSet = traitSet;
-    this.id = nextId++;
+    this.id = NEXT_ID.getAndIncrement();
     this.digest = getRelTypeName() + "#" + id;
     this.desc = digest;
     LOGGER.trace("new {}", digest);
@@ -140,6 +138,7 @@ public abstract class AbstractRelNode implements RelNode {
     return collection.get(0);
   }
 
+  @SuppressWarnings("deprecation")
   public List<RexNode> getChildExps() {
     return ImmutableList.of();
   }
@@ -160,11 +159,13 @@ public abstract class AbstractRelNode implements RelNode {
     return null;
   }
 
+  @SuppressWarnings("deprecation")
   public boolean isDistinct() {
     final RelMetadataQuery mq = RelMetadataQuery.instance();
     return Boolean.TRUE.equals(mq.areRowsUnique(this));
   }
 
+  @SuppressWarnings("deprecation")
   public boolean isKey(ImmutableBitSet columns) {
     final RelMetadataQuery mq = RelMetadataQuery.instance();
     return Boolean.TRUE.equals(mq.areColumnsUnique(this, columns));
@@ -179,6 +180,7 @@ public abstract class AbstractRelNode implements RelNode {
     return inputs.get(i);
   }
 
+  @SuppressWarnings("deprecation")
   public final RelOptQuery getQuery() {
     return getCluster().getQuery();
   }
@@ -200,12 +202,13 @@ public abstract class AbstractRelNode implements RelNode {
     return className;
   }
 
-  public boolean isValid(Litmus litmus) {
+  public boolean isValid(Litmus litmus, Context context) {
     return litmus.succeed();
   }
 
+  @SuppressWarnings("deprecation")
   public boolean isValid(boolean fail) {
-    return isValid(Litmus.THROW);
+    return isValid(Litmus.THROW, null);
   }
 
   /** @deprecated Use {@link RelMetadataQuery#collations(RelNode)} */
@@ -236,6 +239,7 @@ public abstract class AbstractRelNode implements RelNode {
     return Collections.emptyList();
   }
 
+  @SuppressWarnings("deprecation")
   public final double getRows() {
     return estimateRowCount(RelMetadataQuery.instance());
   }
@@ -244,6 +248,7 @@ public abstract class AbstractRelNode implements RelNode {
     return 1.0;
   }
 
+  @SuppressWarnings("deprecation")
   public final Set<String> getVariablesStopped() {
     return CorrelationId.names(getVariablesSet());
   }
@@ -276,6 +281,7 @@ public abstract class AbstractRelNode implements RelNode {
     return this;
   }
 
+  @SuppressWarnings("deprecation")
   public final RelOptCost computeSelfCost(RelOptPlanner planner) {
     return computeSelfCost(planner, RelMetadataQuery.instance());
   }
@@ -342,7 +348,7 @@ public abstract class AbstractRelNode implements RelNode {
       r = copy(getTraitSet(), inputs);
     }
     r.recomputeDigest();
-    assert r.isValid(Litmus.THROW);
+    assert r.isValid(Litmus.THROW, null);
     return r;
   }
 
@@ -361,7 +367,7 @@ public abstract class AbstractRelNode implements RelNode {
   public void replaceInput(
       int ordinalInParent,
       RelNode p) {
-    throw Util.newInternal("replaceInput called on " + this);
+    throw new UnsupportedOperationException("replaceInput called on " + this);
   }
 
   public String toString() {

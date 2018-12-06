@@ -16,17 +16,51 @@
  */
 package org.apache.calcite.test.enumerable;
 
+import org.apache.calcite.adapter.enumerable.EnumerableRules;
 import org.apache.calcite.adapter.java.ReflectiveSchema;
+import org.apache.calcite.config.CalciteConnectionProperty;
+import org.apache.calcite.config.Lex;
+import org.apache.calcite.plan.RelOptPlanner;
+import org.apache.calcite.rel.rules.JoinToCorrelateRule;
+import org.apache.calcite.runtime.Hook;
 import org.apache.calcite.test.CalciteAssert;
 import org.apache.calcite.test.JdbcTest;
 
 import org.junit.Test;
+
+import java.util.function.Consumer;
 
 /**
  * Unit test for
  * {@link org.apache.calcite.adapter.enumerable.EnumerableCorrelate}.
  */
 public class EnumerableCorrelateTest {
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2605">[CALCITE-2605]
+   * NullPointerException when left outer join implemented with EnumerableCorrelate</a> */
+  @Test public void leftOuterJoinCorrelate() {
+    tester(false, new JdbcTest.HrSchema())
+        .query(
+            "select e.empid, e.name, d.name as dept from emps e left outer join depts d on e.deptno=d.deptno")
+        .withHook(Hook.PLANNER, (Consumer<RelOptPlanner>) planner -> {
+          // force the left outer join to run via EnumerableCorrelate instead of EnumerableJoin
+          planner.addRule(JoinToCorrelateRule.INSTANCE);
+          planner.removeRule(EnumerableRules.ENUMERABLE_JOIN_RULE);
+        })
+        .explainContains(""
+            + "EnumerableCalc(expr#0..4=[{inputs}], empid=[$t0], name=[$t2], dept=[$t4])\n"
+            + "  EnumerableCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{1}])\n"
+            + "    EnumerableCalc(expr#0..4=[{inputs}], proj#0..2=[{exprs}])\n"
+            + "      EnumerableTableScan(table=[[s, emps]])\n"
+            + "    EnumerableCalc(expr#0..3=[{inputs}], expr#4=[$cor0], expr#5=[$t4.deptno], expr#6=[=($t5, $t0)], proj#0..1=[{exprs}], $condition=[$t6])\n"
+            + "      EnumerableTableScan(table=[[s, depts]])")
+        .returnsUnordered(
+            "empid=100; name=Bill; dept=Sales",
+            "empid=110; name=Theodore; dept=Sales",
+            "empid=150; name=Sebastian; dept=Sales",
+            "empid=200; name=Eric; dept=null");
+  }
+
   @Test public void simpleCorrelateDecorrelated() {
     tester(true, new JdbcTest.HrSchema())
         .query(
@@ -36,11 +70,7 @@ public class EnumerableCorrelateTest {
             + "  EnumerableSemiJoin(condition=[=($1, $3)], joinType=[inner])\n"
             + "    EnumerableCalc(expr#0..4=[{inputs}], proj#0..2=[{exprs}])\n"
             + "      EnumerableTableScan(table=[[s, emps]])\n"
-            + "    EnumerableJoin(condition=[=($0, $1)], joinType=[inner])\n"
-            + "      EnumerableAggregate(group=[{1}])\n"
-            + "        EnumerableTableScan(table=[[s, emps]])\n"
-            + "      EnumerableCalc(expr#0..3=[{inputs}], deptno=[$t0])\n"
-            + "        EnumerableTableScan(table=[[s, depts]])")
+            + "    EnumerableTableScan(table=[[s, depts]])")
         .returnsUnordered(
             "empid=100; name=Bill",
             "empid=110; name=Theodore",
@@ -53,7 +83,7 @@ public class EnumerableCorrelateTest {
             "select empid, name from emps e where exists (select 1 from depts d where d.deptno=e.deptno)")
         .explainContains(""
             + "EnumerableCalc(expr#0..3=[{inputs}], empid=[$t0], name=[$t2])\n"
-            + "  EnumerableCorrelate(correlation=[$cor0], joinType=[INNER], requiredColumns=[{1}])\n"
+            + "  EnumerableCorrelate(correlation=[$cor0], joinType=[inner], requiredColumns=[{1}])\n"
             + "    EnumerableCalc(expr#0..4=[{inputs}], proj#0..2=[{exprs}])\n"
             + "      EnumerableTableScan(table=[[s, emps]])\n"
             + "    EnumerableAggregate(group=[{0}])\n"
@@ -65,11 +95,23 @@ public class EnumerableCorrelateTest {
             "empid=150; name=Sebastian");
   }
 
+  @Test public void simpleCorrelateWithConditionIncludingBoxedPrimitive() {
+    final String sql = "select empid from emps e where not exists (\n"
+        + "  select 1 from depts d where d.deptno=e.commission)";
+    tester(false, new JdbcTest.HrSchema())
+        .query(sql)
+        .returnsUnordered(
+            "empid=100",
+            "empid=110",
+            "empid=150",
+            "empid=200");
+  }
+
   private CalciteAssert.AssertThat tester(boolean forceDecorrelate,
       Object schema) {
     return CalciteAssert.that()
-        .with("lex", "JAVA")
-        .with("forceDecorrelate", Boolean.toString(forceDecorrelate))
+        .with(CalciteConnectionProperty.LEX, Lex.JAVA)
+        .with(CalciteConnectionProperty.FORCE_DECORRELATE, forceDecorrelate)
         .withSchema("s", new ReflectiveSchema(schema));
   }
 }

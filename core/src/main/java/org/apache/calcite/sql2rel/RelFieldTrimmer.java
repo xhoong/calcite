@@ -20,6 +20,7 @@ import org.apache.calcite.linq4j.Ord;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelCollation;
+import org.apache.calcite.rel.RelCollations;
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Aggregate;
@@ -43,12 +44,14 @@ import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rel.type.RelDataTypeImpl;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCorrelVariable;
+import org.apache.calcite.rex.RexDynamicParam;
 import org.apache.calcite.rex.RexFieldAccess;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexPermuteInputsShuttle;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.rex.RexVisitor;
+import org.apache.calcite.sql.SqlExplainFormat;
 import org.apache.calcite.sql.SqlExplainLevel;
 import org.apache.calcite.sql.validate.SqlValidator;
 import org.apache.calcite.tools.RelBuilder;
@@ -63,7 +66,6 @@ import org.apache.calcite.util.mapping.Mapping;
 import org.apache.calcite.util.mapping.MappingType;
 import org.apache.calcite.util.mapping.Mappings;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 
@@ -164,7 +166,8 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
     if (SqlToRelConverter.SQL2REL_LOGGER.isDebugEnabled()) {
       SqlToRelConverter.SQL2REL_LOGGER.debug(
           RelOptUtil.dumpPlan("Plan after trimming unused fields",
-              trimResult.left, false, SqlExplainLevel.EXPPLAN_ATTRIBUTES));
+              trimResult.left, SqlExplainFormat.TEXT,
+              SqlExplainLevel.EXPPLAN_ATTRIBUTES));
     }
     return trimResult.left;
   }
@@ -185,7 +188,7 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
     final ImmutableBitSet.Builder fieldsUsedBuilder = fieldsUsed.rebuild();
 
     // Fields that define the collation cannot be discarded.
-    final RelMetadataQuery mq = RelMetadataQuery.instance();
+    final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
     final ImmutableList<RelCollation> collations = mq.collations(input);
     for (RelCollation collation : collations) {
       for (RelFieldCollation fieldCollation : collation.getFieldCollations()) {
@@ -300,7 +303,7 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
                   && v.getType().getFieldCount() == mapping.getSourceCount()) {
                 final int old = fieldAccess.getField().getIndex();
                 final int new_ = mapping.getTarget(old);
-                final RelDataTypeFactory.FieldInfoBuilder typeBuilder =
+                final RelDataTypeFactory.Builder typeBuilder =
                     relBuilder.getTypeFactory().builder();
                 for (int target : Util.range(mapping.getTargetCount())) {
                   typeBuilder.add(
@@ -525,6 +528,12 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
       return result(sort, Mappings.createIdentity(fieldCount));
     }
 
+    // leave the Sort unchanged in case we have dynamic limits
+    if (sort.offset instanceof RexDynamicParam
+        || sort.fetch instanceof RexDynamicParam) {
+      return result(sort, inputMapping);
+    }
+
     relBuilder.push(newInput);
     final int offset =
         sort.offset == null ? 0 : RexLiteral.intValue(sort.offset);
@@ -604,7 +613,7 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
       // on-demand fields.
       Set<RelDataTypeField> inputExtraFields =
           RelDataTypeImpl.extra(inputRowType) == null
-              ? Collections.<RelDataTypeField>emptySet()
+              ? Collections.emptySet()
               : combinedInputExtraFields;
       inputExtraFieldCounts.add(inputExtraFields.size());
       TrimResult trimResult =
@@ -786,12 +795,11 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
         aggregate.getGroupSet().rebuild();
     // 2. agg functions
     for (AggregateCall aggCall : aggregate.getAggCallList()) {
-      for (int i : aggCall.getArgList()) {
-        inputFieldsUsed.set(i);
-      }
+      inputFieldsUsed.addAll(aggCall.getArgList());
       if (aggCall.filterArg >= 0) {
         inputFieldsUsed.set(aggCall.filterArg);
       }
+      inputFieldsUsed.addAll(RelCollations.ordinals(aggCall.collation));
     }
 
     // Create input with trimmed columns.
@@ -839,11 +847,7 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
     final ImmutableList<ImmutableBitSet> newGroupSets =
         ImmutableList.copyOf(
             Iterables.transform(aggregate.getGroupSets(),
-                new Function<ImmutableBitSet, ImmutableBitSet>() {
-                  public ImmutableBitSet apply(ImmutableBitSet input) {
-                    return Mappings.apply(inputMapping, input);
-                  }
-                }));
+                input1 -> Mappings.apply(inputMapping, input1)));
 
     // Populate mapping of where to find the fields. System, group key and
     // indicator fields first.
@@ -863,16 +867,20 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
         final RexNode filterArg = aggCall.filterArg < 0 ? null
             : relBuilder.field(Mappings.apply(inputMapping, aggCall.filterArg));
         RelBuilder.AggCall newAggCall =
-            relBuilder.aggregateCall(aggCall.getAggregation(),
-                aggCall.isDistinct(), filterArg, aggCall.name, args);
+            relBuilder.aggregateCall(aggCall.getAggregation(), args)
+                .distinct(aggCall.isDistinct())
+                .filter(filterArg)
+                .approximate(aggCall.isApproximate())
+                .sort(relBuilder.fields(aggCall.collation))
+                .as(aggCall.name);
         mapping.set(j, groupCount + indicatorCount + newAggCallList.size());
         newAggCallList.add(newAggCall);
       }
       ++j;
     }
 
-    final RelBuilder.GroupKey groupKey = relBuilder.groupKey(newGroupSet,
-        aggregate.indicator, newGroupSets);
+    final RelBuilder.GroupKey groupKey =
+        relBuilder.groupKey(newGroupSet, newGroupSets);
     relBuilder.aggregate(groupKey, newAggCallList);
 
     return result(relBuilder.build(), mapping);
@@ -907,7 +915,7 @@ public class RelFieldTrimmer implements ReflectiveVisitor {
     if (!inputMapping.isIdentity()) {
       // We asked for all fields. Can't believe that the child decided
       // to permute them!
-      throw Util.newInternal(
+      throw new AssertionError(
           "Expected identity mapping, got " + inputMapping);
     }
 

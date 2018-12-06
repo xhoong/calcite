@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -52,7 +53,9 @@ import java.util.Set;
  * <p>For example:
  * <ul>
  * <li>(x &gt; 10) &rArr; (x &gt; 5)
- * <li>(y = 10) &rArr; (y &lt; 30 OR x &gt; 30)
+ * <li>(x = 10) &rArr; (x &lt; 30 OR y &gt; 30)
+ * <li>(x = 10) &rArr; (x IS NOT NULL)
+ * <li>(x &gt; 10 AND y = 20) &rArr; (x &gt; 5)
  * </ul>
  */
 public class RexImplicationChecker {
@@ -67,9 +70,9 @@ public class RexImplicationChecker {
       RexBuilder builder,
       RexExecutorImpl executor,
       RelDataType rowType) {
-    this.builder = builder;
-    this.executor = executor;
-    this.rowType = rowType;
+    this.builder = Objects.requireNonNull(builder);
+    this.executor = Objects.requireNonNull(executor);
+    this.rowType = Objects.requireNonNull(rowType);
   }
 
   /**
@@ -92,9 +95,6 @@ public class RexImplicationChecker {
 
     LOGGER.debug("Checking if {} => {}", first.toString(), second.toString());
 
-    RexCall firstCond = (RexCall) first;
-    RexCall secondCond = (RexCall) second;
-
     // Get DNF
     RexNode firstDnf = RexUtil.toDnf(builder, first);
     RexNode secondDnf = RexUtil.toDnf(builder, second);
@@ -105,45 +105,26 @@ public class RexImplicationChecker {
       return true;
     }
 
-    /** Decomposes DNF into List of Conjunctions.
-     *
-     * <p>For example,
-     * {@code x > 10 AND y > 30) OR (z > 90)}
-     * will be converted to
-     * list of 2 conditions:
-     *
-     * <ul>
-     *   <li>(x > 10 AND y > 30)</li>
-     *   <li>z > 90</li>
-     * </ul>
-     */
-    List<RexNode> firstDnfs = RelOptUtil.disjunctions(firstDnf);
-    List<RexNode> secondDnfs = RelOptUtil.disjunctions(secondDnf);
+    // Decompose DNF into a list of conditions, each of which is a conjunction.
+    // For example,
+    //   (x > 10 AND y > 30) OR (z > 90)
+    // is converted to list of 2 conditions:
+    //   (x > 10 AND y > 30)
+    //   z > 90
+    //
+    // Similarly, decompose CNF into a list of conditions, each of which is a
+    // disjunction.
+    List<RexNode> firsts = RelOptUtil.disjunctions(firstDnf);
+    List<RexNode> seconds = RelOptUtil.disjunctions(secondDnf);
 
-    for (RexNode f : firstDnfs) {
-      if (!f.isAlwaysFalse()) {
-        // Check if f implies at least
-        // one of the conjunctions in list secondDnfs
-        boolean implyOneConjunction = false;
-        for (RexNode s : secondDnfs) {
-          if (s.isAlwaysFalse()) { // f cannot imply s
-            continue;
-          }
-
-          if (impliesConjunction(f, s)) {
-            // Satisfies one of the condition, so lets
-            // move to next conjunction in firstDnfs
-            implyOneConjunction = true;
-            break;
-          }
-        }
-
-        // If f could not imply even one conjunction in
-        // secondDnfs, then final implication may be false
-        if (!implyOneConjunction) {
-          LOGGER.debug("{} doesnot imply {}", first, second);
-          return false;
-        }
+    for (RexNode f : firsts) {
+      // Check if f implies at least
+      // one of the conjunctions in list secondDnfs.
+      // If f could not imply even one conjunction in
+      // secondDnfs, then final implication may be false.
+      if (!impliesAny(f, seconds)) {
+        LOGGER.debug("{} does not imply {}", first, second);
+        return false;
       }
     }
 
@@ -151,13 +132,72 @@ public class RexImplicationChecker {
     return true;
   }
 
-  /** Returns whether first implies second (both are conjunctions). */
+  /** Returns whether the predicate {@code first} implies (&rArr;)
+   * at least one predicate in {@code seconds}. */
+  private boolean impliesAny(RexNode first, List<RexNode> seconds) {
+    for (RexNode second : seconds) {
+      if (impliesConjunction(first, second)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether the predicate {@code first} implies {@code second} (both
+   * may be conjunctions). */
   private boolean impliesConjunction(RexNode first, RexNode second) {
+    if (implies2(first, second)) {
+      return true;
+    }
+    switch (first.getKind()) {
+    case AND:
+      for (RexNode f : RelOptUtil.conjunctions(first)) {
+        if (implies2(f, second)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether the predicate {@code first} (not a conjunction)
+   * implies {@code second}. */
+  private boolean implies2(RexNode first, RexNode second) {
+    if (second.isAlwaysFalse()) { // f cannot imply s
+      return false;
+    }
+
+    // E.g. "x is null" implies "x is null".
+    if (first.equals(second)) {
+      return true;
+    }
+
+    // Several things imply "IS NOT NULL"
+    switch (second.getKind()) {
+    case IS_NOT_NULL:
+      // Suppose we know that first is strong in second; that is,
+      // the if second is null, then first will be null.
+      // Then, first being not null implies that second is not null.
+      //
+      // For example, first is "x > y", second is "x".
+      // If we know that "x > y" is not null, we know that "x" is not null.
+      final RexNode operand = ((RexCall) second).getOperands().get(0);
+      final Strong strong = new Strong() {
+        @Override public boolean isNull(RexNode node) {
+          return node.equals(operand)
+              || super.isNull(node);
+        }
+      };
+      if (strong.isNull(first)) {
+        return true;
+      }
+    }
+
     final InputUsageFinder firstUsageFinder = new InputUsageFinder();
     final InputUsageFinder secondUsageFinder = new InputUsageFinder();
 
-    RexUtil.apply(firstUsageFinder, new ArrayList<RexNode>(), first);
-    RexUtil.apply(secondUsageFinder, new ArrayList<RexNode>(), second);
+    RexUtil.apply(firstUsageFinder, ImmutableList.of(), first);
+    RexUtil.apply(secondUsageFinder, ImmutableList.of(), second);
 
     // Check Support
     if (!checkSupport(firstUsageFinder, secondUsageFinder)) {
@@ -183,7 +223,7 @@ public class RexImplicationChecker {
     final Set<List<Pair<RexInputRef, RexNode>>> usages =
         Sets.cartesianProduct(usagesBuilder.build());
 
-    for (List usageList : usages) {
+    for (List<Pair<RexInputRef, RexNode>> usageList : usages) {
       // Get the literals from first conjunction and executes second conjunction
       // using them.
       //
@@ -390,10 +430,10 @@ public class RexImplicationChecker {
    * </ul>
    */
   private static class InputUsageFinder extends RexVisitorImpl<Void> {
-    public final Map<RexInputRef, InputRefUsage<SqlOperator, RexNode>>
-    usageMap = new HashMap<>();
+    final Map<RexInputRef, InputRefUsage<SqlOperator, RexNode>> usageMap =
+        new HashMap<>();
 
-    public InputUsageFinder() {
+    InputUsageFinder() {
       super(true);
     }
 
@@ -483,7 +523,9 @@ public class RexImplicationChecker {
 
   /**
    * Usage of a {@link RexInputRef} in an expression.
-   */
+   *
+   * @param <T1> left type
+   * @param <T2> right type */
   private static class InputRefUsage<T1, T2> {
     private final List<Pair<T1, T2>> usageList = new ArrayList<>();
     private int usageCount = 0;

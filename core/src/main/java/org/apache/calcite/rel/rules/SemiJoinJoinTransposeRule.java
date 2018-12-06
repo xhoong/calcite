@@ -21,9 +21,11 @@ import org.apache.calcite.plan.RelOptRuleCall;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Join;
+import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.core.SemiJoin;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.tools.RelBuilderFactory;
 import org.apache.calcite.util.ImmutableIntList;
 
 import java.util.ArrayList;
@@ -45,17 +47,18 @@ import java.util.List;
  */
 public class SemiJoinJoinTransposeRule extends RelOptRule {
   public static final SemiJoinJoinTransposeRule INSTANCE =
-      new SemiJoinJoinTransposeRule();
+      new SemiJoinJoinTransposeRule(RelFactories.LOGICAL_BUILDER);
 
   //~ Constructors -----------------------------------------------------------
 
   /**
    * Creates a SemiJoinJoinTransposeRule.
    */
-  private SemiJoinJoinTransposeRule() {
+  public SemiJoinJoinTransposeRule(RelBuilderFactory relBuilderFactory) {
     super(
         operand(SemiJoin.class,
-            some(operand(Join.class, any()))));
+            some(operand(Join.class, any()))),
+        relBuilderFactory, null);
   }
 
   //~ Methods ----------------------------------------------------------------
@@ -77,7 +80,7 @@ public class SemiJoinJoinTransposeRule extends RelOptRule {
     int nFieldsY = join.getRight().getRowType().getFieldList().size();
     int nFieldsZ = semiJoin.getRight().getRowType().getFieldList().size();
     int nTotalFields = nFieldsX + nFieldsY + nFieldsZ;
-    List<RelDataTypeField> fields = new ArrayList<RelDataTypeField>();
+    List<RelDataTypeField> fields = new ArrayList<>();
 
     // create a list of fields for the full join result; note that
     // we can't simply use the fields from the semi-join because the

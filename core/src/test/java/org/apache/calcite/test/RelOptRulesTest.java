@@ -16,6 +16,9 @@
  */
 package org.apache.calcite.test;
 
+import org.apache.calcite.config.CalciteConnectionConfigImpl;
+import org.apache.calcite.plan.Context;
+import org.apache.calcite.plan.Contexts;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptUtil;
@@ -29,14 +32,25 @@ import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.RelCollationTraitDef;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelRoot;
-import org.apache.calcite.rel.core.Join;
+import org.apache.calcite.rel.core.Aggregate;
+import org.apache.calcite.rel.core.CorrelationId;
+import org.apache.calcite.rel.core.Filter;
+import org.apache.calcite.rel.core.Intersect;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.core.Minus;
+import org.apache.calcite.rel.core.Project;
+import org.apache.calcite.rel.core.RelFactories;
+import org.apache.calcite.rel.core.Union;
+import org.apache.calcite.rel.logical.LogicalCorrelate;
+import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalTableModify;
+import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.metadata.CachingRelMetadataProvider;
 import org.apache.calcite.rel.metadata.ChainedRelMetadataProvider;
 import org.apache.calcite.rel.metadata.DefaultRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMetadataProvider;
 import org.apache.calcite.rel.rules.AggregateExpandDistinctAggregatesRule;
+import org.apache.calcite.rel.rules.AggregateExtractProjectRule;
 import org.apache.calcite.rel.rules.AggregateFilterTransposeRule;
 import org.apache.calcite.rel.rules.AggregateJoinTransposeRule;
 import org.apache.calcite.rel.rules.AggregateProjectMergeRule;
@@ -44,6 +58,7 @@ import org.apache.calcite.rel.rules.AggregateProjectPullUpConstantsRule;
 import org.apache.calcite.rel.rules.AggregateReduceFunctionsRule;
 import org.apache.calcite.rel.rules.AggregateUnionAggregateRule;
 import org.apache.calcite.rel.rules.AggregateUnionTransposeRule;
+import org.apache.calcite.rel.rules.AggregateValuesRule;
 import org.apache.calcite.rel.rules.CalcMergeRule;
 import org.apache.calcite.rel.rules.CoerceInputsRule;
 import org.apache.calcite.rel.rules.DateRangeRules;
@@ -51,8 +66,10 @@ import org.apache.calcite.rel.rules.FilterAggregateTransposeRule;
 import org.apache.calcite.rel.rules.FilterJoinRule;
 import org.apache.calcite.rel.rules.FilterMergeRule;
 import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
+import org.apache.calcite.rel.rules.FilterRemoveIsNotDistinctFromRule;
 import org.apache.calcite.rel.rules.FilterSetOpTransposeRule;
 import org.apache.calcite.rel.rules.FilterToCalcRule;
+import org.apache.calcite.rel.rules.IntersectToDistinctRule;
 import org.apache.calcite.rel.rules.JoinAddRedundantSemiJoinRule;
 import org.apache.calcite.rel.rules.JoinCommuteRule;
 import org.apache.calcite.rel.rules.JoinExtractFilterRule;
@@ -61,6 +78,7 @@ import org.apache.calcite.rel.rules.JoinPushExpressionsRule;
 import org.apache.calcite.rel.rules.JoinPushTransitivePredicatesRule;
 import org.apache.calcite.rel.rules.JoinToMultiJoinRule;
 import org.apache.calcite.rel.rules.JoinUnionTransposeRule;
+import org.apache.calcite.rel.rules.ProjectCorrelateTransposeRule;
 import org.apache.calcite.rel.rules.ProjectFilterTransposeRule;
 import org.apache.calcite.rel.rules.ProjectJoinTransposeRule;
 import org.apache.calcite.rel.rules.ProjectMergeRule;
@@ -70,6 +88,7 @@ import org.apache.calcite.rel.rules.ProjectToCalcRule;
 import org.apache.calcite.rel.rules.ProjectToWindowRule;
 import org.apache.calcite.rel.rules.ProjectWindowTransposeRule;
 import org.apache.calcite.rel.rules.PruneEmptyRules;
+import org.apache.calcite.rel.rules.PushProjector;
 import org.apache.calcite.rel.rules.ReduceExpressionsRule;
 import org.apache.calcite.rel.rules.SemiJoinFilterTransposeRule;
 import org.apache.calcite.rel.rules.SemiJoinJoinTransposeRule;
@@ -78,33 +97,50 @@ import org.apache.calcite.rel.rules.SemiJoinRemoveRule;
 import org.apache.calcite.rel.rules.SemiJoinRule;
 import org.apache.calcite.rel.rules.SortJoinTransposeRule;
 import org.apache.calcite.rel.rules.SortProjectTransposeRule;
+import org.apache.calcite.rel.rules.SortRemoveConstantKeysRule;
 import org.apache.calcite.rel.rules.SortUnionTransposeRule;
 import org.apache.calcite.rel.rules.SubQueryRemoveRule;
 import org.apache.calcite.rel.rules.TableScanRule;
+import org.apache.calcite.rel.rules.UnionMergeRule;
 import org.apache.calcite.rel.rules.UnionPullUpConstantsRule;
 import org.apache.calcite.rel.rules.UnionToDistinctRule;
 import org.apache.calcite.rel.rules.ValuesReduceRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.runtime.Hook;
+import org.apache.calcite.sql.SemiJoinType;
+import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.SqlSpecialOperator;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.validate.SqlValidator;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
+import org.apache.calcite.test.catalog.MockCatalogReader;
 import org.apache.calcite.tools.RelBuilder;
-import org.apache.calcite.util.Util;
+import org.apache.calcite.util.ImmutableBitSet;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 
 import org.junit.Ignore;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
+import java.util.function.Predicate;
 
-import static org.junit.Assert.assertTrue;
+import static org.apache.calcite.plan.RelOptRule.none;
+import static org.apache.calcite.plan.RelOptRule.operand;
+import static org.apache.calcite.plan.RelOptRule.operandJ;
+
+import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.junit.Assert.assertThat;
 
 /**
  * Unit test for rules in {@code org.apache.calcite.rel} and subpackages.
@@ -149,8 +185,27 @@ import static org.junit.Assert.assertTrue;
 public class RelOptRulesTest extends RelOptTestBase {
   //~ Methods ----------------------------------------------------------------
 
+  private final PushProjector.ExprCondition skipItem = expr ->
+      expr instanceof RexCall
+          && "item".equalsIgnoreCase(((RexCall) expr).getOperator().getName());
+
   protected DiffRepository getDiffRepos() {
     return DiffRepository.lookup(RelOptRulesTest.class);
+  }
+
+  @Test public void testReduceNot() {
+    HepProgram preProgram = new HepProgramBuilder()
+        .build();
+
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(ReduceExpressionsRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    hepPlanner.addRule(ReduceExpressionsRule.FILTER_INSTANCE);
+
+    final String sql = "select *\n"
+        + "from (select (case when sal > 1000 then null else false end) as caseCol from emp)\n"
+        + "where NOT(caseCol)";
+    checkPlanning(tester, preProgram, hepPlanner, sql, true);
   }
 
   @Test public void testReduceNestedCaseWhen() {
@@ -170,6 +225,27 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(tester, preProgram, hepPlanner, sql);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1479">[CALCITE-1479]
+   * AssertionError in ReduceExpressionsRule on multi-column IN
+   * sub-query</a>. */
+  @Test public void testReduceCompositeInSubQuery() {
+    final HepProgram hepProgram = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .build();
+    final String sql = "select *\n"
+        + "from emp\n"
+        + "where (empno, deptno) in (\n"
+        + "  select empno, deptno from (\n"
+        + "    select empno, deptno\n"
+        + "    from emp\n"
+        + "    group by empno, deptno))\n"
+        + "or deptno < 40 + 60";
+    checkSubQuery(sql)
+        .with(hepProgram)
+        .check();
+  }
+
   @Test public void testReduceOrCaseWhen() {
     HepProgram preProgram = new HepProgramBuilder()
         .build();
@@ -184,6 +260,30 @@ public class RelOptRulesTest extends RelOptTestBase {
         + "where case when sal = 1000 then null else 1 end is null\n"
         + "OR case when sal = 2000 then null else 1 end is null";
     checkPlanning(tester, preProgram, hepPlanner, sql);
+  }
+
+  @Test public void testReduceNullableCase() {
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(ReduceExpressionsRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    hepPlanner.addRule(ReduceExpressionsRule.PROJECT_INSTANCE);
+
+    final String sql = "SELECT CASE WHEN 1=2 "
+        + "THEN cast((values(1)) as integer) "
+        + "ELSE 2 end from (values(1))";
+    sql(sql).with(hepPlanner).checkUnchanged();
+  }
+
+  @Test public void testReduceNullableCase2() {
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(ReduceExpressionsRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    hepPlanner.addRule(ReduceExpressionsRule.PROJECT_INSTANCE);
+
+    final String sql = "SELECT deptno, ename, CASE WHEN 1=2 "
+        + "THEN substring(ename, 1, cast(2 as int)) ELSE NULL end from emp"
+        + " group by deptno, ename, case when 1=2 then substring(ename,1, cast(2 as int))  else null end";
+    sql(sql).with(hepPlanner).checkUnchanged();
   }
 
   @Test public void testProjectToWindowRuleForMultipleWindows() {
@@ -233,10 +333,14 @@ public class RelOptRulesTest extends RelOptTestBase {
             .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
             .build();
     final String sql = "select *\n"
-        + "from dept left join emp using (deptno)\n"
+        + "from dept left join emp on dept.deptno = emp.deptno\n"
         + "where emp.deptno is not null and emp.sal > 100";
-    checkPlanning(tester.withDecorrelation(true).withTrim(true), preProgram,
-        new HepPlanner(program), sql);
+    sql(sql)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .withPre(preProgram)
+        .with(program)
+        .check();
   }
 
   @Test public void testFullOuterJoinSimplificationToLeftOuter() {
@@ -356,11 +460,7 @@ public class RelOptRulesTest extends RelOptTestBase {
             .addRuleInstance(ProjectMergeRule.INSTANCE)
             .build();
     final FilterJoinRule.Predicate predicate =
-        new FilterJoinRule.Predicate() {
-          public boolean apply(Join join, JoinRelType joinType, RexNode exp) {
-            return joinType != JoinRelType.INNER;
-          }
-        };
+        (join, joinType, exp) -> joinType != JoinRelType.INNER;
     final FilterJoinRule join =
         new FilterJoinRule.JoinConditionPushRule(RelBuilder.proto(), predicate);
     final FilterJoinRule filterOnJoin =
@@ -450,6 +550,53 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(program, sql);
   }
 
+  @Test public void testSortRemovalAllKeysConstant() {
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortRemoveConstantKeysRule.INSTANCE)
+        .build();
+    final String sql = "select count(*) as c\n"
+        + "from sales.emp\n"
+        + "where deptno = 10\n"
+        + "group by deptno, sal\n"
+        + "order by deptno desc nulls last";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testSortRemovalOneKeyConstant() {
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortRemoveConstantKeysRule.INSTANCE)
+        .build();
+    final String sql = "select count(*) as c\n"
+        + "from sales.emp\n"
+        + "where deptno = 10\n"
+        + "group by deptno, sal\n"
+        + "order by deptno, sal desc nulls first";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testSemiJoinRuleExists() {
+    final HepProgram preProgram =
+        HepProgram.builder()
+            .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+            .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .build();
+    final HepProgram program =
+        HepProgram.builder()
+            .addRuleInstance(SemiJoinRule.PROJECT)
+            .build();
+    final String sql = "select * from dept where exists (\n"
+        + "  select * from emp\n"
+        + "  where emp.deptno = dept.deptno\n"
+        + "  and emp.sal > 100)";
+    sql(sql)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .withPre(preProgram)
+        .with(program)
+        .check();
+  }
+
   @Test public void testSemiJoinRule() {
     final HepProgram preProgram =
         HepProgram.builder()
@@ -459,14 +606,88 @@ public class RelOptRulesTest extends RelOptTestBase {
             .build();
     final HepProgram program =
         HepProgram.builder()
-            .addRuleInstance(SemiJoinRule.INSTANCE)
+            .addRuleInstance(SemiJoinRule.PROJECT)
             .build();
-    checkPlanning(tester.withDecorrelation(true).withTrim(true), preProgram,
-        new HepPlanner(program),
-        "select * from dept where exists (\n"
-            + "  select * from emp\n"
-            + "  where emp.deptno = dept.deptno\n"
-            + "  and emp.sal > 100)");
+    final String sql = "select dept.* from dept join (\n"
+        + "  select distinct deptno from emp\n"
+        + "  where sal > 100) using (deptno)";
+    sql(sql)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .withPre(preProgram)
+        .with(program)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1495">[CALCITE-1495]
+   * SemiJoinRule should not apply to RIGHT and FULL JOIN</a>. */
+  @Test public void testSemiJoinRuleRight() {
+    final HepProgram preProgram =
+        HepProgram.builder()
+            .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+            .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .build();
+    final HepProgram program =
+        HepProgram.builder()
+            .addRuleInstance(SemiJoinRule.PROJECT)
+            .build();
+    final String sql = "select dept.* from dept right join (\n"
+        + "  select distinct deptno from emp\n"
+        + "  where sal > 100) using (deptno)";
+    sql(sql)
+        .withPre(preProgram)
+        .with(program)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .checkUnchanged();
+  }
+
+  /** Similar to {@link #testSemiJoinRuleRight()} but FULL. */
+  @Test public void testSemiJoinRuleFull() {
+    final HepProgram preProgram =
+        HepProgram.builder()
+            .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+            .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .build();
+    final HepProgram program =
+        HepProgram.builder()
+            .addRuleInstance(SemiJoinRule.PROJECT)
+            .build();
+    final String sql = "select dept.* from dept full join (\n"
+        + "  select distinct deptno from emp\n"
+        + "  where sal > 100) using (deptno)";
+    sql(sql)
+        .withPre(preProgram)
+        .with(program)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .checkUnchanged();
+  }
+
+  /** Similar to {@link #testSemiJoinRule()} but LEFT. */
+  @Test public void testSemiJoinRuleLeft() {
+    final HepProgram preProgram =
+        HepProgram.builder()
+            .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+            .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+            .addRuleInstance(ProjectMergeRule.INSTANCE)
+            .build();
+    final HepProgram program =
+        HepProgram.builder()
+            .addRuleInstance(SemiJoinRule.PROJECT)
+            .build();
+    final String sql = "select name from dept left join (\n"
+        + "  select distinct deptno from emp\n"
+        + "  where sal > 100) using (deptno)";
+    sql(sql)
+        .withPre(preProgram)
+        .with(program)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .check();
   }
 
   /** Test case for
@@ -475,7 +696,7 @@ public class RelOptRulesTest extends RelOptTestBase {
   @Test public void testPushFilterThroughSemiJoin() {
     final HepProgram preProgram =
         HepProgram.builder()
-            .addRuleInstance(SemiJoinRule.INSTANCE)
+            .addRuleInstance(SemiJoinRule.PROJECT)
             .build();
 
     final HepProgram program =
@@ -484,11 +705,16 @@ public class RelOptRulesTest extends RelOptTestBase {
             .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
             .addRuleInstance(FilterJoinRule.JOIN)
             .build();
-    checkPlanning(tester.withDecorrelation(true).withTrim(false), preProgram,
-        new HepPlanner(program),
-        "select * from (select * from dept where dept.deptno in (\n"
-            + "  select emp.deptno from emp\n"
-            + "  ))R where R.deptno <=10 ");
+    final String sql = "select * from (\n"
+        + "  select * from dept where dept.deptno in (\n"
+        + "    select emp.deptno from emp))R\n"
+        + "where R.deptno <=10";
+    sql(sql)
+        .withDecorrelation(true)
+        .withTrim(false)
+        .withPre(preProgram)
+        .with(program)
+        .check();
   }
 
   /** Test case for
@@ -497,7 +723,7 @@ public class RelOptRulesTest extends RelOptTestBase {
    * condition</a>. */
   @Test public void testSemiJoinReduceConstants() {
     final HepProgram preProgram = HepProgram.builder()
-        .addRuleInstance(SemiJoinRule.INSTANCE)
+        .addRuleInstance(SemiJoinRule.PROJECT)
         .build();
     final HepProgram program = HepProgram.builder()
         .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
@@ -506,11 +732,15 @@ public class RelOptRulesTest extends RelOptTestBase {
         + "from (select * from emp where deptno = 200) as e1\n"
         + "where e1.deptno in (\n"
         + "  select e2.deptno from emp e2 where e2.sal = 100)";
-    checkPlanning(tester.withDecorrelation(false).withTrim(true), preProgram,
-        new HepPlanner(program), sql, true);
+    sql(sql)
+        .withDecorrelation(false)
+        .withTrim(true)
+        .withPre(preProgram)
+        .with(program)
+        .checkUnchanged();
   }
 
-  @Test public void testSemiJoinTrim() {
+  @Test public void testSemiJoinTrim() throws Exception {
     final DiffRepository diffRepos = getDiffRepos();
     String sql = diffRepos.expand(null, "${sql}");
 
@@ -528,13 +758,7 @@ public class RelOptRulesTest extends RelOptTestBase {
             typeFactory,
             SqlToRelConverter.Config.DEFAULT);
 
-    final SqlNode sqlQuery;
-    try {
-      sqlQuery = t.parseQuery(sql);
-    } catch (Exception e) {
-      throw Util.newInternal(e);
-    }
-
+    final SqlNode sqlQuery = t.parseQuery(sql);
     final SqlNode validatedQuery = validator.validate(sqlQuery);
     RelRoot root =
         converter.convertQuery(validatedQuery, false, true);
@@ -545,7 +769,7 @@ public class RelOptRulesTest extends RelOptTestBase {
             .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
             .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
             .addRuleInstance(ProjectMergeRule.INSTANCE)
-            .addRuleInstance(SemiJoinRule.INSTANCE)
+            .addRuleInstance(SemiJoinRule.PROJECT)
             .build();
 
     HepPlanner planner = new HepPlanner(program);
@@ -567,6 +791,30 @@ public class RelOptRulesTest extends RelOptTestBase {
             + " from sales.dept group by name");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1621">[CALCITE-1621]
+   * Adding a cast around the null literal in aggregate rules</a>. */
+  @Test public void testCastInAggregateReduceFunctions() {
+    final HepProgram program =
+        HepProgram.builder()
+            .addRuleInstance(AggregateReduceFunctionsRule.INSTANCE)
+            .build();
+    final String sql = "select name, stddev_pop(deptno), avg(deptno),"
+        + " stddev_samp(deptno),var_pop(deptno), var_samp(deptno)\n"
+        + "from sales.dept group by name";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctCountWithoutGroupBy() {
+    final HepProgram program = HepProgram.builder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.INSTANCE)
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final String sql = "select max(deptno), count(distinct ename)\n"
+        + "from sales.emp";
+    sql(sql).with(program).check();
+  }
+
   @Test public void testDistinctCount1() {
     final HepProgram program = HepProgram.builder()
         .addRuleInstance(AggregateExpandDistinctAggregatesRule.INSTANCE)
@@ -585,6 +833,19 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(program,
         "select deptno, count(distinct ename), sum(sal)"
             + " from sales.emp group by deptno");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1293">[CALCITE-1293]
+   * Bad code generated when argument to COUNT(DISTINCT) is a # GROUP BY
+   * column</a>. */
+  @Test public void testDistinctCount3() {
+    final String sql = "select count(distinct deptno), sum(sal)"
+        + " from sales.emp group by deptno";
+    final HepProgram program = HepProgram.builder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.INSTANCE)
+        .build();
+    sql(sql).with(program).check();
   }
 
   /** Tests implementing multiple distinct count the old way, using a join. */
@@ -676,16 +937,397 @@ public class RelOptRulesTest extends RelOptTestBase {
             + " from sales.emp group by rollup(deptno,job)");
   }
 
+  @Test public void testDistinctNonDistinctAggregates() {
+    final String sql = "select emp.empno, count(*), avg(distinct dept.deptno)\n"
+        + "from sales.emp emp inner join sales.dept dept\n"
+        + "on emp.deptno = dept.deptno\n"
+        + "group by emp.empno";
+    final HepProgram program = HepProgram.builder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1621">[CALCITE-1621]
+   * Adding a cast around the null literal in aggregate rules</a>. */
+  @Test public void testCastInAggregateExpandDistinctAggregatesRule() {
+    final String sql = "select name, sum(distinct cn), sum(distinct sm)\n"
+        + "from (\n"
+        + "  select name, count(dept.deptno) as cn,sum(dept.deptno) as sm\n"
+        + "  from sales.dept group by name)\n"
+        + "group by name";
+    final HepProgram program = HepProgram.builder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.INSTANCE)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1558">[CALCITE-1558]
+   * AggregateExpandDistinctAggregatesRule gets field mapping wrong if groupKey
+   * is used in aggregate function</a>. */
+  @Test public void testDistinctNonDistinctAggregatesWithGrouping1() {
+    final String sql = "SELECT deptno,\n"
+        + "  SUM(deptno), SUM(DISTINCT sal), MAX(deptno), MAX(comm)\n"
+        + "FROM emp\n"
+        + "GROUP BY deptno";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctNonDistinctAggregatesWithGrouping2() {
+    final String sql = "SELECT deptno, COUNT(deptno), SUM(DISTINCT sal)\n"
+        + "FROM emp\n"
+        + "GROUP BY deptno";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctNonDistinctTwoAggregatesWithGrouping() {
+    final String sql = "SELECT deptno, SUM(comm), MIN(comm), SUM(DISTINCT sal)\n"
+        + "FROM emp\n"
+        + "GROUP BY deptno";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctWithGrouping() {
+    final String sql = "SELECT sal, SUM(comm), MIN(comm), SUM(DISTINCT sal)\n"
+        + "FROM emp\n"
+        + "GROUP BY sal";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+
+  @Test public void testMultipleDistinctWithGrouping() {
+    final String sql = "SELECT sal, SUM(comm), MIN(DISTINCT comm), SUM(DISTINCT sal)\n"
+        + "FROM emp\n"
+        + "GROUP BY sal";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctWithMultipleInputs() {
+    final String sql = "SELECT deptno, SUM(comm), MIN(comm), COUNT(DISTINCT sal, comm)\n"
+        + "FROM emp\n"
+        + "GROUP BY deptno";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testDistinctWithMultipleInputsAndGroupby() {
+    final String sql = "SELECT deptno, SUM(comm), MIN(comm), COUNT(DISTINCT sal, deptno, comm)\n"
+        + "FROM emp\n"
+        + "GROUP BY deptno";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+        .build();
+    sql(sql).with(program).check();
+  }
+
   @Test public void testPushProjectPastFilter() {
     checkPlanning(ProjectFilterTransposeRule.INSTANCE,
         "select empno + deptno from emp where sal = 10 * comm "
             + "and upper(ename) = 'FOO'");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1778">[CALCITE-1778]
+   * Query with "WHERE CASE" throws AssertionError "Cast for just nullability
+   * not allowed"</a>. */
+  @Test public void testPushProjectPastFilter2() {
+    final String sql = "select count(*)\n"
+        + "from emp\n"
+        + "where case when mgr < 10 then true else false end";
+    sql(sql).withRule(ProjectFilterTransposeRule.INSTANCE).check();
+  }
+
   @Test public void testPushProjectPastJoin() {
     checkPlanning(ProjectJoinTransposeRule.INSTANCE,
         "select e.sal + b.comm from emp e inner join bonus b "
             + "on e.ename = b.ename and e.deptno = 10");
+  }
+
+  @Test public void testProjectCorrelateTransposeDynamic() {
+    ProjectCorrelateTransposeRule customPCTrans =
+        new ProjectCorrelateTransposeRule(skipItem, RelFactories.LOGICAL_BUILDER);
+
+    HepProgramBuilder programBuilder = HepProgram.builder()
+        .addRuleInstance(customPCTrans);
+
+    String query = "select t1.c_nationkey, t2.a as fake_col2 "
+        + "from SALES.CUSTOMER as t1, "
+        + "unnest(t1.fake_col) as t2(a)";
+
+    checkPlanning(
+        createDynamicTester(),
+        null,
+        new HepPlanner(programBuilder.build()),
+        query,
+        true);
+  }
+
+  @Test public void testProjectCorrelateTransposeRuleLeftCorrelate() {
+    final String sql = "SELECT e1.empno\n"
+        + "FROM emp e1 "
+        + "where exists (select empno, deptno from dept d2 where e1.deptno = d2.deptno)";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+        .addRuleInstance(ProjectFilterTransposeRule.INSTANCE)
+        .addRuleInstance(ProjectCorrelateTransposeRule.INSTANCE)
+        .build();
+    sql(sql)
+        .withDecorrelation(false)
+        .expand(true)
+        .with(program)
+        .check();
+  }
+
+  @Test public void testProjectCorrelateTransposeRuleSemiCorrelate() {
+    RelBuilder relBuilder = RelBuilder.create(RelBuilderTest.config().build());
+    RelNode left = relBuilder
+        .values(new String[]{"f", "f2"}, "1", "2").build();
+
+    CorrelationId correlationId = new CorrelationId(0);
+    RexNode rexCorrel =
+        relBuilder.getRexBuilder().makeCorrel(
+            left.getRowType(),
+            correlationId);
+
+    RelNode right = relBuilder
+        .values(new String[]{"f3", "f4"}, "1", "2")
+        .project(relBuilder.field(0),
+            relBuilder.getRexBuilder()
+                .makeFieldAccess(rexCorrel, 0))
+        .build();
+    LogicalCorrelate correlate = new LogicalCorrelate(left.getCluster(),
+        left.getTraitSet(), left, right, correlationId,
+        ImmutableBitSet.of(0), SemiJoinType.SEMI);
+
+    relBuilder.push(correlate);
+    RelNode relNode = relBuilder.project(relBuilder.field(0))
+        .build();
+
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ProjectCorrelateTransposeRule.INSTANCE)
+        .build();
+
+    HepPlanner hepPlanner = new HepPlanner(program);
+    hepPlanner.setRoot(relNode);
+    RelNode output = hepPlanner.findBestExp();
+
+    final String planAfter = NL + RelOptUtil.toString(output);
+    final DiffRepository diffRepos = getDiffRepos();
+    diffRepos.assertEquals("planAfter", "${planAfter}", planAfter);
+    SqlToRelTestBase.assertValid(output);
+  }
+
+  @Test public void testProjectCorrelateTransposeRuleAntiCorrelate() {
+    RelBuilder relBuilder = RelBuilder.create(RelBuilderTest.config().build());
+    RelNode left = relBuilder
+        .values(new String[]{"f", "f2"}, "1", "2").build();
+
+    CorrelationId correlationId = new CorrelationId(0);
+    RexNode rexCorrel =
+        relBuilder.getRexBuilder().makeCorrel(
+            left.getRowType(),
+            correlationId);
+
+    RelNode right = relBuilder
+        .values(new String[]{"f3", "f4"}, "1", "2")
+        .project(relBuilder.field(0),
+            relBuilder.getRexBuilder().makeFieldAccess(rexCorrel, 0)).build();
+    LogicalCorrelate correlate = new LogicalCorrelate(left.getCluster(),
+        left.getTraitSet(), left, right, correlationId,
+        ImmutableBitSet.of(0), SemiJoinType.ANTI);
+
+    relBuilder.push(correlate);
+    RelNode relNode = relBuilder.project(relBuilder.field(0))
+        .build();
+
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ProjectCorrelateTransposeRule.INSTANCE)
+        .build();
+
+    HepPlanner hepPlanner = new HepPlanner(program);
+    hepPlanner.setRoot(relNode);
+    RelNode output = hepPlanner.findBestExp();
+
+    final String planAfter = NL + RelOptUtil.toString(output);
+    final DiffRepository diffRepos = getDiffRepos();
+    diffRepos.assertEquals("planAfter", "${planAfter}", planAfter);
+    SqlToRelTestBase.assertValid(output);
+  }
+
+  @Test public void testProjectCorrelateTransposeWithExprCond() {
+    ProjectCorrelateTransposeRule customPCTrans =
+        new ProjectCorrelateTransposeRule(skipItem, RelFactories.LOGICAL_BUILDER);
+
+    checkPlanning(customPCTrans,
+        "select t1.name, t2.ename "
+            + "from DEPT_NESTED as t1, "
+            + "unnest(t1.employees) as t2");
+  }
+
+  @Test public void testProjectCorrelateTranspose() {
+    ProjectCorrelateTransposeRule customPCTrans =
+        new ProjectCorrelateTransposeRule(expr -> true,
+            RelFactories.LOGICAL_BUILDER);
+
+    checkPlanning(customPCTrans,
+        "select t1.name, t2.ename "
+            + "from DEPT_NESTED as t1, "
+            + "unnest(t1.employees) as t2");
+  }
+
+  /** Tests that the default instance of {@link FilterProjectTransposeRule}
+   * does not push a Filter that contains a correlating variable.
+   *
+   * @see #testFilterProjectTranspose() */
+  @Test public void testFilterProjectTransposePreventedByCorrelation() {
+    final String sql = "SELECT e.empno\n"
+        + "FROM emp as e\n"
+        + "WHERE exists (\n"
+        + "  SELECT *\n"
+        + "  FROM (\n"
+        + "    SELECT deptno * 2 AS twiceDeptno\n"
+        + "    FROM dept) AS d\n"
+        + "  WHERE e.deptno = d.twiceDeptno)";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+        .build();
+    sql(sql)
+        .withDecorrelation(false)
+        .expand(true)
+        .with(program)
+        .checkUnchanged();
+  }
+
+  /** Tests a variant of {@link FilterProjectTransposeRule}
+   * that pushes a Filter that contains a correlating variable. */
+  @Test public void testFilterProjectTranspose() {
+    final String sql = "SELECT e.empno\n"
+        + "FROM emp as e\n"
+        + "WHERE exists (\n"
+        + "  SELECT *\n"
+        + "  FROM (\n"
+        + "    SELECT deptno * 2 AS twiceDeptno\n"
+        + "    FROM dept) AS d\n"
+        + "  WHERE e.deptno = d.twiceDeptno)";
+    final FilterProjectTransposeRule filterProjectTransposeRule =
+        new FilterProjectTransposeRule(Filter.class, filter -> true,
+            Project.class, project -> true, true, true,
+            RelFactories.LOGICAL_BUILDER);
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(filterProjectTransposeRule)
+        .build();
+    sql(sql)
+        .withDecorrelation(false)
+        .expand(true)
+        .with(program)
+        .check();
+  }
+
+  private static final String NOT_STRONG_EXPR =
+      "case when e.sal < 11 then 11 else -1 * e.sal end";
+
+  private static final String STRONG_EXPR =
+      "case when e.sal < 11 then -1 * e.sal else e.sal end";
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1753">[CALCITE-1753]
+   * PushProjector should only preserve expressions if the expression is strong
+   * when pushing into the nullable-side of outer join</a>. */
+  @Test public void testPushProjectPastInnerJoin() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from emp e inner join bonus b on e.ename = b.ename\n"
+        + "group by " + NOT_STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastInnerJoinStrong() {
+    final String sql = "select count(*), " + STRONG_EXPR + "\n"
+        + "from emp e inner join bonus b on e.ename = b.ename\n"
+        + "group by " + STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastLeftJoin() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from emp e left outer join bonus b on e.ename = b.ename\n"
+        + "group by case when e.sal < 11 then 11 else -1 * e.sal end";
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastLeftJoinSwap() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from bonus b left outer join emp e on e.ename = b.ename\n"
+        + "group by " + NOT_STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastLeftJoinSwapStrong() {
+    final String sql = "select count(*), " + STRONG_EXPR + "\n"
+        + "from bonus b left outer join emp e on e.ename = b.ename\n"
+        + "group by " + STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastRightJoin() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from emp e right outer join bonus b on e.ename = b.ename\n"
+        + "group by " + NOT_STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastRightJoinStrong() {
+    final String sql = "select count(*),\n"
+        + " case when e.sal < 11 then -1 * e.sal else e.sal end\n"
+        + "from emp e right outer join bonus b on e.ename = b.ename\n"
+        + "group by case when e.sal < 11 then -1 * e.sal else e.sal end";
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastRightJoinSwap() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from bonus b right outer join emp e on e.ename = b.ename\n"
+        + "group by " + NOT_STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastRightJoinSwapStrong() {
+    final String sql = "select count(*), " + STRONG_EXPR + "\n"
+        + "from bonus b right outer join emp e on e.ename = b.ename\n"
+        + "group by " + STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastFullJoin() {
+    final String sql = "select count(*), " + NOT_STRONG_EXPR + "\n"
+        + "from emp e full outer join bonus b on e.ename = b.ename\n"
+        + "group by " + NOT_STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
+  }
+
+  @Test public void testPushProjectPastFullJoinStrong() {
+    final String sql = "select count(*), " + STRONG_EXPR + "\n"
+        + "from emp e full outer join bonus b on e.ename = b.ename\n"
+        + "group by " + STRONG_EXPR;
+    sql(sql).withRule(ProjectJoinTransposeRule.INSTANCE).check();
   }
 
   @Test public void testPushProjectPastSetOp() {
@@ -715,8 +1357,6 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(JoinExtractFilterRule.INSTANCE)
         .addRuleInstance(FilterToCalcRule.INSTANCE)
         .addRuleInstance(CalcMergeRule.INSTANCE)
-            //.addRuleInstance(FennelCalcRule.instance);
-            //.addRuleInstance(FennelCartesianJoinRule.instance);
         .addRuleInstance(ProjectToCalcRule.INSTANCE)
         .build();
 
@@ -742,6 +1382,62 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "where deptno = 10\n");
   }
 
+  /** Tests to see if the final branch of union is missed */
+  @Test
+  public void testUnionMergeRule() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+            .addRuleInstance(ProjectSetOpTransposeRule.INSTANCE)
+            .addRuleInstance(ProjectRemoveRule.INSTANCE)
+            .addRuleInstance(UnionMergeRule.INSTANCE)
+            .build();
+
+    checkPlanning(program,
+            "select * from (\n"
+                    + "select * from (\n"
+                    + "  select name, deptno from dept\n"
+                    + "  union all\n"
+                    + "  select name, deptno from\n"
+                    + "  (\n"
+                    + "    select name, deptno, count(1) from dept group by name, deptno\n"
+                    + "    union all\n"
+                    + "    select name, deptno, count(1) from dept group by name, deptno\n"
+                    + "  ) subq\n"
+                    + ") a\n"
+                    + "union all\n"
+                    + "select name, deptno from dept\n"
+                    + ") aa\n");
+  }
+
+  @Test
+  public void testMinusMergeRule() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+            .addRuleInstance(ProjectSetOpTransposeRule.INSTANCE)
+            .addRuleInstance(ProjectRemoveRule.INSTANCE)
+            .addRuleInstance(UnionMergeRule.MINUS_INSTANCE)
+            .build();
+
+    checkPlanning(program,
+            "select * from (\n"
+                    + "select * from (\n"
+                    + "  select name, deptno from\n"
+                    + "  (\n"
+                    + "    select name, deptno, count(1) from dept group by name, deptno\n"
+                    + "    except all\n"
+                    + "    select name, deptno, 1 from dept\n"
+                    + "  ) subq\n"
+                    + "  except all\n"
+                    + "  select name, deptno from\n"
+                    + "  (\n"
+                    + "    select name, deptno, 1 from dept\n"
+                    + "    except all\n"
+                    + "    select name, deptno, count(1) from dept group by name, deptno\n"
+                    + "  ) subq2\n"
+                    + ") a\n"
+                    + "except all\n"
+                    + "select name, deptno from dept\n"
+                    + ") aa\n");
+  }
+
   /** Tests that a filters is combined are combined if they are identical,
    * even if one of them originates in an ON clause of a JOIN. */
   @Test public void testMergeJoinFilter() throws Exception {
@@ -759,6 +1455,166 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "  on e.deptno = d.deptno\n"
             + "  and d.deptno = 10)\n"
             + "where deptno = 10\n");
+  }
+
+  /** Tests {@link UnionMergeRule}, which merges 2 {@link Union} operators into
+   * a single {@code Union} with 3 inputs. */
+  @Test public void testMergeUnionAll() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "union all\n"
+        + "select * from emp where deptno = 20\n"
+        + "union all\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests {@link UnionMergeRule}, which merges 2 {@link Union}
+   * {@code DISTINCT} (not {@code ALL}) operators into a single
+   * {@code Union} with 3 inputs. */
+  @Test public void testMergeUnionDistinct() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "union distinct\n"
+        + "select * from emp where deptno = 20\n"
+        + "union\n" // same as 'union distinct'
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests that {@link UnionMergeRule} does nothing if its arguments have
+   * different {@code ALL} settings. */
+  @Test public void testMergeUnionMixed() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "union\n"
+        + "select * from emp where deptno = 20\n"
+        + "union all\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).checkUnchanged();
+  }
+
+  /** Tests that {@link UnionMergeRule} converts all inputs to DISTINCT
+   * if the top one is DISTINCT.
+   * (Since UNION is left-associative, the "top one" is the rightmost.) */
+  @Test public void testMergeUnionMixed2() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "union all\n"
+        + "select * from emp where deptno = 20\n"
+        + "union\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests that {@link UnionMergeRule} does nothing if its arguments have
+   * are different set operators, {@link Union} and {@link Intersect}. */
+  @Test public void testMergeSetOpMixed() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INSTANCE)
+        .addRuleInstance(UnionMergeRule.INTERSECT_INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "union\n"
+        + "select * from emp where deptno = 20\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).checkUnchanged();
+  }
+
+  /** Tests {@link UnionMergeRule#INTERSECT_INSTANCE}, which merges 2
+   * {@link Intersect} operators into a single {@code Intersect} with 3
+   * inputs. */
+  @Test public void testMergeIntersect() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INTERSECT_INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 20\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests {@link org.apache.calcite.rel.rules.IntersectToDistinctRule},
+   * which rewrites an {@link Intersect} operator with 3 inputs. */
+  @Test public void testIntersectToDistinct() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INTERSECT_INSTANCE)
+        .addRuleInstance(IntersectToDistinctRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 20\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests that {@link org.apache.calcite.rel.rules.IntersectToDistinctRule}
+   * correctly ignores an {@code INTERSECT ALL}. It can only handle
+   * {@code INTERSECT DISTINCT}. */
+  @Test public void testIntersectToDistinctAll() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.INTERSECT_INSTANCE)
+        .addRuleInstance(IntersectToDistinctRule.INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "intersect\n"
+        + "select * from emp where deptno = 20\n"
+        + "intersect all\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests {@link UnionMergeRule#MINUS_INSTANCE}, which merges 2
+   * {@link Minus} operators into a single {@code Minus} with 3
+   * inputs. */
+  @Test public void testMergeMinus() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.MINUS_INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "except\n"
+        + "select * from emp where deptno = 20\n"
+        + "except\n"
+        + "select * from emp where deptno = 30\n";
+    sql(sql).with(program).check();
+  }
+
+  /** Tests {@link UnionMergeRule#MINUS_INSTANCE}
+   * does not merge {@code Minus(a, Minus(b, c))}
+   * into {@code Minus(a, b, c)}, which would be incorrect. */
+  @Test public void testMergeMinusRightDeep() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(UnionMergeRule.MINUS_INSTANCE)
+        .build();
+
+    final String sql = "select * from emp where deptno = 10\n"
+        + "except\n"
+        + "select * from (\n"
+        + "  select * from emp where deptno = 20\n"
+        + "  except\n"
+        + "  select * from emp where deptno = 30)";
+    sql(sql).with(program).checkUnchanged();
   }
 
   @Ignore("cycles")
@@ -848,12 +1704,15 @@ public class RelOptRulesTest extends RelOptTestBase {
 
     // There is "CAST(2 AS INTEGER)" in the plan because 2 has type "INTEGER NOT
     // NULL" and we need "INTEGER".
-    checkPlanning(program,
-        "select 1+2, d.deptno+(3+4), (5+6)+d.deptno, cast(null as integer),"
-            + " coalesce(2,null), row(7+8)"
-            + " from dept d inner join emp e"
-            + " on d.deptno = e.deptno + (5-5)"
-            + " where d.deptno=(7+8) and d.deptno=(8+7) and d.deptno=coalesce(2,null)");
+    final String sql = "select"
+        + " 1+2, d.deptno+(3+4), (5+6)+d.deptno, cast(null as integer),"
+        + " coalesce(2,null), row(7+8)"
+        + " from dept d inner join emp e"
+        + " on d.deptno = e.deptno + (5-5)"
+        + " where d.deptno=(7+8) and d.deptno=(8+7) and d.deptno=coalesce(2,null)";
+    sql(sql).with(program)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   /** Test case for
@@ -903,6 +1762,28 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(program, sql);
   }
 
+  @Test public void testOrAlwaysTrue() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
+        .build();
+    final String sql = "select * from EMPNULLABLES_20\n"
+        + "where sal is null or sal is not null";
+    checkPlanning(program, sql);
+  }
+
+  @Test public void testOrAlwaysTrue2() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
+        .build();
+    final String sql = "select * from EMPNULLABLES_20\n"
+        + "where sal is not null or sal is null";
+    checkPlanning(program, sql);
+  }
+
   @Test public void testReduceConstants2() throws Exception {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
@@ -910,8 +1791,20 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
         .build();
 
-    checkPlanning(program,
+    checkPlanning(new HepPlanner(program),
         "select p1 is not distinct from p0 from (values (2, cast(null as integer))) as t(p0, p1)");
+  }
+
+  @Test public void testReduceConstants3() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
+        .build();
+
+    final String sql = "select e.mgr is not distinct from f.mgr "
+        + "from emp e join emp f on (e.mgr=f.mgr) where e.mgr is null";
+    checkPlanning(new HepPlanner(program), sql);
   }
 
   /** Test case for
@@ -992,6 +1885,19 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "  else 0 end = 1");
   }
 
+  @Test
+  public void testSkipReduceConstantsCaseEquals() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(FilterJoinRule.FilterIntoJoinRule.FILTER_ON_JOIN)
+        .build();
+
+    checkPlanning(program,
+        "select * from emp e1, emp e2\n"
+            + "where coalesce(e1.mgr, -1) = coalesce(e2.mgr, -1)");
+  }
+
   @Test public void testReduceConstantsEliminatesFilter() throws Exception {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
@@ -1000,6 +1906,23 @@ public class RelOptRulesTest extends RelOptTestBase {
     // WHERE NULL is the same as WHERE FALSE, so get empty result
     checkPlanning(program,
         "select * from (values (1,2)) where 1 + 2 > 3 + CAST(NULL AS INTEGER)");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1860">[CALCITE-1860]
+   * Duplicate null predicates cause NullPointerException in RexUtil</a>. */
+  @Test public void testReduceConstantsNull() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .build();
+    final String sql = "select * from (\n"
+        + "  select *\n"
+        + "  from (\n"
+        + "    select cast(null as integer) as n\n"
+        + "    from emp)\n"
+        + "  where n is null and n is null)\n"
+        + "where n is null";
+    sql(sql).with(program).check();
   }
 
   /** Test case for
@@ -1017,7 +1940,7 @@ public class RelOptRulesTest extends RelOptTestBase {
     // Rule should not fire, but there should be no NPE
     final String sql =
         "select * from (values (1,2)) where 1 + 2 > 3 + CAST(NULL AS INTEGER)";
-    checkPlanUnchanged(new HepPlanner(program), sql);
+    checkPlanning(new HepPlanner(program), sql);
   }
 
   @Test public void testAlreadyFalseEliminatesFilter() throws Exception {
@@ -1120,29 +2043,25 @@ public class RelOptRulesTest extends RelOptTestBase {
 
   private void checkPlanning(String query) throws Exception {
     final Tester tester1 = tester.withCatalogReaderFactory(
-        new Function<RelDataTypeFactory, Prepare.CatalogReader>() {
-          public Prepare.CatalogReader apply(RelDataTypeFactory typeFactory) {
-            return new MockCatalogReader(typeFactory, true) {
-              @Override public MockCatalogReader init() {
-                // CREATE SCHEMA abc;
-                // CREATE TABLE a(a INT);
-                // ...
-                // CREATE TABLE j(j INT);
-                MockSchema schema = new MockSchema("SALES");
-                registerSchema(schema);
-                final RelDataType intType =
-                    typeFactory.createSqlType(SqlTypeName.INTEGER);
-                for (int i = 0; i < 10; i++) {
-                  String t = String.valueOf((char) ('A' + i));
-                  MockTable table = MockTable.create(this, schema, t, false, 100);
-                  table.addColumn(t, intType);
-                  registerTable(table);
-                }
-                return this;
-              }
-              // CHECKSTYLE: IGNORE 1
-            }.init();
+        (typeFactory, caseSensitive) -> new MockCatalogReader(typeFactory, caseSensitive) {
+          @Override public MockCatalogReader init() {
+            // CREATE SCHEMA abc;
+            // CREATE TABLE a(a INT);
+            // ...
+            // CREATE TABLE j(j INT);
+            MockSchema schema = new MockSchema("SALES");
+            registerSchema(schema);
+            final RelDataType intType =
+                typeFactory.createSqlType(SqlTypeName.INTEGER);
+            for (int i = 0; i < 10; i++) {
+              String t = String.valueOf((char) ('A' + i));
+              MockTable table = MockTable.create(this, schema, t, false, 100);
+              table.addColumn(t, intType);
+              registerTable(table);
+            }
+            return this;
           }
+          // CHECKSTYLE: IGNORE 1
         });
     HepProgram program = new HepProgramBuilder()
         .addMatchOrder(HepMatchOrder.BOTTOM_UP)
@@ -1241,6 +2160,9 @@ public class RelOptRulesTest extends RelOptTestBase {
             + " where a - b < 21");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1439">[CALCITE-1439]
+   * Handling errors during constant reduction</a>. */
   @Test public void testReduceCase() throws Exception {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
@@ -1250,7 +2172,37 @@ public class RelOptRulesTest extends RelOptTestBase {
         + "  case when false then cast(2.1 as float)\n"
         + "   else cast(1 as integer) end as newcol\n"
         + "from emp";
-    checkPlanning(program, sql);
+    sql(sql).with(program)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
+  }
+
+  private void checkReduceNullableToNotNull(ReduceExpressionsRule rule) {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(rule)
+        .build();
+
+    final String sql = "select\n"
+        + "  empno + case when 'a' = 'a' then 1 else null end as newcol\n"
+        + "from emp";
+    sql(sql).with(program)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
+  }
+
+  /** Test case that reduces a nullable expression to a NOT NULL literal that
+   *  is cast to nullable. */
+  @Test public void testReduceNullableToNotNull() throws Exception {
+    checkReduceNullableToNotNull(ReduceExpressionsRule.PROJECT_INSTANCE);
+  }
+
+  /** Test case that reduces a nullable expression to a NOT NULL literal. */
+  @Test public void testReduceNullableToNotNull2() throws Exception {
+    final ReduceExpressionsRule.ProjectReduceExpressionsRule rule =
+        new ReduceExpressionsRule.ProjectReduceExpressionsRule(
+            LogicalProject.class, false,
+            RelFactories.LOGICAL_BUILDER);
+    checkReduceNullableToNotNull(rule);
   }
 
   @Test public void testReduceConstantsIsNull() throws Exception {
@@ -1288,6 +2240,81 @@ public class RelOptRulesTest extends RelOptTestBase {
         .build();
 
     final String sql = "select empno from emp where empno>10 and empno<=10";
+    checkPlanning(program, sql);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2638">[CALCITE-2638]
+   * Constant reducer must not duplicate calls to non-deterministic
+   * functions</a>. */
+  @Test public void testReduceConstantsNonDeterministicFunction() {
+    final DiffRepository diffRepos = getDiffRepos();
+
+    final SqlOperator nonDeterministicOp =
+        new SqlSpecialOperator("NDC", SqlKind.OTHER_FUNCTION, 0, false,
+            ReturnTypes.INTEGER, null, null) {
+          @Override public boolean isDeterministic() {
+            return false;
+          }
+        };
+
+    // Build a tree equivalent to the SQL
+    //  SELECT sal, n
+    //  FROM (SELECT sal, NDC() AS n FROM emp)
+    //  WHERE n > 10
+    final RelBuilder builder =
+        RelBuilder.create(RelBuilderTest.config().build());
+    final RelNode root =
+        builder.scan("EMP")
+            .project(builder.field("SAL"),
+                builder.alias(builder.call(nonDeterministicOp), "N"))
+            .filter(
+                builder.call(SqlStdOperatorTable.GREATER_THAN,
+                    builder.field("N"), builder.literal(10)))
+            .build();
+
+    HepProgram preProgram = new HepProgramBuilder().build();
+    HepPlanner prePlanner = new HepPlanner(preProgram);
+    prePlanner.setRoot(root);
+    final RelNode relBefore = prePlanner.findBestExp();
+    final String planBefore = NL + RelOptUtil.toString(relBefore);
+    diffRepos.assertEquals("planBefore", "${planBefore}", planBefore);
+
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .build();
+
+    HepPlanner hepPlanner = new HepPlanner(program);
+    hepPlanner.setRoot(root);
+    final RelNode relAfter = hepPlanner.findBestExp();
+    final String planAfter = NL + RelOptUtil.toString(relAfter);
+    diffRepos.assertEquals("planAfter", "${planAfter}", planAfter);
+  }
+
+  /** Checks that constant reducer duplicates calls to dynamic functions, if
+   * appropriate. CURRENT_TIMESTAMP is a dynamic function. */
+  @Test public void testReduceConstantsDynamicFunction() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .build();
+
+    final String sql = "select sal, t\n"
+        + "from (select sal, current_timestamp t from emp)\n"
+        + "where t > TIMESTAMP '2018-01-01 00:00:00'";
+    sql(sql).with(program).checkUnchanged();
+  }
+
+  @Test public void testCasePushIsAlwaysWorking() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.CALC_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .build();
+
+    final String sql = "select empno from emp"
+        + " where case when sal > 1000 then empno else sal end = 1";
     checkPlanning(program, sql);
   }
 
@@ -1337,6 +2364,88 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "where x + y > 30");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1488">[CALCITE-1488]
+   * ValuesReduceRule should ignore empty Values</a>. */
+  @Test public void testEmptyProject() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ValuesReduceRule.PROJECT_FILTER_INSTANCE)
+        .addRuleInstance(ValuesReduceRule.FILTER_INSTANCE)
+        .addRuleInstance(ValuesReduceRule.PROJECT_INSTANCE)
+        .build();
+
+    final String sql = "select z + x from (\n"
+        + "  select x + y as z, x from (\n"
+        + "    select * from (values (10, 1), (30, 3)) as t (x, y)\n"
+        + "    where x + y > 50))";
+    sql(sql).with(program).check();
+  }
+
+  /** Same query as {@link #testEmptyProject()}, and {@link PruneEmptyRules}
+   * is able to do the job that {@link ValuesReduceRule} cannot do. */
+  @Test public void testEmptyProject2() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ValuesReduceRule.FILTER_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.PROJECT_INSTANCE)
+        .build();
+
+    final String sql = "select z + x from (\n"
+        + "  select x + y as z, x from (\n"
+        + "    select * from (values (10, 1), (30, 3)) as t (x, y)\n"
+        + "    where x + y > 50))";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testEmptyIntersect() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ValuesReduceRule.PROJECT_FILTER_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.PROJECT_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.INTERSECT_INSTANCE)
+        .build();
+
+    final String sql = "select * from (values (30, 3))"
+        + "intersect\n"
+        + "select *\nfrom (values (10, 1), (30, 3)) as t (x, y) where x > 50\n"
+        + "intersect\n"
+        + "select * from (values (30, 3))";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testEmptyMinus() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ValuesReduceRule.PROJECT_FILTER_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.PROJECT_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.MINUS_INSTANCE)
+        .build();
+
+    // First input is empty; therefore whole expression is empty
+    final String sql = "select * from (values (30, 3)) as t (x, y)\n"
+        + "where x > 30\n"
+        + "except\n"
+        + "select * from (values (20, 2))\n"
+        + "except\n"
+        + "select * from (values (40, 4))";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testEmptyMinus2() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ValuesReduceRule.PROJECT_FILTER_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.PROJECT_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.MINUS_INSTANCE)
+        .build();
+
+    // Second and fourth inputs are empty; they are removed
+    final String sql = "select * from (values (30, 3)) as t (x, y)\n"
+        + "except\n"
+        + "select * from (values (20, 2)) as t (x, y) where x > 30\n"
+        + "except\n"
+        + "select * from (values (40, 4))\n"
+        + "except\n"
+        + "select * from (values (50, 5)) as t (x, y) where x > 50";
+    sql(sql).with(program).check();
+  }
+
   @Test public void testEmptyJoin() {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
@@ -1346,10 +2455,10 @@ public class RelOptRulesTest extends RelOptTestBase {
         .build();
 
     // Plan should be empty
-    checkPlanning(program,
-        "select * from (\n"
-            + "select * from emp where false)\n"
-            + "join dept using (deptno)");
+    final String sql = "select * from (\n"
+        + "select * from emp where false) as e\n"
+        + "join dept as d on e.deptno = d.deptno";
+    sql(sql).with(program).check();
   }
 
   @Test public void testEmptyJoinLeft() {
@@ -1361,10 +2470,10 @@ public class RelOptRulesTest extends RelOptTestBase {
         .build();
 
     // Plan should be empty
-    checkPlanning(program,
-        "select * from (\n"
-            + "select * from emp where false)\n"
-            + "left join dept using (deptno)");
+    final String sql = "select * from (\n"
+        + "  select * from emp where false) e\n"
+        + "left join dept d on e.deptno = d.deptno";
+    sql(sql).with(program).check();
   }
 
   @Test public void testEmptyJoinRight() {
@@ -1377,10 +2486,10 @@ public class RelOptRulesTest extends RelOptTestBase {
 
     // Plan should be equivalent to "select * from emp join dept".
     // Cannot optimize away the join because of RIGHT.
-    checkPlanning(program,
-        "select * from (\n"
-            + "select * from emp where false)\n"
-            + "right join dept using (deptno)");
+    final String sql = "select * from (\n"
+        + "  select * from emp where false) e\n"
+        + "right join dept d on e.deptno = d.deptno";
+    sql(sql).with(program).check();
   }
 
   @Test public void testEmptySort() {
@@ -1432,6 +2541,20 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(tester, preProgram, new HepPlanner(program), sql, unchanged);
   }
 
+  @Test public void testEmptyAggregateEmptyKeyWithAggregateValuesRule() {
+    HepProgram preProgram = HepProgram
+        .builder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(PruneEmptyRules.PROJECT_INSTANCE)
+        .build();
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateValuesRule.INSTANCE)
+        .build();
+
+    final String sql = "select count(*), sum(empno) from emp where false";
+    sql(sql).withPre(preProgram).with(program).check();
+  }
+
   @Test public void testReduceCasts() throws Exception {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
@@ -1440,11 +2563,25 @@ public class RelOptRulesTest extends RelOptTestBase {
         .build();
 
     // The resulting plan should have no cast expressions
-    checkPlanning(program,
+    checkPlanUnchanged(new HepPlanner(program),
         "select cast(d.name as varchar(128)), cast(e.empno as integer) "
             + "from dept as d inner join emp as e "
             + "on cast(d.deptno as integer) = cast(e.deptno as integer) "
             + "where cast(e.job as varchar(1)) = 'Manager'");
+  }
+
+  /** Tests that a cast from a TIME to a TIMESTAMP is not reduced. It is not
+   * constant because the result depends upon the current date. */
+  @Test public void testReduceCastTimeUnchanged() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
+        .build();
+
+    sql("select cast(time '12:34:56' as timestamp) from emp as e")
+        .with(program)
+        .checkUnchanged();
   }
 
   @Test public void testReduceCastAndConsts() throws Exception {
@@ -1459,13 +2596,27 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "where cast((empno + (10/2)) as int) = 13");
   }
 
+  @Test public <T> void testReduceCaseNullabilityChange() throws Exception {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .build();
+
+    try (Hook.Closeable a = Hook.REL_BUILDER_SIMPLIFY.add(Hook.propertyJ(false))) {
+      checkPlanning(program,
+          "select case when empno = 1 then 1 when 1 IS NOT NULL then 2 else null end as qx "
+              + "from emp");
+    }
+  }
+
   @Ignore // Calcite does not support INSERT yet
   @Test public void testReduceCastsNullable() throws Exception {
     HepProgram program = new HepProgramBuilder()
 
         // Simulate the way INSERT will insert casts to the target types
         .addRuleInstance(
-            new CoerceInputsRule(LogicalTableModify.class, false))
+            new CoerceInputsRule(LogicalTableModify.class, false,
+                RelFactories.LOGICAL_BUILDER))
 
             // Convert projects to calcs, merge two calcs, and then
             // reduce redundant casts in merged calc.
@@ -1583,11 +2734,11 @@ public class RelOptRulesTest extends RelOptTestBase {
     HepProgram program = HepProgram.builder()
         .addRuleInstance(AggregateFilterTransposeRule.INSTANCE)
         .build();
-    final String sql = "select empno, sal, deptno from ("
-        + "  select empno, sal, deptno"
+    final String sql = "select ename, sal, deptno from ("
+        + "  select ename, sal, deptno"
         + "  from emp"
         + "  where sal > 5000)"
-        + "group by empno, sal, deptno";
+        + "group by ename, sal, deptno";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
@@ -1600,11 +2751,11 @@ public class RelOptRulesTest extends RelOptTestBase {
     HepProgram program = HepProgram.builder()
         .addRuleInstance(AggregateFilterTransposeRule.INSTANCE)
         .build();
-    final String sql = "select empno, sal, deptno from ("
-        + "  select empno, sal, deptno"
+    final String sql = "select ename, sal, deptno from ("
+        + "  select ename, sal, deptno"
         + "  from emp"
         + "  where sal > 5000)"
-        + "group by rollup(empno, sal, deptno)";
+        + "group by rollup(ename, sal, deptno)";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
@@ -1659,7 +2810,6 @@ public class RelOptRulesTest extends RelOptTestBase {
 
   @Test public void testPullConstantThroughUnion()
       throws Exception {
-    HepProgram preProgram = HepProgram.builder().build();
     HepProgram program = HepProgram.builder()
         .addRuleInstance(UnionPullUpConstantsRule.INSTANCE)
         .addRuleInstance(ProjectMergeRule.INSTANCE)
@@ -1667,7 +2817,10 @@ public class RelOptRulesTest extends RelOptTestBase {
     final String sql = "select 2, deptno, job from emp as e1\n"
         + "union all\n"
         + "select 2, deptno, job from emp as e2";
-    checkPlanning(tester.withTrim(true), preProgram, new HepPlanner(program), sql);
+    sql(sql)
+        .withTrim(true)
+        .with(program)
+        .check();
   }
 
   @Test public void testPullConstantThroughUnion2()
@@ -1686,7 +2839,6 @@ public class RelOptRulesTest extends RelOptTestBase {
   @Test public void testPullConstantThroughUnion3()
       throws Exception {
     // We should leave at least a single column in each Union input
-    HepProgram preProgram = HepProgram.builder().build();
     HepProgram program = HepProgram.builder()
         .addRuleInstance(UnionPullUpConstantsRule.INSTANCE)
         .addRuleInstance(ProjectMergeRule.INSTANCE)
@@ -1694,10 +2846,13 @@ public class RelOptRulesTest extends RelOptTestBase {
     final String sql = "select 2, 3 from emp as e1\n"
         + "union all\n"
         + "select 2, 3 from emp as e2";
-    checkPlanning(tester.withTrim(true), preProgram, new HepPlanner(program), sql);
+    sql(sql)
+        .withTrim(true)
+        .with(program)
+        .check();
   }
 
-  @Test public void testAggregateProjectMerge() throws Exception {
+  @Test public void testAggregateProjectMerge() {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
@@ -1708,7 +2863,7 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "group by x, y");
   }
 
-  @Test public void testAggregateGroupingSetsProjectMerge() throws Exception {
+  @Test public void testAggregateGroupingSetsProjectMerge() {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
@@ -1719,19 +2874,100 @@ public class RelOptRulesTest extends RelOptTestBase {
             + "group by rollup(x, y)");
   }
 
-  @Test public void testPullAggregateThroughUnion() throws Exception {
+  @Test public void testAggregateExtractProjectRule() {
+    final String sql = "select sum(sal)\n"
+        + "from emp";
+    HepProgram pre = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final AggregateExtractProjectRule rule =
+        new AggregateExtractProjectRule(Aggregate.class, LogicalTableScan.class,
+            RelFactories.LOGICAL_BUILDER);
+    sql(sql).withPre(pre).withRule(rule).check();
+  }
+
+  @Test public void testAggregateExtractProjectRuleWithGroupingSets() {
+    final String sql = "select empno, deptno, sum(sal)\n"
+        + "from emp\n"
+        + "group by grouping sets ((empno, deptno),(deptno),(empno))";
+    HepProgram pre = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final AggregateExtractProjectRule rule =
+        new AggregateExtractProjectRule(Aggregate.class, LogicalTableScan.class,
+            RelFactories.LOGICAL_BUILDER);
+    sql(sql).withPre(pre).withRule(rule).check();
+  }
+
+
+  /** Test with column used in both grouping set and argument to aggregate
+   * function. */
+  @Test public void testAggregateExtractProjectRuleWithGroupingSets2() {
+    final String sql = "select empno, deptno, sum(empno)\n"
+        + "from emp\n"
+        + "group by grouping sets ((empno, deptno),(deptno),(empno))";
+    HepProgram pre = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final AggregateExtractProjectRule rule =
+        new AggregateExtractProjectRule(Aggregate.class, LogicalTableScan.class,
+            RelFactories.LOGICAL_BUILDER);
+    sql(sql).withPre(pre).withRule(rule).check();
+  }
+
+  @Test public void testAggregateExtractProjectRuleWithFilter() {
+    final String sql = "select sum(sal) filter (where empno = 40)\n"
+        + "from emp";
+    HepProgram pre = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    // AggregateProjectMergeRule does not merges Project with Filter.
+    // Force match Aggregate on top of Project once explicitly in unit test.
+    final AggregateExtractProjectRule rule =
+        new AggregateExtractProjectRule(
+            operand(Aggregate.class,
+                operandJ(Project.class, null,
+                    new Predicate<Project>() {
+                      int matchCount = 0;
+
+                      public boolean test(Project project) {
+                        return matchCount++ == 0;
+                      }
+                    },
+                    none())),
+            RelFactories.LOGICAL_BUILDER);
+    sql(sql).withPre(pre).withRule(rule).checkUnchanged();
+  }
+
+  @Test public void testPullAggregateThroughUnion() {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateUnionAggregateRule.INSTANCE)
         .build();
 
-    checkPlanning(program,
-        "select deptno, job from"
-            + " (select deptno, job from emp as e1"
-            + " group by deptno,job"
-            + "  union all"
-            + " select deptno, job from emp as e2"
-            + " group by deptno,job)"
-            + " group by deptno,job");
+    final String sql = "select deptno, job from"
+        + " (select deptno, job from emp as e1"
+        + " group by deptno,job"
+        + "  union all"
+        + " select deptno, job from emp as e2"
+        + " group by deptno,job)"
+        + " group by deptno,job";
+    sql(sql).with(program).check();
+  }
+
+  @Test public void testPullAggregateThroughUnion2() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateUnionAggregateRule.AGG_ON_SECOND_INPUT)
+        .addRuleInstance(AggregateUnionAggregateRule.AGG_ON_FIRST_INPUT)
+        .build();
+
+    final String sql = "select deptno, job from"
+        + " (select deptno, job from emp as e1"
+        + " group by deptno,job"
+        + "  union all"
+        + " select deptno, job from emp as e2"
+        + " group by deptno,job)"
+        + " group by deptno,job";
+    sql(sql).with(program).check();
   }
 
   private void transitiveInference(RelOptRule... extraRules) throws Exception {
@@ -1749,9 +2985,9 @@ public class RelOptRulesTest extends RelOptTestBase {
     final RelRoot root = tester.convertSqlToRel(sql);
     final RelNode relInitial = root.rel;
 
-    assertTrue(relInitial != null);
+    assertThat(relInitial, notNullValue());
 
-    List<RelMetadataProvider> list = Lists.newArrayList();
+    List<RelMetadataProvider> list = new ArrayList<>();
     list.add(DefaultRelMetadataProvider.INSTANCE);
     planner.registerMetadataProviders(list);
     RelMetadataProvider plannerChain = ChainedRelMetadataProvider.of(list);
@@ -1868,6 +3104,14 @@ public class RelOptRulesTest extends RelOptTestBase {
     transitiveInference(ReduceExpressionsRule.FILTER_INSTANCE);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1995">[CALCITE-1995]
+   * Remove predicates from Filter if they can be proved to be always true or
+   * false</a>. */
+  @Test public void testSimplifyFilter() throws Exception {
+    transitiveInference(ReduceExpressionsRule.FILTER_INSTANCE);
+  }
+
   @Test public void testPullConstantIntoJoin() throws Exception {
     transitiveInference(ReduceExpressionsRule.JOIN_INSTANCE);
   }
@@ -1876,6 +3120,29 @@ public class RelOptRulesTest extends RelOptTestBase {
     transitiveInference(ReduceExpressionsRule.JOIN_INSTANCE,
         ReduceExpressionsRule.PROJECT_INSTANCE,
         FilterProjectTransposeRule.INSTANCE);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2110">[CALCITE-2110]
+   * ArrayIndexOutOfBoundsException in RexSimplify when using
+   * ReduceExpressionsRule.JOIN_INSTANCE</a>. */
+  @Test public void testCorrelationScalarAggAndFilter() {
+    final String sql = "SELECT e1.empno\n"
+        + "FROM emp e1, dept d1 where e1.deptno = d1.deptno\n"
+        + "and e1.deptno < 10 and d1.deptno < 15\n"
+        + "and e1.sal > (select avg(sal) from emp e2 where e1.empno = e2.empno)";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.PROJECT_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .addRuleInstance(ReduceExpressionsRule.JOIN_INSTANCE)
+        .build();
+    sql(sql)
+        .withDecorrelation(true)
+        .withTrim(true)
+        .expand(true)
+        .withPre(program)
+        .with(program)
+        .checkUnchanged();
   }
 
   @Test public void testProjectWindowTransposeRule() {
@@ -1915,6 +3182,19 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(program, sql);
   }
 
+  @Test public void testAggregateProjectPullUpConstants2() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectPullUpConstantsRule.INSTANCE2)
+        .build();
+    final String sql = "select ename, sal\n"
+        + "from (select '1', ename, sal from emp where ename = 'John') subq\n"
+        + "group by ename, sal";
+    checkPlanning(tester, preProgram, new HepPlanner(program), sql);
+  }
+
   @Test public void testPushFilterWithRank() throws Exception {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(FilterProjectTransposeRule.INSTANCE).build();
@@ -1943,8 +3223,6 @@ public class RelOptRulesTest extends RelOptTestBase {
    * <a href="https://issues.apache.org/jira/browse/CALCITE-841">[CALCITE-841]
    * Redundant windows when window function arguments are expressions</a>. */
   @Test public void testExpressionInWindowFunction() {
-    HepProgram preProgram =  new HepProgramBuilder().build();
-
     HepProgramBuilder builder = new HepProgramBuilder();
     builder.addRuleClass(ProjectToWindowRule.class);
 
@@ -1955,16 +3233,15 @@ public class RelOptRulesTest extends RelOptTestBase {
         + " sum(deptno) over(partition by deptno order by sal) as sum1,\n"
         + "sum(deptno + sal) over(partition by deptno order by sal) as sum2\n"
         + "from emp";
-    checkPlanning(tester, preProgram, hepPlanner, sql);
+    sql(sql)
+        .with(hepPlanner)
+        .check();
   }
 
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-888">[CALCITE-888]
    * Overlay window loses PARTITION BY list</a>. */
   @Test public void testWindowInParenthesis() {
-    HepProgram preProgram =  new HepProgramBuilder()
-        .build();
-
     HepProgramBuilder builder = new HepProgramBuilder();
     builder.addRuleClass(ProjectToWindowRule.class);
     HepPlanner hepPlanner = new HepPlanner(builder.build());
@@ -1973,7 +3250,9 @@ public class RelOptRulesTest extends RelOptTestBase {
     final String sql = "select count(*) over (w), count(*) over w\n"
         + "from emp\n"
         + "window w as (partition by empno order by empno)";
-    checkPlanning(tester, preProgram, hepPlanner, sql);
+    sql(sql)
+        .with(hepPlanner)
+        .check();
   }
 
   /** Test case for
@@ -1991,36 +3270,53 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(program, sql);
   }
 
-  @Test public void testPushAggregateThroughJoin1() throws Exception {
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2078">[CALCITE-2078]
+   * Aggregate functions in OVER clause</a>. */
+  @Test public void testWindowFunctionOnAggregations() {
+    final HepProgram program = HepProgram.builder()
+        .addRuleInstance(ProjectToWindowRule.PROJECT)
+        .build();
+    final String sql = "SELECT\n"
+        + "  min(empno),\n"
+        + "  sum(sal),\n"
+        + "  sum(sum(sal))\n"
+        + "    over (partition by min(empno) order by sum(sal))\n"
+        + "from emp\n"
+        + "group by deptno";
+    checkPlanning(program, sql);
+  }
+
+  @Test public void testPushAggregateThroughJoin1() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
     final HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
-    final String sql = "select e.empno,d.deptno\n"
+    final String sql = "select e.job,d.name\n"
         + "from (select * from sales.emp where empno = 10) as e\n"
-        + "join sales.dept as d on e.empno = d.deptno\n"
-        + "group by e.empno,d.deptno";
+        + "join sales.dept as d on e.job = d.name\n"
+        + "group by e.job,d.name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
-  @Test public void testPushAggregateThroughJoin2() throws Exception {
+  @Test public void testPushAggregateThroughJoin2() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
     final HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
-    final String sql = "select e.empno,d.deptno\n"
+    final String sql = "select e.job,d.name\n"
         + "from (select * from sales.emp where empno = 10) as e\n"
-        + "join sales.dept as d on e.empno = d.deptno\n"
+        + "join sales.dept as d on e.job = d.name\n"
         + "and e.deptno + e.empno = d.deptno + 5\n"
-        + "group by e.empno,d.deptno";
+        + "group by e.job,d.name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
-  @Test public void testPushAggregateThroughJoin3() throws Exception {
+  @Test public void testPushAggregateThroughJoin3() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
@@ -2034,60 +3330,215 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkPlanning(tester, preProgram, new HepPlanner(program), sql, true);
   }
 
-  /** SUM is the easiest aggregate function to split. */
-  @Test public void testPushAggregateSumThroughJoin() throws Exception {
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1544">[CALCITE-1544]
+   * AggregateJoinTransposeRule fails to preserve row type</a>. */
+  @Test public void testPushAggregateThroughJoin4() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
     final HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
-    final String sql = "select e.empno,sum(sal)\n"
+    final String sql = "select e.deptno\n"
+        + "from sales.emp as e join sales.dept as d on e.deptno = d.deptno\n"
+        + "group by e.deptno";
+    sql(sql).withPre(preProgram).with(program).check();
+  }
+
+  @Test public void testPushAggregateThroughJoin5() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select e.deptno, d.deptno\n"
+        + "from sales.emp as e join sales.dept as d on e.deptno = d.deptno\n"
+        + "group by e.deptno, d.deptno";
+    sql(sql).withPre(preProgram).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2200">[CALCITE-2200]
+   * Infinite loop for JoinPushTransitivePredicatesRule</a>. */
+  @Test public void testJoinPushTransitivePredicatesRule() {
+    HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+        .addRuleInstance(FilterJoinRule.JOIN)
+        .addRuleInstance(JoinPushTransitivePredicatesRule.INSTANCE)
+        .build();
+
+    final HepProgram emptyProgram = new HepProgramBuilder().build();
+
+    final String sql = "select d.deptno from sales.emp d where d.deptno\n"
+        + "IN (select e.deptno from sales.emp e "
+        + "where e.deptno = d.deptno or e.deptno = 4)";
+    sql(sql).withPre(preProgram).with(emptyProgram).checkUnchanged();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2205">[CALCITE-2205]
+   * One more infinite loop for JoinPushTransitivePredicatesRule</a>. */
+  @Test public void testJoinPushTransitivePredicatesRule2() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+        .addRuleInstance(FilterJoinRule.JOIN)
+        .addRuleInstance(JoinPushTransitivePredicatesRule.INSTANCE)
+        .build();
+    final String sql = "select n1.SAL\n"
+        + "from EMPNULLABLES_20 n1\n"
+        + "where n1.SAL IN (\n"
+        + "  select n2.SAL\n"
+        + "  from EMPNULLABLES_20 n2\n"
+        + "  where n1.SAL = n2.SAL or n1.SAL = 4)";
+    sql(sql).withDecorrelation(true).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2275">[CALCITE-2275]
+   * JoinPushTransitivePredicatesRule wrongly pushes down NOT condition</a>. */
+  @Test public void testInferringPredicatesWithNotOperatorInJoinCondition() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+        .addRuleInstance(FilterJoinRule.JOIN)
+        .addRuleInstance(JoinPushTransitivePredicatesRule.INSTANCE)
+        .build();
+    final String sql = "select * from sales.emp d\n"
+        + "join sales.emp e on e.deptno = d.deptno and d.deptno not in (4, 6)";
+    sql(sql).withDecorrelation(true).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2195">[CALCITE-2195]
+   * AggregateJoinTransposeRule fails to aggregate over unique column</a>. */
+  @Test public void testPushAggregateThroughJoin6() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select sum(B.sal)\n"
+        + "from sales.emp as A\n"
+        + "join (select distinct sal from sales.emp) as B\n"
+        + "on A.sal=B.sal\n";
+    sql(sql).withPre(preProgram).with(program).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2278">[CALCITE-2278]
+   * AggregateJoinTransposeRule fails to split aggregate call if input contains
+   * an aggregate call and has distinct rows</a>. */
+  @Test public void testPushAggregateThroughJoinWithUniqueInput() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select A.job, B.mgr, A.deptno,\n"
+        + "max(B.hiredate1) as hiredate1, sum(B.comm1) as comm1\n"
+        + "from sales.emp as A\n"
+        + "join (select mgr, sal, max(hiredate) as hiredate1,\n"
+        + "    sum(comm) as comm1 from sales.emp group by mgr, sal) as B\n"
+        + "on A.sal=B.sal\n"
+        + "group by A.job, B.mgr, A.deptno";
+    checkPlanning(tester, preProgram, new HepPlanner(program), sql);
+  }
+
+  /** SUM is the easiest aggregate function to split. */
+  @Test public void testPushAggregateSumThroughJoin() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select e.job,sum(sal)\n"
         + "from (select * from sales.emp where empno = 10) as e\n"
-        + "join sales.dept as d on e.empno = d.deptno\n"
-        + "group by e.empno,d.deptno";
+        + "join sales.dept as d on e.job = d.name\n"
+        + "group by e.job,d.name";
+    checkPlanning(tester, preProgram, new HepPlanner(program), sql);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2105">[CALCITE-2105]
+   * AggregateJoinTransposeRule incorrectly makes a SUM NOT NULL when Aggregate
+   * has no group keys</a>. */
+  @Test public void testPushAggregateSumWithoutGroupKeyThroughJoin() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select sum(sal)\n"
+        + "from (select * from sales.emp where empno = 10) as e\n"
+        + "join sales.dept as d on e.job = d.name";
+    checkPlanning(tester, preProgram, new HepPlanner(program), sql);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2108">[CALCITE-2108]
+   * AggregateJoinTransposeRule incorrectly splits a SUM0 call when Aggregate
+   * has no group keys</a>.
+   *
+   * <p>Similar to {@link #testPushAggregateSumThroughJoin()},
+   * but also uses {@link AggregateReduceFunctionsRule}. */
+  @Test public void testPushAggregateSumThroughJoinAfterAggregateReduce() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(AggregateReduceFunctionsRule.INSTANCE)
+        .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
+        .build();
+    final String sql = "select sum(sal)\n"
+        + "from (select * from sales.emp where empno = 10) as e\n"
+        + "join sales.dept as d on e.job = d.name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
   /** Push a variety of aggregate functions. */
-  @Test public void testPushAggregateFunctionsThroughJoin() throws Exception {
+  @Test public void testPushAggregateFunctionsThroughJoin() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
     final HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
-    final String sql = "select e.empno,\n"
+    final String sql = "select e.job,\n"
         + "  min(sal) as min_sal, min(e.deptno) as min_deptno,\n"
         + "  sum(sal) + 1 as sum_sal_plus, max(sal) as max_sal,\n"
         + "  sum(sal) as sum_sal_2, count(sal) as count_sal,\n"
         + "  count(mgr) as count_mgr\n"
         + "from sales.emp as e\n"
-        + "join sales.dept as d on e.empno = d.deptno\n"
-        + "group by e.empno,d.deptno";
+        + "join sales.dept as d on e.job = d.name\n"
+        + "group by e.job,d.name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
   /** Push a aggregate functions into a relation that is unique on the join
    * key. */
-  @Test public void testPushAggregateThroughJoinDistinct() throws Exception {
+  @Test public void testPushAggregateThroughJoinDistinct() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
     final HepProgram program = new HepProgramBuilder()
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
-    final String sql = "select d.deptno,\n"
+    final String sql = "select d.name,\n"
         + "  sum(sal) as sum_sal, count(*) as c\n"
         + "from sales.emp as e\n"
-        + "join (select distinct deptno from sales.dept) as d\n"
-        + "  on e.empno = d.deptno\n"
-        + "group by d.deptno";
+        + "join (select distinct name from sales.dept) as d\n"
+        + "  on e.job = d.name\n"
+        + "group by d.name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
   /** Push count(*) through join, no GROUP BY. */
-  @Test public void testPushAggregateSumNoGroup() throws Exception {
+  @Test public void testPushAggregateSumNoGroup() {
     final HepProgram preProgram = new HepProgramBuilder()
         .addRuleInstance(AggregateProjectMergeRule.INSTANCE)
         .build();
@@ -2095,11 +3546,11 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(AggregateJoinTransposeRule.EXTENDED)
         .build();
     final String sql =
-        "select count(*) from sales.emp join sales.dept using (deptno)";
+        "select count(*) from sales.emp join sales.dept on job = name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
-  @Test public void testSwapOuterJoin() throws Exception {
+  @Test public void testSwapOuterJoin() {
     final HepProgram program = new HepProgramBuilder()
         .addMatchLimit(1)
         .addRuleInstance(JoinCommuteRule.SWAP_OUTER)
@@ -2128,8 +3579,8 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(SortJoinTransposeRule.INSTANCE)
         .build();
     final String sql = "select * from sales.emp e left join (\n"
-            + "select * from sales.dept d) using (deptno)\n"
-            + "order by sal limit 10";
+        + "  select * from sales.dept d) d on e.deptno = d.deptno\n"
+        + "order by sal limit 10";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
@@ -2141,8 +3592,8 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(SortJoinTransposeRule.INSTANCE)
         .build();
     final String sql = "select * from sales.emp e right join (\n"
-            + "select * from sales.dept d) using (deptno)\n"
-            + "order by name";
+        + "  select * from sales.dept d) d on e.deptno = d.deptno\n"
+        + "order by name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
   }
 
@@ -2154,8 +3605,8 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(SortJoinTransposeRule.INSTANCE)
         .build();
     // This one cannot be pushed down
-    final String sql = "select * from sales.emp left join (\n"
-        + "select * from sales.dept) using (deptno)\n"
+    final String sql = "select * from sales.emp e left join (\n"
+        + "  select * from sales.dept) d on e.deptno = d.deptno\n"
         + "order by sal, name limit 10";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql, true);
   }
@@ -2165,11 +3616,12 @@ public class RelOptRulesTest extends RelOptTestBase {
    * Wrong collation trait in SortJoinTransposeRule for right joins</a>. */
   @Test public void testSortJoinTranspose4() {
     // Create a customized test with RelCollation trait in the test cluster.
-    Tester tester = new TesterImpl(getDiffRepos(), true, true, false, null, null) {
+    Tester tester = new TesterImpl(getDiffRepos(), true, true, false, false,
+        null, null) {
       @Override public RelOptPlanner createPlanner() {
-        return new MockRelOptPlanner() {
+        return new MockRelOptPlanner(Contexts.empty()) {
           @Override public List<RelTraitDef> getRelTraitDefs() {
-            return ImmutableList.<RelTraitDef>of(RelCollationTraitDef.INSTANCE);
+            return ImmutableList.of(RelCollationTraitDef.INSTANCE);
           }
           @Override public RelTraitSet emptyTraitSet() {
             return RelTraitSet.createEmpty().plus(
@@ -2186,9 +3638,105 @@ public class RelOptRulesTest extends RelOptTestBase {
         .addRuleInstance(SortJoinTransposeRule.INSTANCE)
         .build();
     final String sql = "select * from sales.emp e right join (\n"
-        + "select * from sales.dept d) using (deptno)\n"
+        + "  select * from sales.dept d) d on e.deptno = d.deptno\n"
         + "order by name";
     checkPlanning(tester, preProgram, new HepPlanner(program), sql);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1498">[CALCITE-1498]
+   * Avoid LIMIT with trivial ORDER BY being pushed through JOIN endlessly</a>. */
+  @Test public void testSortJoinTranspose5() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .addRuleInstance(SortJoinTransposeRule.INSTANCE)
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortJoinTransposeRule.INSTANCE)
+        .build();
+    // SortJoinTransposeRule should not be fired again.
+    final String sql = "select * from sales.emp e right join (\n"
+        + "  select * from sales.dept d) d on e.deptno = d.deptno\n"
+        + "limit 10";
+    checkPlanning(tester, preProgram, new HepPlanner(program), sql, true);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1507">[CALCITE-1507]
+   * OFFSET cannot be pushed through a JOIN if the non-preserved side of outer
+   * join is not count-preserving</a>. */
+  @Test public void testSortJoinTranspose6() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortJoinTransposeRule.INSTANCE)
+        .build();
+    // This one can be pushed down even if it has an OFFSET, since the dept
+    // table is count-preserving against the join condition.
+    final String sql = "select d.deptno, empno from sales.dept d\n"
+        + "right join sales.emp e using (deptno) limit 10 offset 2";
+    sql(sql)
+        .withPre(preProgram)
+        .with(program)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1507">[CALCITE-1507]
+   * OFFSET cannot be pushed through a JOIN if the non-preserved side of outer
+   * join is not count-preserving</a>. */
+  @Test public void testSortJoinTranspose7() {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortJoinTransposeRule.INSTANCE)
+        .build();
+    // This one cannot be pushed down
+    final String sql = "select d.deptno, empno from sales.dept d\n"
+        + "left join sales.emp e using (deptno) order by d.deptno offset 1";
+    sql(sql)
+        .withPre(preProgram)
+        .with(program)
+        .checkUnchanged();
+  }
+
+  @Test public void testSortProjectTranspose1() {
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    // This one can be pushed down
+    final String sql = "select d.deptno from sales.dept d\n"
+        + "order by cast(d.deptno as integer) offset 1";
+    sql(sql)
+        .with(program)
+        .check();
+  }
+
+  @Test public void testSortProjectTranspose2() {
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    // This one can be pushed down
+    final String sql = "select d.deptno from sales.dept d\n"
+        + "order by cast(d.deptno as double) offset 1";
+    sql(sql)
+        .with(program)
+        .check();
+  }
+
+  @Test public void testSortProjectTranspose3() {
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SortProjectTransposeRule.INSTANCE)
+        .build();
+    // This one cannot be pushed down
+    final String sql = "select d.deptno from sales.dept d\n"
+        + "order by cast(d.deptno as varchar(10)) offset 1";
+    sql(sql)
+        .with(program)
+        .checkUnchanged();
   }
 
   /** Test case for
@@ -2258,11 +3806,54 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkSubQuery(sql).check();
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1493">[CALCITE-1493]
+   * Wrong plan for NOT IN correlated queries</a>. */
+  @Test public void testWhereNotInCorrelated() {
+    final String sql = "select sal from emp\n"
+        + "where empno NOT IN (\n"
+        + "  select deptno from dept\n"
+        + "  where emp.job = dept.name)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testWhereNotInCorrelated2() {
+    final String sql = "select * from emp e1\n"
+        + "  where e1.empno NOT IN\n"
+        + "   (select empno from (select ename, empno, sal as r from emp) e2\n"
+        + "    where r > 2 and e1.ename= e2.ename)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testAll() {
+    final String sql = "select * from emp e1\n"
+        + "  where e1.empno > ALL (select deptno from dept)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testSome() {
+    final String sql = "select * from emp e1\n"
+        + "  where e1.empno > SOME (select deptno from dept)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1546">[CALCITE-1546]
+   * Sub-queries connected by OR</a>. */
+  @Test public void testWhereOrSubQuery() {
+    final String sql = "select * from emp\n"
+        + "where sal = 4\n"
+        + "or empno NOT IN (select deptno from dept)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
   @Test public void testExpandProjectIn() throws Exception {
     final String sql = "select empno,\n"
         + "  deptno in (select deptno from sales.emp where empno < 20) as d\n"
         + "from sales.emp";
-    checkSubQuery(sql).check();
+    checkSubQuery(sql)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   @Test public void testExpandProjectInNullable() throws Exception {
@@ -2272,21 +3863,27 @@ public class RelOptRulesTest extends RelOptTestBase {
         + "select empno,\n"
         + "  deptno in (select deptno from e2 where empno < 20) as d\n"
         + "from e2";
-    checkSubQuery(sql).check();
+    checkSubQuery(sql)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   @Test public void testExpandProjectInComposite() throws Exception {
     final String sql = "select empno, (empno, deptno) in (\n"
         + "    select empno, deptno from sales.emp where empno < 20) as d\n"
         + "from sales.emp";
-    checkSubQuery(sql).check();
+    checkSubQuery(sql)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   @Test public void testExpandProjectExists() throws Exception {
     final String sql = "select empno,\n"
         + "  exists (select deptno from sales.emp where empno < 20) as d\n"
         + "from sales.emp";
-    checkSubQuery(sql).check();
+    checkSubQuery(sql)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   @Test public void testExpandFilterScalar() throws Exception {
@@ -2326,7 +3923,9 @@ public class RelOptRulesTest extends RelOptTestBase {
         + "   when false then 20\n"
         + "   else 30\n"
         + "   end";
-    checkSubQuery(sql).check();
+    checkSubQuery(sql)
+        .withProperty(Hook.REL_BUILDER_SIMPLIFY, false)
+        .check();
   }
 
   /** An EXISTS filter that can be converted into true/false. */
@@ -2363,6 +3962,7 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkSubQuery(sql).check();
   }
 
+  @Ignore("[CALCITE-1045]")
   @Test public void testExpandJoinIn() throws Exception {
     final String sql = "select empno\n"
         + "from sales.emp left join sales.dept\n"
@@ -2370,6 +3970,7 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkSubQuery(sql).check();
   }
 
+  @Ignore("[CALCITE-1045]")
   @Test public void testExpandJoinInComposite() throws Exception {
     final String sql = "select empno\n"
         + "from sales.emp left join sales.dept\n"
@@ -2385,12 +3986,99 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkSubQuery(sql).check();
   }
 
-  @Test public void testWhereInCorrelated() {
+  @Test public void testDecorrelateExists() throws Exception {
+    final String sql = "select * from sales.emp\n"
+        + "where EXISTS (\n"
+        + "  select * from emp e where emp.deptno = e.deptno)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1511">[CALCITE-1511]
+   * AssertionError while decorrelating query with two EXISTS
+   * sub-queries</a>. */
+  @Test public void testDecorrelateTwoExists() throws Exception {
+    final String sql = "select * from sales.emp\n"
+        + "where EXISTS (\n"
+        + "  select * from emp e where emp.deptno = e.deptno)\n"
+        + "AND NOT EXISTS (\n"
+        + "  select * from emp ee where ee.job = emp.job AND ee.sal=34)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2028">[CALCITE-2028]
+   * Un-correlated IN sub-query should be converted into a Join,
+   * rather than a Correlate without correlation variables </a>. */
+  @Test public void testDecorrelateUncorrelatedInAndCorrelatedExists() throws Exception {
+    final String sql = "select * from sales.emp\n"
+        + "WHERE job in (\n"
+        + "  select job from emp ee where ee.sal=34)"
+        + "AND EXISTS (\n"
+        + "  select * from emp e where emp.deptno = e.deptno)\n";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1537">[CALCITE-1537]
+   * Unnecessary project expression in multi-sub-query plan</a>. */
+  @Test public void testDecorrelateTwoIn() throws Exception {
+    final String sql = "select sal\n"
+        + "from sales.emp\n"
+        + "where empno IN (\n"
+        + "  select deptno from dept where emp.job = dept.name)\n"
+        + "AND empno IN (\n"
+        + "  select empno from emp e where emp.ename = e.ename)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1045">[CALCITE-1045]
+   * Decorrelate sub-queries in Project and Join</a>, with the added
+   * complication that there are two sub-queries. */
+  @Ignore("[CALCITE-1045]")
+  @Test public void testDecorrelateTwoScalar() throws Exception {
+    final String sql = "select deptno,\n"
+        + "  (select min(1) from emp where empno > d.deptno) as i0,\n"
+        + "  (select min(0) from emp\n"
+        + "    where deptno = d.deptno and ename = 'SMITH') as i1\n"
+        + "from dept as d";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testWhereInJoinCorrelated() {
     final String sql = "select empno from emp as e\n"
         + "join dept as d using (deptno)\n"
         + "where e.sal in (\n"
         + "  select e2.sal from emp as e2 where e2.deptno > e.deptno)";
     checkSubQuery(sql).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1494">[CALCITE-1494]
+   * Inefficient plan for correlated sub-queries</a>. In "planAfter", there
+   * must be only one scan each of emp and dept. We don't need a separate
+   * value-generator for emp.job. */
+  @Test public void testWhereInCorrelated() {
+    final String sql = "select sal from emp where empno IN (\n"
+        + "  select deptno from dept where emp.job = dept.name)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testWhereExpressionInCorrelated() {
+    final String sql = "select ename from (\n"
+        + "  select ename, deptno, sal + 1 as salPlus from emp) as e\n"
+        + "where deptno in (\n"
+        + "  select deptno from emp where sal + 1 = e.salPlus)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
+  }
+
+  @Test public void testWhereExpressionInCorrelated2() {
+    final String sql = "select name from (\n"
+        + "  select name, deptno, deptno - 10 as deptnoMinus from dept) as d\n"
+        + "where deptno in (\n"
+        + "  select deptno from emp where sal + 1 = d.deptnoMinus)";
+    checkSubQuery(sql).withLateDecorrelation(true).check();
   }
 
   @Test public void testExpandWhereComparisonCorrelated() throws Exception {
@@ -2401,22 +4089,75 @@ public class RelOptRulesTest extends RelOptTestBase {
     checkSubQuery(sql).check();
   }
 
+  @Test public void testCustomColumnResolvingInNonCorrelatedSubQuery() {
+    final String sql = "select *\n"
+        + "from struct.t t1\n"
+        + "where c0 in (\n"
+        + "  select f1.c0 from struct.t t2)";
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SubQueryRemoveRule.PROJECT)
+        .addRuleInstance(SubQueryRemoveRule.FILTER)
+        .addRuleInstance(SubQueryRemoveRule.JOIN)
+        .build();
+    sql(sql)
+        .withTrim(true)
+        .expand(false)
+        .with(program)
+        .check();
+  }
+
+  @Test public void testCustomColumnResolvingInCorrelatedSubQuery() {
+    final String sql = "select *\n"
+        + "from struct.t t1\n"
+        + "where c0 = (\n"
+        + "  select max(f1.c0) from struct.t t2 where t1.k0 = t2.k0)";
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SubQueryRemoveRule.PROJECT)
+        .addRuleInstance(SubQueryRemoveRule.FILTER)
+        .addRuleInstance(SubQueryRemoveRule.JOIN)
+        .build();
+    sql(sql)
+        .withTrim(true)
+        .expand(false)
+        .with(program)
+        .check();
+  }
+
+  @Test public void testCustomColumnResolvingInCorrelatedSubQuery2() {
+    final String sql = "select *\n"
+        + "from struct.t t1\n"
+        + "where c0 in (\n"
+        + "  select f1.c0 from struct.t t2 where t1.c2 = t2.c2)";
+    final HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(SubQueryRemoveRule.PROJECT)
+        .addRuleInstance(SubQueryRemoveRule.FILTER)
+        .addRuleInstance(SubQueryRemoveRule.JOIN)
+        .build();
+    sql(sql)
+        .withTrim(true)
+        .expand(false)
+        .with(program)
+        .check();
+  }
+
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-434">[CALCITE-434]
    * Converting predicates on date dimension columns into date ranges</a>,
    * specifically a rule that converts {@code EXTRACT(YEAR FROM ...) = constant}
    * to a range. */
-  @Test public void testExtractYearToRange() throws Exception {
+  @Test public void testExtractYearToRange() {
     final String sql = "select *\n"
         + "from sales.emp_b as e\n"
         + "where extract(year from birthdate) = 2014";
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(DateRangeRules.FILTER_INSTANCE)
         .build();
-    sql(sql).with(program).check();
+    final Context context =
+        Contexts.of(new CalciteConnectionConfigImpl(new Properties()));
+    sql(sql).with(program).withContext(context).check();
   }
 
-  @Test public void testExtractYearMonthToRange() throws Exception {
+  @Test public void testExtractYearMonthToRange() {
     final String sql = "select *\n"
         + "from sales.emp_b as e\n"
         + "where extract(year from birthdate) = 2014"
@@ -2424,19 +4165,64 @@ public class RelOptRulesTest extends RelOptTestBase {
     HepProgram program = new HepProgramBuilder()
         .addRuleInstance(DateRangeRules.FILTER_INSTANCE)
         .build();
-    sql(sql).with(program).check();
+    final Context context =
+        Contexts.of(new CalciteConnectionConfigImpl(new Properties()));
+    sql(sql).with(program).withContext(context).check();
   }
 
-  @Test public void testDistinctNonDistinctAggregates() {
-    final String sql = "select emp.empno, count(*), avg(distinct dept.deptno)\n"
-        + " from sales.emp emp inner join sales.dept dept\n"
-        + " on emp.deptno = dept.deptno\n"
-        + " group by emp.empno";
-    final HepProgram program = HepProgram.builder()
-        .addRuleInstance(AggregateExpandDistinctAggregatesRule.JOIN)
+  @Test public void testFilterRemoveIsNotDistinctFromRule() {
+    final DiffRepository diffRepos = getDiffRepos();
+    final RelBuilder builder = RelBuilder.create(RelBuilderTest.config().build());
+    RelNode root = builder
+        .scan("EMP")
+        .filter(
+            builder.call(SqlStdOperatorTable.IS_NOT_DISTINCT_FROM,
+            builder.field("DEPTNO"), builder.literal(20)))
         .build();
-    sql(sql).with(program).check();
+
+    HepProgram preProgram = new HepProgramBuilder().build();
+    HepPlanner prePlanner = new HepPlanner(preProgram);
+    prePlanner.setRoot(root);
+    final RelNode relBefore = prePlanner.findBestExp();
+    final String planBefore = NL + RelOptUtil.toString(relBefore);
+    diffRepos.assertEquals("planBefore", "${planBefore}", planBefore);
+
+    HepProgram hepProgram = new HepProgramBuilder()
+        .addRuleInstance(FilterRemoveIsNotDistinctFromRule.INSTANCE)
+        .build();
+
+    HepPlanner hepPlanner = new HepPlanner(hepProgram);
+    hepPlanner.setRoot(root);
+    final RelNode relAfter = hepPlanner.findBestExp();
+    final String planAfter = NL + RelOptUtil.toString(relAfter);
+    diffRepos.assertEquals("planAfter", "${planAfter}", planAfter);
   }
+
+  @Test public void testOversimplifiedCaseStatement() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .build();
+
+    String sql = "select * from emp "
+        + "where MGR > 0 and "
+        + "case when MGR > 0 then deptno / MGR else null end > 1";
+    checkPlanning(program, sql);
+  }
+
+  /** Test case for
+  * <a href="https://issues.apache.org/jira/browse/CALCITE-2726">[CALCITE-2726]
+  * ReduceExpressionRule may oversimplify filter conditions containing nulls</a>.
+  */
+  @Test public void testNoOversimplificationBelowIsNull() {
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(ReduceExpressionsRule.FILTER_INSTANCE)
+        .build();
+
+    String sql =
+        "select * from emp where ( (empno=1 and mgr=1) or (empno=null and mgr=1) ) is null";
+    checkPlanning(program, sql);
+  }
+
 }
 
 // End RelOptRulesTest.java

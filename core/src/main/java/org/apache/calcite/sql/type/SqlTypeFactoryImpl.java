@@ -41,7 +41,6 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
 
   //~ Methods ----------------------------------------------------------------
 
-  // implement RelDataTypeFactory
   public RelDataType createSqlType(SqlTypeName typeName) {
     if (typeName.allowsPrec()) {
       return createSqlType(typeName, typeSystem.getDefaultPrecision(typeName));
@@ -51,10 +50,13 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
   public RelDataType createSqlType(
       SqlTypeName typeName,
       int precision) {
+    final int maxPrecision = typeSystem.getMaxPrecision(typeName);
+    if (maxPrecision >= 0 && precision > maxPrecision) {
+      precision = maxPrecision;
+    }
     if (typeName.allowsScale()) {
       return createSqlType(typeName, precision, typeName.getDefaultScale());
     }
@@ -66,7 +68,6 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
   public RelDataType createSqlType(
       SqlTypeName typeName,
       int precision,
@@ -74,13 +75,20 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     assertBasic(typeName);
     assert (precision >= 0)
         || (precision == RelDataType.PRECISION_NOT_SPECIFIED);
+    final int maxPrecision = typeSystem.getMaxPrecision(typeName);
+    if (maxPrecision >= 0 && precision > maxPrecision) {
+      precision = maxPrecision;
+    }
     RelDataType newType =
         new BasicSqlType(typeSystem, typeName, precision, scale);
     newType = SqlTypeUtil.addCharsetAndCollation(newType, this);
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
+  public RelDataType createUnknownType() {
+    return canonize(new UnknownSqlType(this));
+  }
+
   public RelDataType createMultisetType(
       RelDataType type,
       long maxCardinality) {
@@ -104,7 +112,6 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
   public RelDataType createSqlIntervalType(
       SqlIntervalQualifier intervalQualifier) {
     RelDataType newType =
@@ -112,7 +119,6 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
   public RelDataType createTypeWithCharsetAndCollation(
       RelDataType type,
       Charset charset,
@@ -138,8 +144,7 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
-  // implement RelDataTypeFactory
-  public RelDataType leastRestrictive(List<RelDataType> types) {
+  @Override public RelDataType leastRestrictive(List<RelDataType> types) {
     assert types != null;
     assert types.size() >= 1;
 
@@ -184,14 +189,12 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     }
   }
 
-  // implement RelDataTypeFactory
-  public RelDataType createTypeWithNullability(
+  @Override public RelDataType createTypeWithNullability(
       final RelDataType type,
       final boolean nullable) {
-    RelDataType newType;
+    final RelDataType newType;
     if (type instanceof BasicSqlType) {
-      BasicSqlType sqlType = (BasicSqlType) type;
-      newType = sqlType.createWithNullability(nullable);
+      newType = ((BasicSqlType) type).createWithNullability(nullable);
     } else if (type instanceof MapSqlType) {
       newType = copyMapType(type, nullable);
     } else if (type instanceof ArraySqlType) {
@@ -289,9 +292,8 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
         SqlCollation collation2 = resultType.getCollation();
 
         // TODO:  refine collation combination rules
-        int precision =
-            Math.max(
-                resultType.getPrecision(),
+        final int precision =
+            SqlTypeUtil.maxPrecision(resultType.getPrecision(),
                 type.getPrecision());
 
         // If either type is LOB, then result is LOB with no precision.
@@ -311,7 +313,7 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
 
           SqlTypeName newTypeName = type.getSqlTypeName();
 
-          if (shouldRaggedFixedLengthValueUnionBeVariable()) {
+          if (typeSystem.shouldConvertRaggedUnionTypesToVarying()) {
             if (resultType.getPrecision() != type.getPrecision()) {
               if (newTypeName == SqlTypeName.CHAR) {
                 newTypeName = SqlTypeName.VARCHAR;
@@ -485,20 +487,6 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return resultType;
   }
 
-  /**
-   * Controls behavior discussed <a
-   * href="http://sf.net/mailarchive/message.php?msg_id=13337379">here</a>.
-   *
-   * @return false (the default) to provide strict SQL:2003 behavior; true to
-   * provide pragmatic behavior
-   * @sql.2003 Part 2 Section 9.3 Syntax Rule 3.a.iii.3
-   */
-  protected boolean shouldRaggedFixedLengthValueUnionBeVariable() {
-    // TODO jvs 30-Nov-2006:  implement SQL-Flagger support
-    // for warning about non-standard usage
-    return false;
-  }
-
   private RelDataType createDoublePrecisionType() {
     return createSqlType(SqlTypeName.DOUBLE);
   }
@@ -553,6 +541,19 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
               false));
     }
     return type;
+  }
+
+  /** The unknown type. Similar to the NULL type, but is only equal to
+   * itself. */
+  private static class UnknownSqlType extends BasicSqlType {
+    UnknownSqlType(RelDataTypeFactory typeFactory) {
+      super(typeFactory.getTypeSystem(), SqlTypeName.NULL);
+    }
+
+    @Override protected void generateTypeString(StringBuilder sb,
+        boolean withDetail) {
+      sb.append("UNKNOWN");
+    }
   }
 }
 

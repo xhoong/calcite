@@ -17,6 +17,10 @@
 package org.apache.calcite.util;
 
 import org.apache.calcite.DataContext;
+import org.apache.calcite.adapter.enumerable.AggregateLambdaFactory;
+import org.apache.calcite.adapter.enumerable.OrderedAggregateLambdaFactory;
+import org.apache.calcite.adapter.enumerable.SequencedAdderAggregateLambdaFactory;
+import org.apache.calcite.adapter.enumerable.SourceSorter;
 import org.apache.calcite.adapter.java.ReflectiveSchema;
 import org.apache.calcite.adapter.jdbc.JdbcSchema;
 import org.apache.calcite.avatica.util.DateTimeUtils;
@@ -43,6 +47,7 @@ import org.apache.calcite.linq4j.function.Predicate2;
 import org.apache.calcite.linq4j.tree.FunctionExpression;
 import org.apache.calcite.linq4j.tree.Primitive;
 import org.apache.calcite.linq4j.tree.Types;
+import org.apache.calcite.rel.metadata.BuiltInMetadata.AllPredicates;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Collation;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.ColumnOrigin;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.ColumnUniqueness;
@@ -50,8 +55,11 @@ import org.apache.calcite.rel.metadata.BuiltInMetadata.CumulativeCost;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.DistinctRowCount;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Distribution;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.ExplainVisibility;
+import org.apache.calcite.rel.metadata.BuiltInMetadata.ExpressionLineage;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.MaxRowCount;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Memory;
+import org.apache.calcite.rel.metadata.BuiltInMetadata.MinRowCount;
+import org.apache.calcite.rel.metadata.BuiltInMetadata.NodeTypes;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.NonCumulativeCost;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Parallelism;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.PercentageOriginalRows;
@@ -60,6 +68,7 @@ import org.apache.calcite.rel.metadata.BuiltInMetadata.Predicates;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.RowCount;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Selectivity;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Size;
+import org.apache.calcite.rel.metadata.BuiltInMetadata.TableReferences;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.UniqueKeys;
 import org.apache.calcite.rel.metadata.Metadata;
 import org.apache.calcite.rex.RexNode;
@@ -68,6 +77,7 @@ import org.apache.calcite.runtime.BinarySearch;
 import org.apache.calcite.runtime.Bindable;
 import org.apache.calcite.runtime.Enumerables;
 import org.apache.calcite.runtime.FlatLists;
+import org.apache.calcite.runtime.RandomFunction;
 import org.apache.calcite.runtime.ResultSetEnumerable;
 import org.apache.calcite.runtime.SortedMultiMap;
 import org.apache.calcite.runtime.SqlFunctions;
@@ -82,6 +92,10 @@ import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Schemas;
 import org.apache.calcite.sql.SqlExplainLevel;
+import org.apache.calcite.sql.SqlJsonConstructorNullClause;
+import org.apache.calcite.sql.SqlJsonQueryEmptyOrErrorBehavior;
+import org.apache.calcite.sql.SqlJsonQueryWrapperBehavior;
+import org.apache.calcite.sql.SqlJsonValueEmptyOrErrorBehavior;
 
 import com.google.common.collect.ImmutableMap;
 
@@ -101,7 +115,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TimeZone;
-
 import javax.sql.DataSource;
 
 /**
@@ -135,6 +148,11 @@ public enum BuiltInMethod {
   ROW_AS_COPY(Row.class, "asCopy", Object[].class),
   RESULT_SET_ENUMERABLE_OF(ResultSetEnumerable.class, "of", DataSource.class,
       String.class, Function1.class),
+  RESULT_SET_ENUMERABLE_OF_PREPARED(ResultSetEnumerable.class, "of",
+      DataSource.class, String.class, Function1.class,
+      ResultSetEnumerable.PreparedStatementEnricher.class),
+  CREATE_ENRICHER(ResultSetEnumerable.class, "createEnricher", Integer[].class,
+      DataContext.class),
   JOIN(ExtendedEnumerable.class, "join", Enumerable.class, Function1.class,
       Function1.class, Function2.class),
   MERGE_JOIN(EnumerableDefaults.class, "mergeJoin", Enumerable.class,
@@ -172,6 +190,7 @@ public enum BuiltInMethod {
   SKIP(ExtendedEnumerable.class, "skip", int.class),
   TAKE(ExtendedEnumerable.class, "take", int.class),
   SINGLETON_ENUMERABLE(Linq4j.class, "singletonEnumerable", Object.class),
+  EMPTY_ENUMERABLE(Linq4j.class, "emptyEnumerable"),
   NULLS_COMPARATOR(Functions.class, "nullsComparator", boolean.class,
       boolean.class),
   ARRAY_COMPARER(Functions.class, "arrayComparer"),
@@ -220,6 +239,7 @@ public enum BuiltInMethod {
   MAP_GET(Map.class, "get", Object.class),
   MAP_PUT(Map.class, "put", Object.class, Object.class),
   COLLECTION_ADD(Collection.class, "add", Object.class),
+  COLLECTION_ADDALL(Collection.class, "addAll", Collection.class),
   LIST_GET(List.class, "get", int.class),
   ITERATOR_HAS_NEXT(Iterator.class, "hasNext"),
   ITERATOR_NEXT(Iterator.class, "next"),
@@ -243,6 +263,33 @@ public enum BuiltInMethod {
   ANY_ITEM(SqlFunctions.class, "itemOptional", Object.class, Object.class),
   UPPER(SqlFunctions.class, "upper", String.class),
   LOWER(SqlFunctions.class, "lower", String.class),
+  JSONIZE(SqlFunctions.class, "jsonize", Object.class),
+  JSON_VALUE_EXPRESSION(SqlFunctions.class, "jsonValueExpression",
+      String.class),
+  JSON_STRUCTURED_VALUE_EXPRESSION(SqlFunctions.class,
+      "jsonStructuredValueExpression", Object.class),
+  JSON_API_COMMON_SYNTAX(SqlFunctions.class, "jsonApiCommonSyntax",
+      Object.class, String.class),
+  JSON_EXISTS(SqlFunctions.class, "jsonExists", Object.class),
+  JSON_VALUE_ANY(SqlFunctions.class, "jsonValueAny", Object.class,
+      SqlJsonValueEmptyOrErrorBehavior.class, Object.class,
+      SqlJsonValueEmptyOrErrorBehavior.class, Object.class),
+  JSON_QUERY(SqlFunctions.class, "jsonQuery", Object.class,
+      SqlJsonQueryWrapperBehavior.class,
+      SqlJsonQueryEmptyOrErrorBehavior.class,
+      SqlJsonQueryEmptyOrErrorBehavior.class),
+  JSON_OBJECT(SqlFunctions.class, "jsonObject",
+      SqlJsonConstructorNullClause.class),
+  JSON_OBJECTAGG_ADD(SqlFunctions.class, "jsonObjectAggAdd", Map.class,
+      String.class, Object.class, SqlJsonConstructorNullClause.class),
+  JSON_ARRAY(SqlFunctions.class, "jsonArray",
+      SqlJsonConstructorNullClause.class),
+  JSON_ARRAYAGG_ADD(SqlFunctions.class, "jsonArrayAggAdd",
+      List.class, Object.class, SqlJsonConstructorNullClause.class),
+  IS_JSON_VALUE(SqlFunctions.class, "isJsonValue", String.class),
+  IS_JSON_OBJECT(SqlFunctions.class, "isJsonObject", String.class),
+  IS_JSON_ARRAY(SqlFunctions.class, "isJsonArray", String.class),
+  IS_JSON_SCALAR(SqlFunctions.class, "isJsonScalar", String.class),
   INITCAP(SqlFunctions.class, "initcap", String.class),
   SUBSTRING(SqlFunctions.class, "substring", String.class, int.class,
       int.class),
@@ -251,6 +298,7 @@ public enum BuiltInMethod {
   FLOOR_DIV(DateTimeUtils.class, "floorDiv", long.class, long.class),
   FLOOR_MOD(DateTimeUtils.class, "floorMod", long.class, long.class),
   ADD_MONTHS(SqlFunctions.class, "addMonths", long.class, int.class),
+  ADD_MONTHS_INT(SqlFunctions.class, "addMonths", int.class, int.class),
   SUBTRACT_MONTHS(SqlFunctions.class, "subtractMonths", long.class,
       long.class),
   FLOOR(SqlFunctions.class, "floor", int.class, int.class),
@@ -259,9 +307,16 @@ public enum BuiltInMethod {
   OVERLAY3(SqlFunctions.class, "overlay", String.class, String.class, int.class,
       int.class),
   POSITION(SqlFunctions.class, "position", String.class, String.class),
+  RAND(RandomFunction.class, "rand"),
+  RAND_SEED(RandomFunction.class, "randSeed", int.class),
+  RAND_INTEGER(RandomFunction.class, "randInteger", int.class),
+  RAND_INTEGER_SEED(RandomFunction.class, "randIntegerSeed", int.class,
+      int.class),
   TRUNCATE(SqlFunctions.class, "truncate", String.class, int.class),
   TRUNCATE_OR_PAD(SqlFunctions.class, "truncateOrPad", String.class, int.class),
   TRIM(SqlFunctions.class, "trim", boolean.class, boolean.class, String.class,
+      String.class, boolean.class),
+  REPLACE(SqlFunctions.class, "replace", String.class, String.class,
       String.class),
   TRANSLATE3(SqlFunctions.class, "translate3", String.class, String.class, String.class),
   LTRIM(SqlFunctions.class, "ltrim", String.class),
@@ -282,8 +337,33 @@ public enum BuiltInMethod {
   INTERNAL_TO_TIMESTAMP(SqlFunctions.class, "internalToTimestamp", long.class),
   STRING_TO_DATE(DateTimeUtils.class, "dateStringToUnixDate", String.class),
   STRING_TO_TIME(DateTimeUtils.class, "timeStringToUnixDate", String.class),
-  STRING_TO_TIMESTAMP(DateTimeUtils.class, "timestampStringToUnixDate",
+  STRING_TO_TIMESTAMP(DateTimeUtils.class, "timestampStringToUnixDate", String.class),
+  STRING_TO_TIME_WITH_LOCAL_TIME_ZONE(SqlFunctions.class, "toTimeWithLocalTimeZone",
       String.class),
+  TIME_STRING_TO_TIME_WITH_LOCAL_TIME_ZONE(SqlFunctions.class, "toTimeWithLocalTimeZone",
+      String.class, TimeZone.class),
+  STRING_TO_TIMESTAMP_WITH_LOCAL_TIME_ZONE(SqlFunctions.class, "toTimestampWithLocalTimeZone",
+      String.class),
+  TIMESTAMP_STRING_TO_TIMESTAMP_WITH_LOCAL_TIME_ZONE(SqlFunctions.class,
+      "toTimestampWithLocalTimeZone", String.class, TimeZone.class),
+  TIME_WITH_LOCAL_TIME_ZONE_TO_TIME(SqlFunctions.class, "timeWithLocalTimeZoneToTime",
+      int.class, TimeZone.class),
+  TIME_WITH_LOCAL_TIME_ZONE_TO_TIMESTAMP(SqlFunctions.class, "timeWithLocalTimeZoneToTimestamp",
+      String.class, int.class, TimeZone.class),
+  TIME_WITH_LOCAL_TIME_ZONE_TO_TIMESTAMP_WITH_LOCAL_TIME_ZONE(SqlFunctions.class,
+      "timeWithLocalTimeZoneToTimestampWithLocalTimeZone", String.class, int.class),
+  TIME_WITH_LOCAL_TIME_ZONE_TO_STRING(SqlFunctions.class, "timeWithLocalTimeZoneToString",
+      int.class, TimeZone.class),
+  TIMESTAMP_WITH_LOCAL_TIME_ZONE_TO_DATE(SqlFunctions.class, "timestampWithLocalTimeZoneToDate",
+      long.class, TimeZone.class),
+  TIMESTAMP_WITH_LOCAL_TIME_ZONE_TO_TIME(SqlFunctions.class, "timestampWithLocalTimeZoneToTime",
+      long.class, TimeZone.class),
+  TIMESTAMP_WITH_LOCAL_TIME_ZONE_TO_TIME_WITH_LOCAL_TIME_ZONE(SqlFunctions.class,
+      "timestampWithLocalTimeZoneToTimeWithLocalTimeZone", long.class),
+  TIMESTAMP_WITH_LOCAL_TIME_ZONE_TO_TIMESTAMP(SqlFunctions.class,
+      "timestampWithLocalTimeZoneToTimestamp", long.class, TimeZone.class),
+  TIMESTAMP_WITH_LOCAL_TIME_ZONE_TO_STRING(SqlFunctions.class,
+      "timestampWithLocalTimeZoneToString", long.class, TimeZone.class),
   UNIX_DATE_TO_STRING(DateTimeUtils.class, "unixDateToString", int.class),
   UNIX_TIME_TO_STRING(DateTimeUtils.class, "unixTimeToString", int.class),
   UNIX_TIMESTAMP_TO_STRING(DateTimeUtils.class, "unixTimestampToString",
@@ -307,6 +387,7 @@ public enum BuiltInMethod {
   CURRENT_DATE(SqlFunctions.class, "currentDate", DataContext.class),
   LOCAL_TIMESTAMP(SqlFunctions.class, "localTimestamp", DataContext.class),
   LOCAL_TIME(SqlFunctions.class, "localTime", DataContext.class),
+  TIME_ZONE(SqlFunctions.class, "timeZone", DataContext.class),
   BOOLEAN_TO_STRING(SqlFunctions.class, "toString", boolean.class),
   JDBC_ARRAY_TO_LIST(SqlFunctions.class, "arrayToList", java.sql.Array.class),
   OBJECT_TO_STRING(Object.class, "toString"),
@@ -336,6 +417,23 @@ public enum BuiltInMethod {
   SEQUENCE_NEXT_VALUE(SqlFunctions.class, "sequenceNextValue", String.class),
   SLICE(SqlFunctions.class, "slice", List.class),
   ELEMENT(SqlFunctions.class, "element", List.class),
+  MEMBER_OF(SqlFunctions.class, "memberOf", Object.class, Collection.class),
+  MULTISET_INTERSECT_DISTINCT(SqlFunctions.class, "multisetIntersectDistinct",
+      Collection.class, Collection.class),
+  MULTISET_INTERSECT_ALL(SqlFunctions.class, "multisetIntersectAll",
+      Collection.class, Collection.class),
+  MULTISET_EXCEPT_DISTINCT(SqlFunctions.class, "multisetExceptDistinct",
+      Collection.class, Collection.class),
+  MULTISET_EXCEPT_ALL(SqlFunctions.class, "multisetExceptAll",
+      Collection.class, Collection.class),
+  MULTISET_UNION_DISTINCT(SqlFunctions.class, "multisetUnionDistinct",
+      Collection.class, Collection.class),
+  MULTISET_UNION_ALL(SqlFunctions.class, "multisetUnionAll", Collection.class,
+      Collection.class),
+  IS_A_SET(SqlFunctions.class, "isASet", Collection.class),
+  IS_EMPTY(Collection.class, "isEmpty"),
+  SUBMULTISET_OF(SqlFunctions.class, "submultisetOf", Collection.class,
+      Collection.class),
   SELECTIVITY(Selectivity.class, "getSelectivity", RexNode.class),
   UNIQUE_KEYS(UniqueKeys.class, "getUniqueKeys", boolean.class),
   AVERAGE_ROW_SIZE(Size.class, "averageRowSize"),
@@ -350,8 +448,10 @@ public enum BuiltInMethod {
       ImmutableBitSet.class, boolean.class),
   COLLATIONS(Collation.class, "collations"),
   DISTRIBUTION(Distribution.class, "distribution"),
+  NODE_TYPES(NodeTypes.class, "getNodeTypes"),
   ROW_COUNT(RowCount.class, "getRowCount"),
   MAX_ROW_COUNT(MaxRowCount.class, "getMaxRowCount"),
+  MIN_ROW_COUNT(MinRowCount.class, "getMinRowCount"),
   DISTINCT_ROW_COUNT(DistinctRowCount.class, "getDistinctRowCount",
       ImmutableBitSet.class, RexNode.class),
   PERCENTAGE_ORIGINAL_ROWS(PercentageOriginalRows.class,
@@ -359,9 +459,12 @@ public enum BuiltInMethod {
   POPULATION_SIZE(PopulationSize.class, "getPopulationSize",
       ImmutableBitSet.class),
   COLUMN_ORIGIN(ColumnOrigin.class, "getColumnOrigins", int.class),
+  EXPRESSION_LINEAGE(ExpressionLineage.class, "getExpressionLineage", RexNode.class),
+  TABLE_REFERENCES(TableReferences.class, "getTableReferences"),
   CUMULATIVE_COST(CumulativeCost.class, "getCumulativeCost"),
   NON_CUMULATIVE_COST(NonCumulativeCost.class, "getNonCumulativeCost"),
   PREDICATES(Predicates.class, "getPredicates"),
+  ALL_PREDICATES(AllPredicates.class, "getAllPredicates"),
   EXPLAIN_VISIBILITY(ExplainVisibility.class, "isVisibleInExplain",
       SqlExplainLevel.class),
   SCALAR_EXECUTE1(Scalar.class, "execute", Context.class),
@@ -369,7 +472,22 @@ public enum BuiltInMethod {
   CONTEXT_VALUES(Context.class, "values", true),
   CONTEXT_ROOT(Context.class, "root", true),
   DATA_CONTEXT_GET_QUERY_PROVIDER(DataContext.class, "getQueryProvider"),
-  METADATA_REL(Metadata.class, "rel");
+  METADATA_REL(Metadata.class, "rel"),
+  STRUCT_ACCESS(SqlFunctions.class, "structAccess", Object.class, int.class,
+      String.class),
+  SOURCE_SORTER(SourceSorter.class, Function2.class, Function1.class,
+      Comparator.class),
+  ORDERED_AGGREGATE_LAMBDA_FACTORY(OrderedAggregateLambdaFactory.class,
+      Function0.class, List.class),
+  SEQUENCED_ADDER_AGGREGATE_LAMBDA_FACTORY(SequencedAdderAggregateLambdaFactory.class,
+      Function0.class, List.class),
+  AGG_LAMBDA_FACTORY_ACC_INITIALIZER(AggregateLambdaFactory.class,
+      "accumulatorInitializer"),
+  AGG_LAMBDA_FACTORY_ACC_ADDER(AggregateLambdaFactory.class, "accumulatorAdder"),
+  AGG_LAMBDA_FACTORY_ACC_RESULT_SELECTOR(AggregateLambdaFactory.class,
+      "resultSelector", Function2.class),
+  AGG_LAMBDA_FACTORY_ACC_SINGLE_GROUP_RESULT_SELECTOR(AggregateLambdaFactory.class,
+      "singleGroupResultSelector", Function1.class);
 
   public final Method method;
   public final Constructor constructor;

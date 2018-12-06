@@ -17,22 +17,18 @@
 package org.apache.calcite.adapter.csv;
 
 import org.apache.calcite.adapter.java.JavaTypeFactory;
+import org.apache.calcite.avatica.util.DateTimeUtils;
 import org.apache.calcite.linq4j.Enumerator;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Pair;
+import org.apache.calcite.util.Source;
 
 import org.apache.commons.lang3.time.FastDateFormat;
 
 import au.com.bytecode.opencsv.CSVReader;
 
-import com.google.common.base.Throwables;
-
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.Reader;
 import java.text.ParseException;
 import java.util.ArrayList;
@@ -40,8 +36,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.zip.GZIPInputStream;
-
 
 /** Enumerator that reads from a CSV file.
  *
@@ -59,35 +53,35 @@ class CsvEnumerator<E> implements Enumerator<E> {
   private static final FastDateFormat TIME_FORMAT_TIMESTAMP;
 
   static {
-    TimeZone gmt = TimeZone.getTimeZone("GMT");
+    final TimeZone gmt = TimeZone.getTimeZone("GMT");
     TIME_FORMAT_DATE = FastDateFormat.getInstance("yyyy-MM-dd", gmt);
     TIME_FORMAT_TIME = FastDateFormat.getInstance("HH:mm:ss", gmt);
     TIME_FORMAT_TIMESTAMP =
         FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss", gmt);
   }
 
-  public CsvEnumerator(File file, AtomicBoolean cancelFlag,
+  CsvEnumerator(Source source, AtomicBoolean cancelFlag,
       List<CsvFieldType> fieldTypes) {
-    this(file, cancelFlag, fieldTypes, identityList(fieldTypes.size()));
+    this(source, cancelFlag, fieldTypes, identityList(fieldTypes.size()));
   }
 
-  public CsvEnumerator(File file, AtomicBoolean cancelFlag,
+  CsvEnumerator(Source source, AtomicBoolean cancelFlag,
       List<CsvFieldType> fieldTypes, int[] fields) {
     //noinspection unchecked
-    this(file, cancelFlag, false, null,
+    this(source, cancelFlag, false, null,
         (RowConverter<E>) converter(fieldTypes, fields));
   }
 
-  public CsvEnumerator(File file, AtomicBoolean cancelFlag, boolean stream,
+  CsvEnumerator(Source source, AtomicBoolean cancelFlag, boolean stream,
       String[] filterValues, RowConverter<E> rowConverter) {
     this.cancelFlag = cancelFlag;
     this.rowConverter = rowConverter;
     this.filterValues = filterValues;
     try {
       if (stream) {
-        this.reader = new CsvStreamReader(file);
+        this.reader = new CsvStreamReader(source);
       } else {
-        this.reader = openCsv(file);
+        this.reader = openCsv(source);
       }
       this.reader.readNext(); // skip header row
     } catch (IOException e) {
@@ -105,25 +99,28 @@ class CsvEnumerator<E> implements Enumerator<E> {
     }
   }
 
-  static RelDataType deduceRowType(JavaTypeFactory typeFactory, File file,
+  /** Deduces the names and types of a table's columns by reading the first line
+   * of a CSV file. */
+  static RelDataType deduceRowType(JavaTypeFactory typeFactory, Source source,
       List<CsvFieldType> fieldTypes) {
-    return deduceRowType(typeFactory, file, fieldTypes, false);
+    return deduceRowType(typeFactory, source, fieldTypes, false);
   }
 
   /** Deduces the names and types of a table's columns by reading the first line
   * of a CSV file. */
-  static RelDataType deduceRowType(JavaTypeFactory typeFactory, File file,
+  static RelDataType deduceRowType(JavaTypeFactory typeFactory, Source source,
       List<CsvFieldType> fieldTypes, Boolean stream) {
     final List<RelDataType> types = new ArrayList<>();
     final List<String> names = new ArrayList<>();
-    CSVReader reader = null;
     if (stream) {
       names.add(CsvSchemaFactory.ROWTIME_COLUMN_NAME);
       types.add(typeFactory.createSqlType(SqlTypeName.TIMESTAMP));
     }
-    try {
-      reader = openCsv(file);
-      final String[] strings = reader.readNext();
+    try (CSVReader reader = openCsv(source)) {
+      String[] strings = reader.readNext();
+      if (strings == null) {
+        strings = new String[]{"EmptyFileHasNoColumns:boolean"};
+      }
       for (String string : strings) {
         final String name;
         final CsvFieldType fieldType;
@@ -134,9 +131,9 @@ class CsvEnumerator<E> implements Enumerator<E> {
           fieldType = CsvFieldType.of(typeString);
           if (fieldType == null) {
             System.out.println("WARNING: Found unknown type: "
-              + typeString + " in file: " + file.getAbsolutePath()
-              + " for column: " + name
-              + ". Will assume the type of column is string");
+                + typeString + " in file: " + source.path()
+                + " for column: " + name
+                + ". Will assume the type of column is string");
           }
         } else {
           name = string;
@@ -144,7 +141,7 @@ class CsvEnumerator<E> implements Enumerator<E> {
         }
         final RelDataType type;
         if (fieldType == null) {
-          type = typeFactory.createJavaType(String.class);
+          type = typeFactory.createSqlType(SqlTypeName.VARCHAR);
         } else {
           type = fieldType.toType(typeFactory);
         }
@@ -156,31 +153,16 @@ class CsvEnumerator<E> implements Enumerator<E> {
       }
     } catch (IOException e) {
       // ignore
-    } finally {
-      if (reader != null) {
-        try {
-          reader.close();
-        } catch (IOException e) {
-          // ignore
-        }
-      }
     }
     if (names.isEmpty()) {
       names.add("line");
-      types.add(typeFactory.createJavaType(String.class));
+      types.add(typeFactory.createSqlType(SqlTypeName.VARCHAR));
     }
     return typeFactory.createStructType(Pair.zip(names, types));
   }
 
-  public static CSVReader openCsv(File file) throws IOException {
-    final Reader fileReader;
-    if (file.getName().endsWith(".gz")) {
-      final GZIPInputStream inputStream =
-          new GZIPInputStream(new FileInputStream(file));
-      fileReader = new InputStreamReader(inputStream);
-    } else {
-      fileReader = new FileReader(file);
-    }
+  public static CSVReader openCsv(Source source) throws IOException {
+    final Reader fileReader = source.reader();
     return new CSVReader(fileReader);
   }
 
@@ -201,7 +183,7 @@ class CsvEnumerator<E> implements Enumerator<E> {
             try {
               Thread.sleep(CsvStreamReader.DEFAULT_MONITOR_DELAY);
             } catch (InterruptedException e) {
-              throw Throwables.propagate(e);
+              throw new RuntimeException(e);
             }
             continue;
           }
@@ -248,7 +230,9 @@ class CsvEnumerator<E> implements Enumerator<E> {
     return integers;
   }
 
-  /** Row converter. */
+  /** Row converter.
+   *
+   * @param <E> element type */
   abstract static class RowConverter<E> {
     abstract E convertRow(String[] rows);
 
@@ -298,7 +282,7 @@ class CsvEnumerator<E> implements Enumerator<E> {
         }
         try {
           Date date = TIME_FORMAT_DATE.parse(string);
-          return new java.sql.Date(date.getTime());
+          return (int) (date.getTime() / DateTimeUtils.MILLIS_PER_DAY);
         } catch (ParseException e) {
           return null;
         }
@@ -308,7 +292,7 @@ class CsvEnumerator<E> implements Enumerator<E> {
         }
         try {
           Date date = TIME_FORMAT_TIME.parse(string);
-          return new java.sql.Time(date.getTime());
+          return (int) date.getTime();
         } catch (ParseException e) {
           return null;
         }
@@ -318,7 +302,7 @@ class CsvEnumerator<E> implements Enumerator<E> {
         }
         try {
           Date date = TIME_FORMAT_TIMESTAMP.parse(string);
-          return new java.sql.Timestamp(date.getTime());
+          return date.getTime();
         } catch (ParseException e) {
           return null;
         }
@@ -333,17 +317,17 @@ class CsvEnumerator<E> implements Enumerator<E> {
   static class ArrayRowConverter extends RowConverter<Object[]> {
     private final CsvFieldType[] fieldTypes;
     private final int[] fields;
-    //whether the row to convert is from a stream
+    // whether the row to convert is from a stream
     private final boolean stream;
 
     ArrayRowConverter(List<CsvFieldType> fieldTypes, int[] fields) {
-      this.fieldTypes = fieldTypes.toArray(new CsvFieldType[fieldTypes.size()]);
+      this.fieldTypes = fieldTypes.toArray(new CsvFieldType[0]);
       this.fields = fields;
       this.stream = false;
     }
 
     ArrayRowConverter(List<CsvFieldType> fieldTypes, int[] fields, boolean stream) {
-      this.fieldTypes = fieldTypes.toArray(new CsvFieldType[fieldTypes.size()]);
+      this.fieldTypes = fieldTypes.toArray(new CsvFieldType[0]);
       this.fields = fields;
       this.stream = stream;
     }

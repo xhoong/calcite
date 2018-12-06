@@ -26,24 +26,45 @@ limitations under the License.
 
 # Upcoming talks
 
-* 2016/09/12 <a href="http://flink-forward.org/program/sessions/">Flink Forward</a>, Berlin
+* 2018/06/12 [SIGMOD/PODS 2018](https://sigmod2018.org/index.shtml) (Houston, TX)
+  * [Apache Calcite: A Foundational Framework for Optimized Query
+    Processing Over Heterogeneous Data
+    Sources](https://sigmod2018.org/sigmod_industrial_list.shtml) (Edmon
+    Begoli, Jesús Camacho-Rodríguez, Julian Hyde, Michael Mior, Daniel
+    Lemire)
+* 2018/06/27 [SF Big Analytics streaming meetup, hosted by Lyft](https://www.meetup.com/SF-Big-Analytics/)
+  (San Francisco, CA)
+  * Foundations of streaming SQL or: How I learned to love stream and
+    table theory (Tyler Akidau)
+  * Data all over the place! How Apache Calcite brings SQL and sanity to
+    streaming and spatial data (Julian Hyde)
+* 2018/09/25 [ApacheCon 2018](https://www.apachecon.com/acna18/) (Montréal, Canada)
+  * Spatial query on vanilla databases (Julian Hyde)
+  * Don't optimize my queries, optimize my data! (Julian Hyde)
 
 # Project Members
 
 Name (Apache ID) | Github | Org | Role
 :--------------- | :----- | :-- | :---
-{% for c in site.data.contributors %}{% if c.homepage %}<a href="{{ c.homepage }}">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %} (<a href="http://people.apache.org/phonebook.html?uid={{ c.apacheId }}">{{ c.apacheId }}</a>) | <a href="http://github.com/{{ c.githubId }}"><img width="64" src="{% unless c.avatar %}http://github.com/{{ c.githubId }}.png{% else %}{{ c.avatar }}{% endunless %}"></a> | {{ c.org }} | {{ c.role }}
-{% endfor %}
+{% for c in site.data.contributors %}{% unless c.emeritus %}{% if c.homepage %}<a href="{{ c.homepage }}">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %} (<a href="http://people.apache.org/phonebook.html?uid={{ c.apacheId }}">{{ c.apacheId }}</a>) | <a href="http://github.com/{{ c.githubId }}"><img width="64" src="{% unless c.avatar %}http://github.com/{{ c.githubId }}.png{% else %}{{ c.avatar }}{% endunless %}"></a> | {{ c.org }} | {{ c.role }}
+{% endunless %}{% endfor %}
+
+Emeritus members
+
+Name (Apache ID) | Github | Org | Role
+:--------------- | :----- | :-- | :---
+{% for c in site.data.contributors %}{% if c.emeritus %}{% if c.homepage %}<a href="{{ c.homepage }}">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %} (<a href="http://people.apache.org/phonebook.html?uid={{ c.apacheId }}">{{ c.apacheId }}</a>) | <a href="http://github.com/{{ c.githubId }}"><img width="64" src="{% unless c.avatar %}http://github.com/{{ c.githubId }}.png{% else %}{{ c.avatar }}{% endunless %}"></a> | {{ c.org }} | {{ c.role }}
+{% endif %}{% endfor %}
 
 # Mailing Lists
 
 There are several mailing lists for Calcite:
 
-* [dev@calcite.apache.org](mailto:dev@calcite.apache.org) - Development discussions
+* [dev@calcite.apache.org](mailto:dev@calcite.apache.org) &mdash; Development discussions
   [[archive](https://mail-archives.apache.org/mod_mbox/calcite-dev/)]
-* [issues@calcite.apache.org](mailto:issues@calcite.apache.org) - Bug tracking
+* [issues@calcite.apache.org](mailto:issues@calcite.apache.org) &mdash; Bug tracking
   [[archive](https://mail-archives.apache.org/mod_mbox/calcite-issues/)]
-* [commits@calcite.apache.org](mailto:commits@calcite.apache.org) - Git tracking
+* [commits@calcite.apache.org](mailto:commits@calcite.apache.org) &mdash; Git tracking
   [[archive](https://mail-archives.apache.org/mod_mbox/calcite-commits/)]
 
 You can subscribe to the lists by sending email to

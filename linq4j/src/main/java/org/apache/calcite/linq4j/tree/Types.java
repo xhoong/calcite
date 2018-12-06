@@ -149,19 +149,19 @@ public abstract class Types {
   }
 
   static Class[] toClassArray(Collection<Type> types) {
-    List<Class> classes = new ArrayList<Class>();
+    List<Class> classes = new ArrayList<>();
     for (Type type : types) {
       classes.add(toClass(type));
     }
-    return classes.toArray(new Class[classes.size()]);
+    return classes.toArray(new Class[0]);
   }
 
   static Class[] toClassArray(Iterable<? extends Expression> arguments) {
-    List<Class> classes = new ArrayList<Class>();
+    List<Class> classes = new ArrayList<>();
     for (Expression argument : arguments) {
       classes.add(toClass(argument.getType()));
     }
-    return classes.toArray(new Class[classes.size()]);
+    return classes.toArray(new Class[0]);
   }
 
   /**
@@ -251,8 +251,9 @@ public abstract class Types {
       return className(clazz.getComponentType()) + "[]";
     }
     String className = clazz.getName();
-    if (clazz.getPackage() == Package.getPackage("java.lang")
-        && !clazz.isPrimitive()) {
+    if (!clazz.isPrimitive()
+        && clazz.getPackage() != null
+        && clazz.getPackage().getName().equals("java.lang")) {
       return className.substring("java.lang.".length());
     }
     return className.replace('$', '.');
@@ -561,7 +562,7 @@ public abstract class Types {
     }
 
     public Type[] getActualTypeArguments() {
-      return typeArguments.toArray(new Type[typeArguments.size()]);
+      return typeArguments.toArray(new Type[0]);
     }
 
     public Type getRawType() {

@@ -44,11 +44,12 @@ import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.NumberUtil;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -85,24 +86,23 @@ public class RelMdUtil {
     RexBuilder rexBuilder = rel.getCluster().getRexBuilder();
     double selectivity =
         computeSemiJoinSelectivity(mq, rel.getLeft(), rel.getRight(), rel);
-    RexNode selec =
-        rexBuilder.makeApproxLiteral(new BigDecimal(selectivity));
-    return rexBuilder.makeCall(ARTIFICIAL_SELECTIVITY_FUNC, selec);
+    return rexBuilder.makeCall(ARTIFICIAL_SELECTIVITY_FUNC,
+        rexBuilder.makeApproxLiteral(new BigDecimal(selectivity)));
   }
 
   /**
-   * Returns the selectivity value stored in the rexnode
+   * Returns the selectivity value stored in a call.
    *
-   * @param artificialSelecFuncNode rexnode containing the selectivity value
+   * @param artificialSelectivityFuncNode Call containing the selectivity value
    * @return selectivity value
    */
-  public static double getSelectivityValue(RexNode artificialSelecFuncNode) {
-    assert artificialSelecFuncNode instanceof RexCall;
-    RexCall call = (RexCall) artificialSelecFuncNode;
+  public static double getSelectivityValue(
+      RexNode artificialSelectivityFuncNode) {
+    assert artificialSelectivityFuncNode instanceof RexCall;
+    RexCall call = (RexCall) artificialSelectivityFuncNode;
     assert call.getOperator() == ARTIFICIAL_SELECTIVITY_FUNC;
     RexNode operand = call.getOperands().get(0);
-    BigDecimal bd = (BigDecimal) ((RexLiteral) operand).getValue();
-    return bd.doubleValue();
+    return ((RexLiteral) operand).getValueAs(Double.class);
   }
 
   /**
@@ -433,20 +433,9 @@ public class RelMdUtil {
       RexBuilder rexBuilder,
       RexNode pred1,
       RexNode pred2) {
-    final List<RexNode> unionList = new ArrayList<>();
-    final Set<String> strings = new HashSet<>();
-
-    for (RexNode rex : RelOptUtil.conjunctions(pred1)) {
-      if (strings.add(rex.toString())) {
-        unionList.add(rex);
-      }
-    }
-    for (RexNode rex2 : RelOptUtil.conjunctions(pred2)) {
-      if (strings.add(rex2.toString())) {
-        unionList.add(rex2);
-      }
-    }
-
+    final Set<RexNode> unionList = new LinkedHashSet<>();
+    unionList.addAll(RelOptUtil.conjunctions(pred1));
+    unionList.addAll(RelOptUtil.conjunctions(pred2));
     return RexUtil.composeConjunction(rexBuilder, unionList, true);
   }
 
@@ -463,23 +452,9 @@ public class RelMdUtil {
       RexBuilder rexBuilder,
       RexNode pred1,
       RexNode pred2) {
-    final List<RexNode> list1 = RelOptUtil.conjunctions(pred1);
-    final List<RexNode> list2 = RelOptUtil.conjunctions(pred2);
-    final List<RexNode> minusList = new ArrayList<>();
-
-    for (RexNode rex1 : list1) {
-      boolean add = true;
-      for (RexNode rex2 : list2) {
-        if (rex2.toString().compareTo(rex1.toString()) == 0) {
-          add = false;
-          break;
-        }
-      }
-      if (add) {
-        minusList.add(rex1);
-      }
-    }
-
+    final List<RexNode> minusList =
+        new ArrayList<>(RelOptUtil.conjunctions(pred1));
+    minusList.removeAll(RelOptUtil.conjunctions(pred2));
     return RexUtil.composeConjunction(rexBuilder, minusList, true);
   }
 
@@ -719,6 +694,36 @@ public class RelMdUtil {
         * mq.getSelectivity(child, condition);
   }
 
+  /** Returns a point on a line.
+   *
+   * <p>The result is always a value between {@code minY} and {@code maxY},
+   * even if {@code x} is not between {@code minX} and {@code maxX}.
+   *
+   * <p>Examples:<ul>
+   *   <li>{@code linear(0, 0, 10, 100, 200}} returns 100 because 0 is minX
+   *   <li>{@code linear(5, 0, 10, 100, 200}} returns 150 because 5 is
+   *   mid-way between minX and maxX
+   *   <li>{@code linear(5, 0, 10, 100, 200}} returns 160
+   *   <li>{@code linear(10, 0, 10, 100, 200}} returns 200 because 10 is maxX
+   *   <li>{@code linear(-2, 0, 10, 100, 200}} returns 100 because -2 is
+   *   less than minX and is therefore treated as minX
+   *   <li>{@code linear(12, 0, 10, 100, 200}} returns 100 because 12 is
+   *   greater than maxX and is therefore treated as maxX
+   * </ul>
+   */
+  public static double linear(int x, int minX, int maxX, double minY, double
+      maxY) {
+    Preconditions.checkArgument(minX < maxX);
+    Preconditions.checkArgument(minY < maxY);
+    if (x < minX) {
+      return minY;
+    }
+    if (x > maxX) {
+      return maxY;
+    }
+    return minY + (double) (x - minX) / (double) (maxX - minX) * (maxY - minY);
+  }
+
   //~ Inner Classes ----------------------------------------------------------
 
   /** Visitor that walks over a scalar expression and computes the
@@ -727,7 +732,7 @@ public class RelMdUtil {
     private final RelMetadataQuery mq;
     private Project rel;
 
-    public CardOfProjExpr(RelMetadataQuery mq, Project rel) {
+    CardOfProjExpr(RelMetadataQuery mq, Project rel) {
       super(true);
       this.mq = mq;
       this.rel = rel;
@@ -793,7 +798,7 @@ public class RelMdUtil {
   public static boolean checkInputForCollationAndLimit(RelMetadataQuery mq,
       RelNode input, RelCollation collation, RexNode offset, RexNode fetch) {
     // Check if the input is already sorted
-    boolean alreadySorted = false;
+    boolean alreadySorted = collation.getFieldCollations().isEmpty();
     for (RelCollation inputCollation : mq.collations(input)) {
       if (inputCollation.satisfies(collation)) {
         alreadySorted = true;

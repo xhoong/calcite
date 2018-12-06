@@ -24,11 +24,11 @@ limitations under the License.
 
 [Druid](http://druid.io/) is a fast column-oriented distributed data
 store. It allows you to execute queries via a
-[JSON-based query language](http://druid.io/docs/0.9.0/querying/querying.html),
+[JSON-based query language](http://druid.io/docs/0.9.2/querying/querying.html),
 in particular OLAP-style queries.
 Druid can be loaded in batch mode or continuously; one of Druid's key
 differentiators is its ability to
-[load from a streaming source such as Kafka](http://druid.io/docs/0.9.0/ingestion/stream-ingestion.html)
+[load from a streaming source such as Kafka](http://druid.io/docs/0.9.2/ingestion/stream-ingestion.html)
 and have the data available for query within milliseconds.
 
 Calcite's Druid adapter allows you to query the data using SQL,
@@ -61,7 +61,10 @@ A basic example of a model file is given below:
           "operand": {
             "dataSource": "wikiticker",
             "interval": "1900-01-09T00:00:00.000Z/2992-01-10T00:00:00.000Z",
-            "timestampColumn": "time",
+            "timestampColumn": {
+              "name": "time",
+              "type": "timestamp"
+            },
             "dimensions": [
               "channel",
               "cityName",
@@ -78,7 +81,6 @@ A basic example of a model file is given below:
               "page",
               "regionIsoCode",
               "regionName",
-              "user"
             ],
             "metrics": [
               {
@@ -103,8 +105,11 @@ A basic example of a model file is given below:
               {
                 "name" : "user_unique",
                 "type" : "hyperUnique",
-                "fieldName" : "user"
+                "fieldName" : "user_id"
               }
+            ],
+            "complexMetrics" : [
+              "user_id"
             ]
           }
         }
@@ -164,6 +169,18 @@ That plan shows that Calcite was able to push down the `GROUP BY`
 part of the query to Druid, including the `COUNT(*)` function,
 but not the `ORDER BY ... LIMIT`. (We plan to lift this restriction;
 see [[CALCITE-1206](https://issues.apache.org/jira/browse/CALCITE-1206)].)
+
+# Complex Metrics
+Druid has special metrics that produce quick but approximate results.
+Currently there are two types:
+
+* `hyperUnique` - HyperLogLog data sketch used to estimate the cardinality of a dimension
+* `thetaSketch` - Theta sketch used to also estimate the cardinality of a dimension,
+  but can be used to perform set operations as well.
+
+In the model definition, there is an array of Strings called `complexMetrics` that declares
+the alias for each complex metric defined. The alias is used in SQL, but it's real column name
+is used when Calcite generates the JSON query for druid.
 
 # Foodmart data set
 

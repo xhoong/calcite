@@ -43,6 +43,7 @@ import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.util.BuiltInMethod;
 import org.apache.calcite.util.ImmutableBitSet;
+import org.apache.calcite.util.Pair;
 
 import com.google.common.collect.ImmutableList;
 
@@ -145,7 +146,38 @@ public class RelMdColumnUniqueness
 
   public Boolean areColumnsUnique(Correlate rel, RelMetadataQuery mq,
       ImmutableBitSet columns, boolean ignoreNulls) {
-    return mq.areColumnsUnique(rel.getLeft(), columns, ignoreNulls);
+    switch (rel.getJoinType()) {
+    case ANTI:
+    case SEMI:
+      return mq.areColumnsUnique(rel.getLeft(), columns, ignoreNulls);
+    case LEFT:
+    case INNER:
+      final Pair<ImmutableBitSet, ImmutableBitSet> leftAndRightColumns =
+          splitLeftAndRightColumns(rel.getLeft().getRowType().getFieldCount(),
+              columns);
+      final ImmutableBitSet leftColumns = leftAndRightColumns.left;
+      final ImmutableBitSet rightColumns = leftAndRightColumns.right;
+      final RelNode left = rel.getLeft();
+      final RelNode right = rel.getRight();
+
+      if (leftColumns.cardinality() > 0
+          && rightColumns.cardinality() > 0) {
+        Boolean leftUnique =
+            mq.areColumnsUnique(left, leftColumns, ignoreNulls);
+        Boolean rightUnique =
+            mq.areColumnsUnique(right, rightColumns, ignoreNulls);
+        if (leftUnique == null || rightUnique == null) {
+          return null;
+        } else {
+          return leftUnique && rightUnique;
+        }
+      } else {
+        return null;
+      }
+    default:
+      throw new IllegalStateException("Unknown join type " + rel.getJoinType()
+          + " for correlate relation " + rel);
+    }
   }
 
   public Boolean areColumnsUnique(Project rel, RelMetadataQuery mq,
@@ -216,23 +248,16 @@ public class RelMdColumnUniqueness
 
     // Divide up the input column mask into column masks for the left and
     // right sides of the join
-    ImmutableBitSet.Builder leftBuilder = ImmutableBitSet.builder();
-    ImmutableBitSet.Builder rightBuilder = ImmutableBitSet.builder();
-    int nLeftColumns = left.getRowType().getFieldCount();
-    for (int bit : columns) {
-      if (bit < nLeftColumns) {
-        leftBuilder.set(bit);
-      } else {
-        rightBuilder.set(bit - nLeftColumns);
-      }
-    }
+    final Pair<ImmutableBitSet, ImmutableBitSet> leftAndRightColumns =
+        splitLeftAndRightColumns(rel.getLeft().getRowType().getFieldCount(),
+            columns);
+    final ImmutableBitSet leftColumns = leftAndRightColumns.left;
+    final ImmutableBitSet rightColumns = leftAndRightColumns.right;
 
     // If the original column mask contains columns from both the left and
     // right hand side, then the columns are unique if and only if they're
     // unique for their respective join inputs
-    final ImmutableBitSet leftColumns = leftBuilder.build();
     Boolean leftUnique = mq.areColumnsUnique(left, leftColumns, ignoreNulls);
-    final ImmutableBitSet rightColumns = rightBuilder.build();
     Boolean rightUnique = mq.areColumnsUnique(right, rightColumns, ignoreNulls);
     if ((leftColumns.cardinality() > 0)
         && (rightColumns.cardinality() > 0)) {
@@ -297,8 +322,11 @@ public class RelMdColumnUniqueness
     final Set<List<Comparable>> set = new HashSet<>();
     final List<Comparable> values = new ArrayList<>();
     for (ImmutableList<RexLiteral> tuple : rel.tuples) {
-      for (RexLiteral literal : tuple) {
-        values.add(NullSentinel.mask(literal.getValue()));
+      for (int column : columns) {
+        final RexLiteral literal = tuple.get(column);
+        values.add(literal.isNull()
+            ? NullSentinel.INSTANCE
+            : literal.getValueAs(Comparable.class));
       }
       if (!set.add(ImmutableList.copyOf(values))) {
         return false;
@@ -314,7 +342,6 @@ public class RelMdColumnUniqueness
   }
 
   public Boolean areColumnsUnique(HepRelVertex rel, RelMetadataQuery mq,
-      boolean dummy, // prevent method from being used
       ImmutableBitSet columns, boolean ignoreNulls) {
     return mq.areColumnsUnique(rel.getCurrentRel(), columns, ignoreNulls);
   }
@@ -365,6 +392,21 @@ public class RelMdColumnUniqueness
       }
     }
     return true;
+  }
+
+  /** Splits a column set between left and right sets. */
+  private static Pair<ImmutableBitSet, ImmutableBitSet>
+      splitLeftAndRightColumns(int leftCount, final ImmutableBitSet columns) {
+    ImmutableBitSet.Builder leftBuilder = ImmutableBitSet.builder();
+    ImmutableBitSet.Builder rightBuilder = ImmutableBitSet.builder();
+    for (int bit : columns) {
+      if (bit < leftCount) {
+        leftBuilder.set(bit);
+      } else {
+        rightBuilder.set(bit - leftCount);
+      }
+    }
+    return Pair.of(leftBuilder.build(), rightBuilder.build());
   }
 }
 

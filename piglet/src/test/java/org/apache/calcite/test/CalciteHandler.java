@@ -21,8 +21,6 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.tools.PigRelBuilder;
 import org.apache.calcite.tools.RelRunners;
 
-import com.google.common.base.Throwables;
-
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.sql.Array;
@@ -38,17 +36,17 @@ import java.sql.Types;
 class CalciteHandler extends Handler {
   private final PrintWriter writer;
 
-  public CalciteHandler(PigRelBuilder builder, Writer writer) {
+  CalciteHandler(PigRelBuilder builder, Writer writer) {
     super(builder);
     this.writer = new PrintWriter(writer);
   }
 
   @Override protected void dump(RelNode rel) {
-    try (final PreparedStatement preparedStatement = RelRunners.run(rel)) {
+    try (PreparedStatement preparedStatement = RelRunners.run(rel)) {
       final ResultSet resultSet = preparedStatement.executeQuery();
       dump(resultSet, true);
     } catch (SQLException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 

@@ -16,8 +16,6 @@
  */
 package org.apache.calcite.linq4j.tree;
 
-import com.google.common.base.Preconditions;
-
 import java.util.List;
 import java.util.Objects;
 
@@ -32,12 +30,16 @@ public class TryStatement extends Statement {
   public TryStatement(Statement body, List<CatchBlock> catchBlocks,
       Statement fynally) {
     super(ExpressionType.Try, body.getType());
-    this.body = Preconditions.checkNotNull(body);
-    this.catchBlocks = Preconditions.checkNotNull(catchBlocks);
+    this.body = Objects.requireNonNull(body);
+    this.catchBlocks = Objects.requireNonNull(catchBlocks);
     this.fynally = fynally;
   }
 
-  @Override public Statement accept(Visitor visitor) {
+  @Override public Statement accept(Shuttle shuttle) {
+    return shuttle.visit(this);
+  }
+
+  public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 

@@ -35,6 +35,7 @@ import org.apache.calcite.sql.type.InferTypes;
 import org.apache.calcite.sql.type.SqlOperandCountRanges;
 import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.sql.validate.SqlValidator;
+import org.apache.calcite.sql.validate.SqlValidatorImpl;
 import org.apache.calcite.sql.validate.SqlValidatorScope;
 import org.apache.calcite.util.Pair;
 
@@ -226,8 +227,8 @@ public class SqlCaseOperator extends SqlOperator {
       SqlCallBinding callBinding) {
     SqlCase caseCall = (SqlCase) callBinding.getCall();
     SqlNodeList thenList = caseCall.getThenOperands();
-    ArrayList<SqlNode> nullList = new ArrayList<SqlNode>();
-    List<RelDataType> argTypes = new ArrayList<RelDataType>();
+    ArrayList<SqlNode> nullList = new ArrayList<>();
+    List<RelDataType> argTypes = new ArrayList<>();
     for (SqlNode node : thenList) {
       argTypes.add(
           callBinding.getValidator().deriveType(
@@ -244,14 +245,14 @@ public class SqlCaseOperator extends SqlOperator {
       nullList.add(elseOp);
     }
 
-    RelDataType ret =
-        callBinding.getTypeFactory().leastRestrictive(
-            argTypes);
+    RelDataType ret = callBinding.getTypeFactory().leastRestrictive(argTypes);
     if (null == ret) {
       throw callBinding.newValidationError(RESOURCE.illegalMixingOfTypes());
     }
+    final SqlValidatorImpl validator =
+        (SqlValidatorImpl) callBinding.getValidator();
     for (SqlNode node : nullList) {
-      callBinding.getValidator().setValidatedNodeType(node, ret);
+      validator.setValidatedNodeType(node, ret);
     }
     return ret;
   }
@@ -262,7 +263,7 @@ public class SqlCaseOperator extends SqlOperator {
     assert (argTypes.size() % 2) == 1 : "odd number of arguments expected: "
         + argTypes.size();
     assert argTypes.size() > 1 : argTypes.size();
-    List<RelDataType> thenTypes = new ArrayList<RelDataType>();
+    List<RelDataType> thenTypes = new ArrayList<>();
     for (int j = 1; j < (argTypes.size() - 1); j += 2) {
       thenTypes.add(argTypes.get(j));
     }

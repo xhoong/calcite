@@ -30,9 +30,6 @@ import org.apache.calcite.schema.Schemas;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.AbstractTableQueryable;
 
-import com.google.common.base.Function;
-import com.google.common.base.Throwables;
-
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -107,10 +104,9 @@ public class JdbcFrontLinqBackTest {
             + "from \"hr\".\"emps\" as e\n"
             + "order by \"deptno\", \"name\" desc")
         .explainContains(""
-            + "EnumerableCalc(expr#0..1=[{inputs}], expr#2=[UPPER($t1)], UN=[$t2], deptno=[$t0], name=[$t1])\n"
-            + "  EnumerableSort(sort0=[$0], sort1=[$1], dir0=[ASC], dir1=[DESC])\n"
-            + "    EnumerableCalc(expr#0..4=[{inputs}], deptno=[$t1], name=[$t2])\n"
-            + "      EnumerableTableScan(table=[[hr, emps]])")
+            + "EnumerableSort(sort0=[$1], sort1=[$2], dir0=[ASC], dir1=[DESC])\n"
+            + "  EnumerableCalc(expr#0..4=[{inputs}], expr#5=[UPPER($t2)], UN=[$t5], deptno=[$t1], name=[$t2])\n"
+            + "    EnumerableTableScan(table=[[hr, emps]])")
         .returns("UN=THEODORE; deptno=10\n"
             + "UN=SEBASTIAN; deptno=10\n"
             + "UN=BILL; deptno=10\n"
@@ -162,7 +158,6 @@ public class JdbcFrontLinqBackTest {
   /**
    * Tests INTERSECT.
    */
-  @Ignore
   @Test public void testIntersect() {
     hr()
         .query("select substring(\"name\" from 1 for 1) as x\n"
@@ -249,24 +244,20 @@ public class JdbcFrontLinqBackTest {
     CalciteAssert.AssertThat with = mutable(employees);
     with.query("select count(*) as c from \"foo\".\"bar\"")
         .returns("C=1\n");
-    with.doWithConnection(
-        new Function<CalciteConnection, Object>() {
-          public Object apply(CalciteConnection c) {
-            try {
-              final String sql = "insert into \"foo\".\"bar\"\n"
-                  + "values (?, 0, ?, 10.0, null)";
-              try (PreparedStatement p = c.prepareStatement(sql)) {
-                p.setInt(1, 1);
-                p.setString(2, "foo");
-                final int count = p.executeUpdate();
-                assertThat(count, is(1));
-              }
-              return null;
-            } catch (SQLException e) {
-              throw Throwables.propagate(e);
-            }
-          }
-        });
+    with.doWithConnection(c -> {
+      try {
+        final String sql = "insert into \"foo\".\"bar\"\n"
+            + "values (?, 0, ?, 10.0, null)";
+        try (PreparedStatement p = c.prepareStatement(sql)) {
+          p.setInt(1, 1);
+          p.setString(2, "foo");
+          final int count = p.executeUpdate();
+          assertThat(count, is(1));
+        }
+      } catch (SQLException e) {
+        throw new RuntimeException(e);
+      }
+    });
     with.query("select count(*) as c from \"foo\".\"bar\"")
         .returns("C=2\n");
     with.query("select * from \"foo\".\"bar\"")
@@ -308,19 +299,16 @@ public class JdbcFrontLinqBackTest {
    */
   private static CalciteAssert.ConnectionPostProcessor makePostProcessor(
       final List<JdbcTest.Employee> initialData) {
-    return new CalciteAssert.ConnectionPostProcessor() {
-      public Connection apply(final Connection connection)
-          throws SQLException {
-        CalciteConnection calciteConnection =
-            connection.unwrap(CalciteConnection.class);
-        SchemaPlus rootSchema = calciteConnection.getRootSchema();
-        SchemaPlus mapSchema = rootSchema.add("foo", new AbstractSchema());
-        final String tableName = "bar";
-        final JdbcTest.AbstractModifiableTable table =
-            mutable(tableName, initialData);
-        mapSchema.add(tableName, table);
-        return calciteConnection;
-      }
+    return connection -> {
+      CalciteConnection calciteConnection =
+          connection.unwrap(CalciteConnection.class);
+      SchemaPlus rootSchema = calciteConnection.getRootSchema();
+      SchemaPlus mapSchema = rootSchema.add("foo", new AbstractSchema());
+      final String tableName = "bar";
+      final JdbcTest.AbstractModifiableTable table =
+          mutable(tableName, initialData);
+      mapSchema.add(tableName, table);
+      return calciteConnection;
     };
   }
 
@@ -328,8 +316,6 @@ public class JdbcFrontLinqBackTest {
    * Method to be shared with {@code RemoteDriverTest}.
    *
    * @param initialData record to be presented in table
-   * @return java.sql.Connection
-   * @throws Exception
    */
   public static Connection makeConnection(
         final List<JdbcTest.Employee> initialData) throws Exception {

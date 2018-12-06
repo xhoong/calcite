@@ -19,6 +19,7 @@ package org.apache.calcite.rel.rules;
 import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.plan.ViewExpanders;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.JoinInfo;
 import org.apache.calcite.rel.core.SemiJoin;
@@ -61,9 +62,7 @@ public class LoptSemiJoinOptimizer {
 
   private final RexBuilder rexBuilder;
 
-  /** Not thread-safe. But should be OK, because an optimizer is only used
-   * from within one thread.*/
-  final RelMetadataQuery mq = RelMetadataQuery.instance();
+  private final RelMetadataQuery mq;
 
   /**
    * Semijoins corresponding to each join factor, if they are going to be
@@ -85,10 +84,12 @@ public class LoptSemiJoinOptimizer {
   //~ Constructors -----------------------------------------------------------
 
   public LoptSemiJoinOptimizer(
+      RelMetadataQuery mq,
       LoptMultiJoin multiJoin,
       RexBuilder rexBuilder) {
     // there are no semijoins yet, so initialize to the original
     // factors
+    this.mq = mq;
     int nJoinFactors = multiJoin.getNumJoinFactors();
     chosenSemiJoins = new RelNode[nJoinFactors];
     for (int i = 0; i < nJoinFactors; i++) {
@@ -281,7 +282,7 @@ public class LoptSemiJoinOptimizer {
     final List<Integer> bestKeyOrder = new ArrayList<>();
     LcsTableScan tmpFactRel =
         (LcsTableScan) factTable.toRel(
-            RelOptUtil.getContext(factRel.getCluster()));
+            ViewExpanders.simpleContext(factRel.getCluster()));
 
     LcsIndexOptimizer indexOptimizer = new LcsIndexOptimizer(tmpFactRel);
     FemLocalIndex bestIndex =
@@ -671,7 +672,7 @@ public class LoptSemiJoinOptimizer {
       return 0;
     }
 
-    Double dimRows = dimCost.getRows();
+    double dimRows = dimCost.getRows();
     if (dimRows < 1.0) {
       dimRows = 1.0;
     }
@@ -824,7 +825,7 @@ public class LoptSemiJoinOptimizer {
 
   /** Dummy class to allow code to compile. */
   private static class LcsIndexOptimizer {
-    public LcsIndexOptimizer(LcsTableScan rel) {}
+    LcsIndexOptimizer(LcsTableScan rel) {}
 
     public FemLocalIndex findSemiJoinIndexByCost(RelNode dimRel,
         List<Integer> actualLeftKeys, List<Integer> rightKeys,

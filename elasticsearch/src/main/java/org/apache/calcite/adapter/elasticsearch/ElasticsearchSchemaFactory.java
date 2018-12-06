@@ -20,15 +20,23 @@ import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaFactory;
 import org.apache.calcite.schema.SchemaPlus;
 
+import org.apache.http.HttpHost;
+
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Preconditions;
+
+import org.elasticsearch.client.RestClient;
 
 import java.io.IOException;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
- * Factory that creates a {@link ElasticsearchSchema}.
+ * Factory that creates an {@link ElasticsearchSchema}.
  *
  * <p>Allows a custom schema to be included in a model.json file.
  */
@@ -40,6 +48,7 @@ public class ElasticsearchSchemaFactory implements SchemaFactory {
 
   @Override public Schema create(SchemaPlus parentSchema, String name,
       Map<String, Object> operand) {
+
     final Map map = (Map) operand;
 
     final ObjectMapper mapper = new ObjectMapper();
@@ -49,15 +58,37 @@ public class ElasticsearchSchemaFactory implements SchemaFactory {
       final Map<String, Integer> coordinates =
           mapper.readValue((String) map.get("coordinates"),
               new TypeReference<Map<String, Integer>>() { });
+
+      final RestClient client = connect(coordinates);
+
       final Map<String, String> userConfig =
           mapper.readValue((String) map.get("userConfig"),
               new TypeReference<Map<String, String>>() { });
+
       final String index = (String) map.get("index");
-      return new ElasticsearchSchema(coordinates, userConfig, index);
+      Preconditions.checkArgument(index != null, "index is missing in configuration");
+      return new ElasticsearchSchema(client, new ObjectMapper(), index);
     } catch (IOException e) {
       throw new RuntimeException("Cannot parse values from json", e);
     }
   }
+
+  /**
+   * Builds elastic rest client from user configuration
+   * @param coordinates list of {@code hostname/port} to connect to
+   * @return newly initialized low-level rest http client for ES
+   */
+  private static RestClient connect(Map<String, Integer> coordinates) {
+    Objects.requireNonNull(coordinates, "coordinates");
+    Preconditions.checkArgument(!coordinates.isEmpty(), "no ES coordinates specified");
+    final Set<HttpHost> set = new LinkedHashSet<>();
+    for (Map.Entry<String, Integer> entry: coordinates.entrySet()) {
+      set.add(new HttpHost(entry.getKey(), entry.getValue()));
+    }
+
+    return RestClient.builder(set.toArray(new HttpHost[0])).build();
+  }
+
 }
 
 // End ElasticsearchSchemaFactory.java

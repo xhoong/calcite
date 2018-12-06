@@ -35,9 +35,9 @@ import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexCorrelVariable;
 import org.apache.calcite.rex.RexFieldAccess;
-import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexSlot;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlOperator;
@@ -62,8 +62,7 @@ import java.util.Map;
  * into JSON format.
  */
 public class RelJson {
-  private final Map<String, Constructor> constructorMap =
-      new HashMap<String, Constructor>();
+  private final Map<String, Constructor> constructorMap = new HashMap<>();
   private final JsonBuilder jsonBuilder;
 
   public static final List<String> PACKAGES =
@@ -83,16 +82,8 @@ public class RelJson {
     Constructor constructor = getConstructor(type);
     try {
       return (RelNode) constructor.newInstance(map);
-    } catch (InstantiationException e) {
-      throw new RuntimeException(
-          "while invoking constructor for type '" + type + "'", e);
-    } catch (IllegalAccessException e) {
-      throw new RuntimeException(
-          "while invoking constructor for type '" + type + "'", e);
-    } catch (InvocationTargetException e) {
-      throw new RuntimeException(
-          "while invoking constructor for type '" + type + "'", e);
-    } catch (ClassCastException e) {
+    } catch (InstantiationException | ClassCastException | InvocationTargetException
+        | IllegalAccessException e) {
       throw new RuntimeException(
           "while invoking constructor for type '" + type + "'", e);
     }
@@ -152,7 +143,7 @@ public class RelJson {
   }
 
   public Object toJson(RelCollationImpl node) {
-    final List<Object> list = new ArrayList<Object>();
+    final List<Object> list = new ArrayList<>();
     for (RelFieldCollation fieldCollation : node.getFieldCollations()) {
       final Map<String, Object> map = jsonBuilder.map();
       map.put("field", fieldCollation.getFieldIndex());
@@ -165,8 +156,7 @@ public class RelJson {
 
   public RelCollation toCollation(
       List<Map<String, Object>> jsonFieldCollations) {
-    final List<RelFieldCollation> fieldCollations =
-        new ArrayList<RelFieldCollation>();
+    final List<RelFieldCollation> fieldCollations = new ArrayList<>();
     for (Map<String, Object> map : jsonFieldCollations) {
       fieldCollations.add(toFieldCollation(map));
     }
@@ -192,7 +182,7 @@ public class RelJson {
     if (o instanceof List) {
       @SuppressWarnings("unchecked")
       final List<Map<String, Object>> jsonList = (List<Map<String, Object>>) o;
-      final RelDataTypeFactory.FieldInfoBuilder builder = typeFactory.builder();
+      final RelDataTypeFactory.Builder builder = typeFactory.builder();
       for (Map<String, Object> jsonMap : jsonList) {
         builder.add((String) jsonMap.get("name"), toType(typeFactory, jsonMap));
       }
@@ -316,8 +306,10 @@ public class RelJson {
       }
       return value2;
     case INPUT_REF:
+    case LOCAL_REF:
       map = jsonBuilder.map();
-      map.put("input", ((RexInputRef) node).getIndex());
+      map.put("input", ((RexSlot) node).getIndex());
+      map.put("name", ((RexSlot) node).getName());
       return map;
     case CORREL_VARIABLE:
       map = jsonBuilder.map();
@@ -357,6 +349,7 @@ public class RelJson {
     } else if (o instanceof Map) {
       Map map = (Map) o;
       final String op = (String) map.get("op");
+      final RelDataTypeFactory typeFactory = cluster.getTypeFactory();
       if (op != null) {
         final List operands = (List) map.get("operands");
         final Object jsonType = map.get("type");
@@ -364,7 +357,7 @@ public class RelJson {
         final List<RexNode> rexOperands = toRexList(relInput, operands);
         RelDataType type;
         if (jsonType != null) {
-          type = toType(cluster.getTypeFactory(), jsonType);
+          type = toType(typeFactory, jsonType);
         } else {
           type = rexBuilder.deriveReturnType(operator, rexOperands);
         }
@@ -393,7 +386,7 @@ public class RelJson {
       final String correl = (String) map.get("correl");
       if (correl != null) {
         final Object jsonType = map.get("type");
-        RelDataType type = toType(cluster.getTypeFactory(), jsonType);
+        RelDataType type = toType(typeFactory, jsonType);
         return rexBuilder.makeCorrel(type, new CorrelationId(correl));
       }
       if (map.containsKey("literal")) {
@@ -401,7 +394,8 @@ public class RelJson {
         final SqlTypeName sqlTypeName =
             Util.enumVal(SqlTypeName.class, (String) map.get("type"));
         if (literal == null) {
-          return rexBuilder.makeNullLiteral(sqlTypeName);
+          return rexBuilder.makeNullLiteral(
+              typeFactory.createSqlType(sqlTypeName));
         }
         return toRex(relInput, literal);
       }
@@ -425,7 +419,7 @@ public class RelJson {
   }
 
   private List<RexNode> toRexList(RelInput relInput, List operands) {
-    final List<RexNode> list = new ArrayList<RexNode>();
+    final List<RexNode> list = new ArrayList<>();
     for (Object operand : operands) {
       list.add(toRex(relInput, operand));
     }

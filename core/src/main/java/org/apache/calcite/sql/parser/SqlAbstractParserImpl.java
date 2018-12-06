@@ -26,16 +26,18 @@ import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSyntax;
 import org.apache.calcite.sql.SqlUnresolvedFunction;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
-import org.apache.calcite.util.Util;
+import org.apache.calcite.sql.validate.SqlConformance;
+import org.apache.calcite.util.Glossary;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
+import com.google.common.collect.Iterables;
 
 import java.io.Reader;
 import java.io.StringReader;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -303,19 +305,25 @@ public abstract class SqlAbstractParserImpl {
     /**
      * Accept only non-query expressions in this context.
      */
-    ACCEPT_NONQUERY,
+    ACCEPT_NON_QUERY,
 
     /**
      * Accept only parenthesized queries or non-query expressions in this
      * context.
      */
-    ACCEPT_SUBQUERY,
+    ACCEPT_SUB_QUERY,
 
     /**
      * Accept only CURSOR constructors, parenthesized queries, or non-query
      * expressions in this context.
      */
-    ACCEPT_CURSOR
+    ACCEPT_CURSOR;
+
+    @Deprecated // to be removed before 2.0
+    public static final ExprContext ACCEPT_SUBQUERY = ACCEPT_SUB_QUERY;
+
+    @Deprecated // to be removed before 2.0
+    public static final ExprContext ACCEPT_NONQUERY = ACCEPT_NON_QUERY;
   }
 
   //~ Instance fields --------------------------------------------------------
@@ -332,11 +340,32 @@ public abstract class SqlAbstractParserImpl {
   //~ Methods ----------------------------------------------------------------
 
   /**
-   * @return immutable set of all reserved words defined by SQL-92
-   * @sql.92 Section 5.2
+   * Returns immutable set of all reserved words defined by SQL-92.
+   *
+   * @see Glossary#SQL92 SQL-92 Section 5.2
    */
   public static Set<String> getSql92ReservedWords() {
     return SQL_92_RESERVED_WORD_SET;
+  }
+
+  /**
+   * Creates a call.
+   *
+   * @param funName           Name of function
+   * @param pos               Position in source code
+   * @param funcType          Type of function
+   * @param functionQualifier Qualifier
+   * @param operands          Operands to call
+   * @return Call
+   */
+  protected SqlCall createCall(
+      SqlIdentifier funName,
+      SqlParserPos pos,
+      SqlFunctionCategory funcType,
+      SqlLiteral functionQualifier,
+      Iterable<? extends SqlNode> operands) {
+    return createCall(funName, pos, funcType, functionQualifier,
+        Iterables.toArray(operands, SqlNode.class));
   }
 
   /**
@@ -362,7 +391,7 @@ public abstract class SqlAbstractParserImpl {
     // preserve the correct syntax (i.e. don't quote builtin function
     /// name when regenerating SQL).
     if (funName.isSimple()) {
-      final List<SqlOperator> list = Lists.newArrayList();
+      final List<SqlOperator> list = new ArrayList<>();
       opTab.lookupOperatorOverloads(funName, funcType, SqlSyntax.FUNCTION, list);
       if (list.size() == 1) {
         fun = list.get(0);
@@ -392,6 +421,8 @@ public abstract class SqlAbstractParserImpl {
    * @return clean excn
    */
   public abstract SqlParseException normalizeException(Throwable ex);
+
+  protected abstract SqlParserPos getPos() throws Exception;
 
   /**
    * Reinitializes parser with new input.
@@ -444,9 +475,9 @@ public abstract class SqlAbstractParserImpl {
   public abstract void setIdentifierMaxLength(int identifierMaxLength);
 
   /**
-   * Sets whether the bang-equal token != is allowed as an alternative to &lt;&gt;.
+   * Sets the SQL language conformance level.
    */
-  public abstract void setAllowBangEqual(boolean allowBangEqual);
+  public abstract void setConformance(SqlConformance conformance);
 
   /**
    * Sets the SQL text that is being parsed.
@@ -539,20 +570,20 @@ public abstract class SqlAbstractParserImpl {
    * Default implementation of the {@link Metadata} interface.
    */
   public static class MetadataImpl implements Metadata {
-    private final Set<String> reservedFunctionNames = new HashSet<String>();
-    private final Set<String> contextVariableNames = new HashSet<String>();
-    private final Set<String> nonReservedKeyWordSet = new HashSet<String>();
+    private final Set<String> reservedFunctionNames = new HashSet<>();
+    private final Set<String> contextVariableNames = new HashSet<>();
+    private final Set<String> nonReservedKeyWordSet = new HashSet<>();
 
     /**
      * Set of all tokens.
      */
-    private final SortedSet<String> tokenSet = new TreeSet<String>();
+    private final SortedSet<String> tokenSet = new TreeSet<>();
 
     /**
      * Immutable list of all tokens, in alphabetical order.
      */
     private final List<String> tokenList;
-    private final Set<String> reservedWords = new HashSet<String>();
+    private final Set<String> reservedWords = new HashSet<>();
     private final String sql92ReservedWords;
 
     /**
@@ -566,7 +597,7 @@ public abstract class SqlAbstractParserImpl {
       initList(sqlParser, nonReservedKeyWordSet, "NonReservedKeyWord");
       tokenList = ImmutableList.copyOf(tokenSet);
       sql92ReservedWords = constructSql92ReservedWordList();
-      Set<String> reservedWordSet = new TreeSet<String>();
+      Set<String> reservedWordSet = new TreeSet<>();
       reservedWordSet.addAll(tokenSet);
       reservedWordSet.removeAll(nonReservedKeyWordSet);
       reservedWords.addAll(reservedWordSet);
@@ -582,8 +613,7 @@ public abstract class SqlAbstractParserImpl {
       parserImpl.ReInit(new StringReader("1"));
       try {
         Object o = virtualCall(parserImpl, name);
-        Util.discard(o);
-        throw Util.newInternal("expected call to fail");
+        throw new AssertionError("expected call to fail, got " + o);
       } catch (SqlParseException parseException) {
         // First time through, build the list of all tokens.
         final String[] tokenImages = parseException.getTokenImages();
@@ -610,9 +640,7 @@ public abstract class SqlAbstractParserImpl {
           }
         }
       } catch (Throwable e) {
-        throw Util.newInternal(
-            e,
-            "Unexpected error while building token lists");
+        throw new RuntimeException("While building token lists", e);
       }
     }
 
@@ -631,10 +659,6 @@ public abstract class SqlAbstractParserImpl {
       try {
         final Method method = clazz.getMethod(name, (Class[]) null);
         return method.invoke(parserImpl, (Object[]) null);
-      } catch (NoSuchMethodException e) {
-        throw Util.newInternal(e);
-      } catch (IllegalAccessException e) {
-        throw Util.newInternal(e);
       } catch (InvocationTargetException e) {
         Throwable cause = e.getCause();
         throw parserImpl.normalizeException(cause);
@@ -646,7 +670,7 @@ public abstract class SqlAbstractParserImpl {
      */
     private String constructSql92ReservedWordList() {
       StringBuilder sb = new StringBuilder();
-      TreeSet<String> jdbcReservedSet = new TreeSet<String>();
+      TreeSet<String> jdbcReservedSet = new TreeSet<>();
       jdbcReservedSet.addAll(tokenSet);
       jdbcReservedSet.removeAll(SQL_92_RESERVED_WORD_SET);
       jdbcReservedSet.removeAll(nonReservedKeyWordSet);

@@ -18,6 +18,7 @@ package org.apache.calcite.plan;
 
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.util.trace.CalciteTrace;
 
@@ -191,6 +192,14 @@ public abstract class RelOptRuleCall {
   }
 
   /**
+   * Returns the current RelMetadataQuery, to be used for instance by
+   * {@link RelOptRule#onMatch(RelOptRuleCall)}.
+   */
+  public RelMetadataQuery getMetadataQuery() {
+    return rel(0).getCluster().getMetadataQuery();
+  }
+
+  /**
    * @return list of parents of the first relational expression
    */
   public List<RelNode> getParents() {
@@ -222,7 +231,7 @@ public abstract class RelOptRuleCall {
    *            expression of the rule call, {@code call.rels(0)}
    */
   public final void transformTo(RelNode rel) {
-    transformTo(rel, ImmutableMap.<RelNode, RelNode>of());
+    transformTo(rel, ImmutableMap.of());
   }
 
   /** Creates a {@link org.apache.calcite.tools.RelBuilder} to be used by

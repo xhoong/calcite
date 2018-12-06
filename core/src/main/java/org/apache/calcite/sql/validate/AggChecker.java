@@ -24,6 +24,7 @@ import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlUtil;
 import org.apache.calcite.sql.SqlWindow;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.util.SqlBasicVisitor;
 import org.apache.calcite.util.Litmus;
 
@@ -41,6 +42,7 @@ class AggChecker extends SqlBasicVisitor<Void> {
   //~ Instance fields --------------------------------------------------------
 
   private final Deque<SqlValidatorScope> scopes = new ArrayDeque<>();
+  private final List<SqlNode> extraExprs;
   private final List<SqlNode> groupExprs;
   private boolean distinct;
   private SqlValidatorImpl validator;
@@ -60,9 +62,11 @@ class AggChecker extends SqlBasicVisitor<Void> {
   AggChecker(
       SqlValidatorImpl validator,
       AggregatingScope scope,
+      List<SqlNode> extraExprs,
       List<SqlNode> groupExprs,
       boolean distinct) {
     this.validator = validator;
+    this.extraExprs = extraExprs;
     this.groupExprs = groupExprs;
     this.distinct = distinct;
     this.scopes.push(scope);
@@ -73,6 +77,12 @@ class AggChecker extends SqlBasicVisitor<Void> {
   boolean isGroupExpr(SqlNode expr) {
     for (SqlNode groupExpr : groupExprs) {
       if (groupExpr.equalsDeep(expr, Litmus.IGNORE)) {
+        return true;
+      }
+    }
+
+    for (SqlNode extraExpr : extraExprs) {
+      if (extraExpr.equalsDeep(expr, Litmus.IGNORE)) {
         return true;
       }
     }
@@ -146,6 +156,10 @@ class AggChecker extends SqlBasicVisitor<Void> {
       call.operand(0).accept(this);
       return null;
     }
+    if (call.getKind() == SqlKind.WITHIN_GROUP) {
+      call.operand(0).accept(this);
+      return null;
+    }
     // Visit the operand in window function
     if (call.getKind() == SqlKind.OVER) {
       for (SqlNode operand : call.<SqlCall>operand(0).getOperandList()) {
@@ -167,6 +181,26 @@ class AggChecker extends SqlBasicVisitor<Void> {
       // This call matches an expression in the GROUP BY clause.
       return null;
     }
+
+    final SqlCall groupCall =
+        SqlStdOperatorTable.convertAuxiliaryToGroupCall(call);
+    if (groupCall != null) {
+      if (isGroupExpr(groupCall)) {
+        // This call is an auxiliary function that matches a group call in the
+        // GROUP BY clause.
+        //
+        // For example TUMBLE_START is an auxiliary of the TUMBLE
+        // group function, and
+        //   TUMBLE_START(rowtime, INTERVAL '1' HOUR)
+        // matches
+        //   TUMBLE(rowtime, INTERVAL '1' HOUR')
+        return null;
+      }
+      throw validator.newValidationError(groupCall,
+          RESOURCE.auxiliaryWithoutMatchingGroupCall(
+              call.getOperator().getName(), groupCall.getOperator().getName()));
+    }
+
     if (call.isA(SqlKind.QUERY)) {
       // Allow queries for now, even though they may contain
       // references to forbidden columns.
@@ -179,12 +213,13 @@ class AggChecker extends SqlBasicVisitor<Void> {
 
     // Visit the operands (only expressions).
     call.getOperator()
-        .acceptCall(this, call, true, ArgHandlerImpl.<Void>instance());
+        .acceptCall(this, call, true, ArgHandlerImpl.instance());
 
     // Restore scope.
     scopes.pop();
     return null;
   }
+
 }
 
 // End AggChecker.java

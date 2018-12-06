@@ -28,7 +28,10 @@ import org.apache.calcite.avatica.AvaticaStatement;
 import org.apache.calcite.avatica.Handler;
 import org.apache.calcite.avatica.HandlerImpl;
 import org.apache.calcite.avatica.Meta;
+import org.apache.calcite.avatica.util.Casing;
+import org.apache.calcite.avatica.util.Quoting;
 import org.apache.calcite.config.CalciteConnectionConfig;
+import org.apache.calcite.config.CalciteConnectionProperty;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.config.NullCollation;
 import org.apache.calcite.jdbc.CalciteConnection;
@@ -43,6 +46,7 @@ import org.apache.calcite.linq4j.QueryProvider;
 import org.apache.calcite.linq4j.Queryable;
 import org.apache.calcite.linq4j.function.Function0;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.prepare.CalcitePrepareImpl;
@@ -50,27 +54,26 @@ import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.TableModify;
 import org.apache.calcite.rel.logical.LogicalTableModify;
+import org.apache.calcite.rel.rules.IntersectToDistinctRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.runtime.FlatLists;
 import org.apache.calcite.runtime.Hook;
 import org.apache.calcite.runtime.SqlFunctions;
 import org.apache.calcite.schema.ModifiableTable;
 import org.apache.calcite.schema.ModifiableView;
 import org.apache.calcite.schema.QueryableTable;
-import org.apache.calcite.schema.ScannableTable;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaFactory;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Table;
 import org.apache.calcite.schema.TableFactory;
-import org.apache.calcite.schema.TableFunction;
 import org.apache.calcite.schema.TableMacro;
 import org.apache.calcite.schema.TranslatableTable;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.AbstractTable;
 import org.apache.calcite.schema.impl.AbstractTableQueryable;
-import org.apache.calcite.schema.impl.TableFunctionImpl;
 import org.apache.calcite.schema.impl.TableMacroImpl;
 import org.apache.calcite.schema.impl.ViewTable;
 import org.apache.calcite.sql.SqlCall;
@@ -80,12 +83,8 @@ import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlSpecialOperator;
-import org.apache.calcite.sql.advise.SqlAdvisorGetHintsFunction;
-import org.apache.calcite.sql.parser.SqlAbstractParserImpl;
 import org.apache.calcite.sql.parser.SqlParser;
-import org.apache.calcite.sql.parser.SqlParserImplFactory;
 import org.apache.calcite.sql.parser.SqlParserPos;
-import org.apache.calcite.sql.parser.SqlParserUtil;
 import org.apache.calcite.sql.parser.impl.SqlParserImpl;
 import org.apache.calcite.util.Bug;
 import org.apache.calcite.util.JsonBuilder;
@@ -94,21 +93,18 @@ import org.apache.calcite.util.Smalls;
 import org.apache.calcite.util.TryThreadLocal;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Function;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.LinkedListMultimap;
+import com.google.common.collect.Multimap;
 
+import org.hamcrest.Matcher;
 import org.hsqldb.jdbcDriver;
-
 import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.Reader;
 import java.math.BigDecimal;
 import java.sql.Array;
 import java.sql.Connection;
@@ -116,12 +112,14 @@ import java.sql.DatabaseMetaData;
 import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.DriverPropertyInfo;
+import java.sql.ParameterMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -129,19 +127,22 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
+import static org.apache.calcite.test.Matchers.isLinux;
 import static org.apache.calcite.util.Static.RESOURCE;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.not;
@@ -245,7 +246,7 @@ public class JdbcTest {
   @Test public void testModelWithModifiableView() throws Exception {
     final List<Employee> employees = new ArrayList<>();
     employees.add(new Employee(135, 10, "Simon", 56.7f, null));
-    try (final TryThreadLocal.Memo ignore =
+    try (TryThreadLocal.Memo ignore =
              EmpDeptTableFactory.THREAD_COLLECTION.push(employees)) {
       final CalciteAssert.AssertThat with = modelWithView(
           "select \"name\", \"empid\" as e, \"salary\" "
@@ -253,67 +254,63 @@ public class JdbcTest {
           null);
       with.query("select \"name\" from \"adhoc\".V order by \"name\"")
           .returns("name=Simon\n");
-      with.doWithConnection(
-          new Function<CalciteConnection, Object>() {
-            @Override public Object apply(CalciteConnection input) {
-              try {
-                final Statement statement = input.createStatement();
-                ResultSet resultSet =
-                    statement.executeQuery("explain plan for\n"
-                        + "insert into \"adhoc\".V\n"
-                        + "values ('Fred', 56, 123.4)");
-                assertThat(resultSet.next(), is(true));
-                assertThat(Util.toLinux(resultSet.getString(1)),
-                    is(
-                        "EnumerableTableModify(table=[[adhoc, MUTABLE_EMPLOYEES]], operation=[INSERT], updateColumnList=[[]], flattened=[false])\n"
-                        + "  EnumerableCalc(expr#0..2=[{inputs}], expr#3=[CAST($t1):JavaType(int) NOT NULL], expr#4=[10], expr#5=[CAST($t0):JavaType(class java.lang.String)], expr#6=[CAST($t2):JavaType(float) NOT NULL], expr#7=[null], empid=[$t3], deptno=[$t4], name=[$t5], salary=[$t6], commission=[$t7])\n"
-                        + "    EnumerableValues(tuples=[[{ 'Fred', 56, 123.4 }]])\n"));
+      with.doWithConnection(connection -> {
+        try {
+          final Statement statement = connection.createStatement();
+          ResultSet resultSet =
+              statement.executeQuery("explain plan for\n"
+                  + "insert into \"adhoc\".V\n"
+                  + "values ('Fred', 56, 123.4)");
+          assertThat(resultSet.next(), is(true));
+          assertThat(resultSet.getString(1),
+              isLinux(
+                  "EnumerableTableModify(table=[[adhoc, MUTABLE_EMPLOYEES]], operation=[INSERT], flattened=[false])\n"
+                  + "  EnumerableCalc(expr#0..2=[{inputs}], expr#3=[CAST($t1):JavaType(int) NOT NULL], expr#4=[10], expr#5=[CAST($t0):JavaType(class java.lang.String)], expr#6=[CAST($t2):JavaType(float) NOT NULL], expr#7=[null], empid=[$t3], deptno=[$t4], name=[$t5], salary=[$t6], commission=[$t7])\n"
+                  + "    EnumerableValues(tuples=[[{ 'Fred', 56, 123.4 }]])\n"));
 
-                // With named columns
-                resultSet =
-                    statement.executeQuery("explain plan for\n"
-                        + "insert into \"adhoc\".V (\"name\", e, \"salary\")\n"
-                        + "values ('Fred', 56, 123.4)");
-                assertThat(resultSet.next(), is(true));
+          // With named columns
+          resultSet =
+              statement.executeQuery("explain plan for\n"
+                  + "insert into \"adhoc\".V (\"name\", e, \"salary\")\n"
+                  + "values ('Fred', 56, 123.4)");
+          assertThat(resultSet.next(), is(true));
 
-                // With named columns, in different order
-                resultSet =
-                    statement.executeQuery("explain plan for\n"
-                        + "insert into \"adhoc\".V (e, \"salary\", \"name\")\n"
-                        + "values (56, 123.4, 'Fred')");
-                assertThat(resultSet.next(), is(true));
+          // With named columns, in different order
+          resultSet =
+              statement.executeQuery("explain plan for\n"
+                  + "insert into \"adhoc\".V (e, \"salary\", \"name\")\n"
+                  + "values (56, 123.4, 'Fred')");
+          assertThat(resultSet.next(), is(true));
 
-                // Mis-named column
-                try {
-                  final PreparedStatement s =
-                      input.prepareStatement("explain plan for\n"
-                          + "insert into \"adhoc\".V (empno, \"salary\", \"name\")\n"
-                          + "values (56, 123.4, 'Fred')");
-                  fail("expected error, got " + s);
-                } catch (SQLException e) {
-                  assertThat(e.getMessage(),
-                      startsWith("Error while preparing statement"));
-                }
+          // Mis-named column
+          try {
+            final PreparedStatement s =
+                connection.prepareStatement("explain plan for\n"
+                    + "insert into \"adhoc\".V (empno, \"salary\", \"name\")\n"
+                    + "values (56, 123.4, 'Fred')");
+            fail("expected error, got " + s);
+          } catch (SQLException e) {
+            assertThat(e.getMessage(),
+                startsWith("Error while preparing statement"));
+          }
 
-                // Fail to provide mandatory column
-                try {
-                  final PreparedStatement s =
-                      input.prepareStatement("explain plan for\n"
-                          + "insert into \"adhoc\".V (e, name)\n"
-                          + "values (56, 'Fred')");
-                  fail("expected error, got " + s);
-                } catch (SQLException e) {
-                  assertThat(e.getMessage(),
-                      startsWith("Error while preparing statement"));
-                }
+          // Fail to provide mandatory column
+          try {
+            final PreparedStatement s =
+                connection.prepareStatement("explain plan for\n"
+                    + "insert into \"adhoc\".V (e, name)\n"
+                    + "values (56, 'Fred')");
+            fail("expected error, got " + s);
+          } catch (SQLException e) {
+            assertThat(e.getMessage(),
+                startsWith("Error while preparing statement"));
+          }
 
-                statement.close();
-                return null;
-              } catch (SQLException e) {
-                throw Throwables.propagate(e);
-              }
-            }
-          });
+          statement.close();
+        } catch (SQLException e) {
+          throw new RuntimeException(e);
+        }
+      });
     }
   }
 
@@ -321,7 +318,7 @@ public class JdbcTest {
   @Test public void testModelWithInvalidModifiableView() throws Exception {
     final List<Employee> employees = new ArrayList<>();
     employees.add(new Employee(135, 10, "Simon", 56.7f, null));
-    try (final TryThreadLocal.Memo ignore =
+    try (TryThreadLocal.Memo ignore =
              EmpDeptTableFactory.THREAD_COLLECTION.push(employees)) {
       Util.discard(RESOURCE.noValueSuppliedForViewColumn(null, null));
       modelWithView("select \"name\", \"empid\" as e, \"salary\" "
@@ -344,8 +341,7 @@ public class JdbcTest {
           true)
           .query("select \"name\" from \"adhoc\".V order by \"name\"")
           .throws_(
-              "View is not modifiable. No value is supplied for NOT NULL "
-                  + "column 'deptno' of base table 'MUTABLE_EMPLOYEES'");
+              "Modifiable view must be predicated only on equality expressions");
 
       // Deduce "deptno = 10" from the constraint, and add a further
       // condition "deptno < 20 OR commission > 1000".
@@ -354,10 +350,15 @@ public class JdbcTest {
               + "where \"deptno\" = 10 AND (\"deptno\" < 20 OR \"commission\" > 1000)",
           true)
           .query("insert into \"adhoc\".v values ('n',1,2)")
-          .explainContains(""
-              + "EnumerableTableModify(table=[[adhoc, MUTABLE_EMPLOYEES]], operation=[INSERT], updateColumnList=[[]], flattened=[false])\n"
-              + "  EnumerableCalc(expr#0..2=[{inputs}], expr#3=[CAST($t1):JavaType(int) NOT NULL], expr#4=[10], expr#5=[CAST($t0):JavaType(class java.lang.String)], expr#6=[CAST($t2):JavaType(float) NOT NULL], expr#7=[null], expr#8=[20], expr#9=[<($t4, $t8)], expr#10=[1000], expr#11=[>($t7, $t10)], expr#12=[OR($t9, $t11)], empid=[$t3], deptno=[$t4], name=[$t5], salary=[$t6], commission=[$t7], $condition=[$t12])\n"
-              + "    EnumerableValues(tuples=[[{ 'n', 1, 2 }]])");
+          .throws_(
+              "Modifiable view must be predicated only on equality expressions");
+      modelWithView("select \"name\", \"empid\" as e, \"salary\" "
+              + "from \"MUTABLE_EMPLOYEES\"\n"
+              + "where \"deptno\" = 10 AND (\"deptno\" > 20 AND \"commission\" > 1000)",
+          true)
+          .query("insert into \"adhoc\".v values ('n',1,2)")
+          .throws_(
+              "Modifiable view must be predicated only on equality expressions");
 
       modelWithView(
           "select \"name\", \"empid\" as e, \"salary\" "
@@ -368,7 +369,7 @@ public class JdbcTest {
           .runs();
 
       modelWithView(
-          "select \"name\", \"empid\" as e, \"salary\", \"empid\" + 3 as e3, 1 as one\n"
+          "select \"name\", \"empid\" as e, \"salary\", \"empid\" + 3 as e3, 1 as uno\n"
               + "from \"MUTABLE_EMPLOYEES\"\n"
               + "where \"commission\" = 100 AND \"deptno\" = 20",
           true)
@@ -393,314 +394,6 @@ public class JdbcTest {
           .query("select \"name\" from \"adhoc\".V order by \"name\"")
           .runs();
     }
-  }
-
-  /**
-   * Tests a table function with literal arguments.
-   */
-  @Test public void testTableFunction()
-      throws SQLException, ClassNotFoundException {
-    Connection connection =
-        DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table =
-        TableFunctionImpl.create(Smalls.GENERATE_STRINGS_METHOD);
-    schema.add("GenerateStrings", table);
-    ResultSet resultSet = connection.createStatement().executeQuery("select *\n"
-        + "from table(\"s\".\"GenerateStrings\"(5)) as t(n, c)\n"
-        + "where char_length(c) > 3");
-    assertThat(CalciteAssert.toString(resultSet),
-        equalTo("N=4; C=abcd\n"));
-  }
-
-  /**
-   * Tests a table function that implements {@link ScannableTable} and returns
-   * a single column.
-   */
-  @Test public void testScannableTableFunction()
-      throws SQLException, ClassNotFoundException {
-    Connection connection = DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table = TableFunctionImpl.create(Smalls.MAZE_METHOD);
-    schema.add("Maze", table);
-    final String sql = "select *\n"
-        + "from table(\"s\".\"Maze\"(5, 3, 1))";
-    ResultSet resultSet = connection.createStatement().executeQuery(sql);
-    final String result = "S=abcde\n"
-        + "S=xyz\n"
-        + "S=generate(w=5, h=3, s=1)\n";
-    assertThat(CalciteAssert.toString(resultSet), is(result));
-  }
-
-  /** As {@link #testScannableTableFunction()} but with named parameters. */
-  @Test public void testScannableTableFunctionWithNamedParameters()
-      throws SQLException, ClassNotFoundException {
-    Connection connection = DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table = TableFunctionImpl.create(Smalls.MAZE2_METHOD);
-    schema.add("Maze", table);
-    final String sql = "select *\n"
-        + "from table(\"s\".\"Maze\"(5, 3, 1))";
-    final Statement statement = connection.createStatement();
-    ResultSet resultSet = statement.executeQuery(sql);
-    final String result = "S=abcde\n"
-        + "S=xyz\n";
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate2(w=5, h=3, s=1)\n"));
-
-    final String sql2 = "select *\n"
-        + "from table(\"s\".\"Maze\"(WIDTH => 5, HEIGHT => 3, SEED => 1))";
-    resultSet = statement.executeQuery(sql2);
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate2(w=5, h=3, s=1)\n"));
-
-    final String sql3 = "select *\n"
-        + "from table(\"s\".\"Maze\"(HEIGHT => 3, WIDTH => 5))";
-    resultSet = statement.executeQuery(sql3);
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate2(w=5, h=3, s=null)\n"));
-    connection.close();
-  }
-
-  /** As {@link #testScannableTableFunction()} but with named parameters. */
-  @Test public void testMultipleScannableTableFunctionWithNamedParameters()
-      throws SQLException, ClassNotFoundException {
-    Connection connection = DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table1 = TableFunctionImpl.create(Smalls.MAZE_METHOD);
-    schema.add("Maze", table1);
-    final TableFunction table2 = TableFunctionImpl.create(Smalls.MAZE2_METHOD);
-    schema.add("Maze", table2);
-    final TableFunction table3 = TableFunctionImpl.create(Smalls.MAZE3_METHOD);
-    schema.add("Maze", table3);
-    final String sql = "select *\n"
-        + "from table(\"s\".\"Maze\"(5, 3, 1))";
-    final Statement statement = connection.createStatement();
-    ResultSet resultSet = statement.executeQuery(sql);
-    final String result = "S=abcde\n"
-        + "S=xyz\n";
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate(w=5, h=3, s=1)\n"));
-
-    final String sql2 = "select *\n"
-        + "from table(\"s\".\"Maze\"(WIDTH => 5, HEIGHT => 3, SEED => 1))";
-    resultSet = statement.executeQuery(sql2);
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate2(w=5, h=3, s=1)\n"));
-
-    final String sql3 = "select *\n"
-        + "from table(\"s\".\"Maze\"(HEIGHT => 3, WIDTH => 5))";
-    resultSet = statement.executeQuery(sql3);
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate2(w=5, h=3, s=null)\n"));
-
-    final String sql4 = "select *\n"
-        + "from table(\"s\".\"Maze\"(FOO => 'a'))";
-    resultSet = statement.executeQuery(sql4);
-    assertThat(CalciteAssert.toString(resultSet),
-        is(result + "S=generate3(foo=a)\n"));
-    connection.close();
-  }
-
-  /**
-   * Tests a table function that returns different row type based on
-   * actual call arguments.
-   */
-  @Test public void testTableFunctionDynamicStructure()
-      throws SQLException, ClassNotFoundException {
-    Connection connection = getConnectionWithMultiplyFunction();
-    final PreparedStatement ps = connection.prepareStatement("select *\n"
-        + "from table(\"s\".\"multiplication\"(4, 3, ?))\n");
-    ps.setInt(1, 100);
-    ResultSet resultSet = ps.executeQuery();
-    assertThat(CalciteAssert.toString(resultSet),
-        equalTo("row_name=row 0; c1=101; c2=102; c3=103; c4=104\n"
-            + "row_name=row 1; c1=102; c2=104; c3=106; c4=108\n"
-            + "row_name=row 2; c1=103; c2=106; c3=109; c4=112\n"));
-  }
-
-  /**
-   * Tests that non-nullable arguments of a table function must be provided
-   * as literals.
-   */
-  @Ignore("SQLException does not include message from nested exception")
-  @Test public void testTableFunctionNonNullableMustBeLiterals()
-      throws SQLException, ClassNotFoundException {
-    Connection connection = getConnectionWithMultiplyFunction();
-    try {
-      final PreparedStatement ps = connection.prepareStatement("select *\n"
-          + "from table(\"s\".\"multiplication\"(?, 3, 100))\n");
-      ps.setInt(1, 100);
-      ResultSet resultSet = ps.executeQuery();
-      fail("Should fail, got " + resultSet);
-    } catch (SQLException e) {
-      assertThat(e.getMessage(),
-          containsString("Wrong arguments for table function 'public static "
-              + "org.apache.calcite.schema.QueryableTable "
-              + "org.apache.calcite.test.JdbcTest"
-              + ".multiplicationTable(int,int,java.lang.Integer)'"
-              + " call. Expected '[int, int, class"
-              + "java.lang.Integer]', actual '[null, 3, 100]'"));
-    }
-  }
-
-  private Connection getConnectionWithMultiplyFunction()
-      throws ClassNotFoundException, SQLException {
-    Connection connection =
-        DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table =
-        TableFunctionImpl.create(Smalls.MULTIPLICATION_TABLE_METHOD);
-    schema.add("multiplication", table);
-    return connection;
-  }
-
-  /**
-   * Tests a table function that takes cursor input.
-   */
-  @Ignore("CannotPlanException: Node [rel#18:Subset#4.ENUMERABLE.[]] "
-          + "could not be implemented")
-  @Test public void testTableFunctionCursorInputs()
-      throws SQLException, ClassNotFoundException {
-    Connection connection =
-        DriverManager.getConnection("jdbc:calcite:");
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table =
-        TableFunctionImpl.create(Smalls.GENERATE_STRINGS_METHOD);
-    schema.add("GenerateStrings", table);
-    final TableFunction add =
-        TableFunctionImpl.create(Smalls.PROCESS_CURSOR_METHOD);
-    schema.add("process", add);
-    final PreparedStatement ps = connection.prepareStatement("select *\n"
-        + "from table(\"s\".\"process\"(2,\n"
-        + "cursor(select * from table(\"s\".\"GenerateStrings\"(?)))\n"
-        + ")) as t(u)\n"
-        + "where u > 3");
-    ps.setInt(1, 5);
-    ResultSet resultSet = ps.executeQuery();
-    // GenerateStrings returns 0..4, then 2 is added (process function),
-    // thus 2..6, finally where u > 3 leaves just 4..6
-    assertThat(CalciteAssert.toString(resultSet),
-        equalTo("u=4\n"
-            + "u=5\n"
-            + "u=6\n"));
-  }
-
-  /**
-   * Tests a table function that takes multiple cursor inputs.
-   */
-  @Ignore("CannotPlanException: Node [rel#24:Subset#6.ENUMERABLE.[]] "
-          + "could not be implemented")
-  @Test public void testTableFunctionCursorsInputs()
-      throws SQLException, ClassNotFoundException {
-    Connection connection =
-        getConnectionWithMultiplyFunction();
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    SchemaPlus schema = rootSchema.getSubSchema("s");
-    final TableFunction table =
-        TableFunctionImpl.create(Smalls.GENERATE_STRINGS_METHOD);
-    schema.add("GenerateStrings", table);
-    final TableFunction add =
-        TableFunctionImpl.create(Smalls.PROCESS_CURSORS_METHOD);
-    schema.add("process", add);
-    final PreparedStatement ps = connection.prepareStatement("select *\n"
-        + "from table(\"s\".\"process\"(2,\n"
-        + "cursor(select * from table(\"s\".\"multiplication\"(5,5,0))),\n"
-        + "cursor(select * from table(\"s\".\"GenerateStrings\"(?)))\n"
-        + ")) as t(u)\n"
-        + "where u > 3");
-    ps.setInt(1, 5);
-    ResultSet resultSet = ps.executeQuery();
-    // GenerateStrings produce 0..4
-    // multiplication produce 1..5
-    // process sums and adds 2
-    // sum is 2 + 1..9 == 3..9
-    assertThat(CalciteAssert.toString(resultSet),
-        equalTo("u=4\n"
-            + "u=5\n"
-            + "u=6\n"
-            + "u=7\n"
-            + "u=8\n"
-            + "u=9\n"));
-  }
-
-  /**
-   * Tests {@link org.apache.calcite.sql.advise.SqlAdvisorGetHintsFunction}.
-   */
-  @Test public void testSqlAdvisorGetHintsFunction()
-      throws SQLException, ClassNotFoundException {
-    adviseSql("select e.e^ from \"emps\" e",
-        CalciteAssert.checkResultUnordered(
-            "id=e; names=null; type=MATCH",
-            "id=empid; names=[empid]; type=COLUMN"));
-  }
-
-  /**
-   * Tests {@link org.apache.calcite.sql.advise.SqlAdvisorGetHintsFunction}.
-   */
-  @Test public void testSqlAdvisorSchemaNames()
-      throws SQLException, ClassNotFoundException {
-    adviseSql("select empid from \"emps\" e, ^",
-        CalciteAssert.checkResultUnordered(
-            "id=; names=null; type=MATCH",
-            "id=(; names=[(]; type=KEYWORD",
-            "id=LATERAL; names=[LATERAL]; type=KEYWORD",
-            "id=TABLE; names=[TABLE]; type=KEYWORD",
-            "id=UNNEST; names=[UNNEST]; type=KEYWORD",
-            "id=hr; names=[hr]; type=SCHEMA",
-            "id=metadata; names=[metadata]; type=SCHEMA",
-            "id=s; names=[s]; type=SCHEMA",
-            "id=hr.dependents; names=[hr, dependents]; type=TABLE",
-            "id=hr.depts; names=[hr, depts]; type=TABLE",
-            "id=hr.emps; names=[hr, emps]; type=TABLE",
-            "id=hr.locations; names=[hr, locations]; type=TABLE"));
-  }
-
-  private void adviseSql(String sql, Function<ResultSet, Void> checker)
-      throws ClassNotFoundException, SQLException {
-    Properties info = new Properties();
-    info.put("lex", "JAVA");
-    info.put("quoting", "DOUBLE_QUOTE");
-    Connection connection =
-        DriverManager.getConnection("jdbc:calcite:", info);
-    CalciteConnection calciteConnection =
-        connection.unwrap(CalciteConnection.class);
-    SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    rootSchema.add("hr", new ReflectiveSchema(new HrSchema()));
-    SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    calciteConnection.setSchema("hr");
-    final TableFunction table =
-        new SqlAdvisorGetHintsFunction();
-    schema.add("get_hints", table);
-    PreparedStatement ps = connection.prepareStatement("select *\n"
-        + "from table(\"s\".\"get_hints\"(?, ?)) as t(id, names, type)");
-    SqlParserUtil.StringAndPos sap = SqlParserUtil.findPos(sql);
-    ps.setString(1, sap.sql);
-    ps.setInt(2, sap.cursor);
-    final ResultSet resultSet = ps.executeQuery();
-    checker.apply(resultSet);
-    resultSet.close();
-    connection.close();
   }
 
   /**
@@ -875,7 +568,7 @@ public class JdbcTest {
         throw new RuntimeException();
       }
     };
-    try (final TryThreadLocal.Memo ignore =
+    try (TryThreadLocal.Memo ignore =
              HandlerDriver.HANDLERS.push(h)) {
       final HandlerDriver driver = new HandlerDriver();
       CalciteConnection connection = (CalciteConnection)
@@ -893,8 +586,7 @@ public class JdbcTest {
         resultSet.next();
         fail("resultSet.next() should throw SQLException when closed");
       } catch (SQLException e) {
-        assertThat(e.getMessage(),
-            containsString("next() called on closed cursor"));
+        assertThat(e.getMessage(), containsString("ResultSet closed"));
       }
       assertEquals(0, closeCount[0]);
       assertEquals(0, statementCloseCount[0]);
@@ -963,6 +655,24 @@ public class JdbcTest {
     assertTrue(connection.isClosed());
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2071">[CALCITE-2071]
+   * Query with IN and OR in WHERE clause returns wrong result</a>.
+   * More cases in sub-query.iq. */
+  @Test public void testWhereInOr() {
+    final String sql = "select \"empid\"\n"
+        + "from \"hr\".\"emps\" t\n"
+        + "where (\"empid\" in (select \"empid\" from \"hr\".\"emps\")\n"
+        + "    or \"empid\" in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,\n"
+        + "        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25))\n"
+        + "and \"empid\" in (100, 200, 150)";
+    CalciteAssert.hr()
+        .query(sql)
+        .returnsUnordered("empid=100",
+            "empid=200",
+            "empid=150");
+  }
+
   /** Tests that a driver can be extended with its own parser and can execute
    * its own flavor of DDL. */
   @Test public void testMockDdl() throws Exception {
@@ -971,7 +681,7 @@ public class JdbcTest {
              driver.connect("jdbc:calcite:", new Properties());
         Statement statement = connection.createStatement()) {
       assertThat(driver.counter, is(0));
-      statement.executeQuery("COMMIT");
+      statement.executeUpdate("COMMIT");
       assertThat(driver.counter, is(1));
     }
   }
@@ -1193,60 +903,56 @@ public class JdbcTest {
     // insensitive. If a select list contains the same column more than once,
     // the first instance of the column will be returned."
     CalciteAssert.that()
-        .doWithConnection(
-            new Function<CalciteConnection, Object>() {
-              public Object apply(CalciteConnection c) {
-                try {
-                  Statement s = c.createStatement();
-                  ResultSet rs =
-                      s.executeQuery(""
-                          + "SELECT 1 as \"a\", 2 as \"b\", 3 as \"a\", 4 as \"B\"\n"
-                          + "FROM (VALUES (0))");
-                  assertTrue(rs.next());
-                  assertEquals(1, rs.getInt("a"));
-                  assertEquals(1, rs.getInt("A"));
-                  assertEquals(2, rs.getInt("b"));
-                  assertEquals(2, rs.getInt("B"));
-                  assertEquals(1, rs.getInt(1));
-                  assertEquals(2, rs.getInt(2));
-                  assertEquals(3, rs.getInt(3));
-                  assertEquals(4, rs.getInt(4));
-                  try {
-                    int x = rs.getInt("z");
-                    fail("expected error, got " + x);
-                  } catch (SQLException e) {
-                    // ok
-                  }
-                  assertEquals(1, rs.findColumn("a"));
-                  assertEquals(1, rs.findColumn("A"));
-                  assertEquals(2, rs.findColumn("b"));
-                  assertEquals(2, rs.findColumn("B"));
-                  try {
-                    int x = rs.findColumn("z");
-                    fail("expected error, got " + x);
-                  } catch (SQLException e) {
-                    assertThat(e.getMessage(), equalTo("column 'z' not found"));
-                  }
-                  try {
-                    int x = rs.getInt(0);
-                    fail("expected error, got " + x);
-                  } catch (SQLException e) {
-                    assertThat(e.getMessage(),
-                        equalTo("invalid column ordinal: 0"));
-                  }
-                  try {
-                    int x = rs.getInt(5);
-                    fail("expected error, got " + x);
-                  } catch (SQLException e) {
-                    assertThat(e.getMessage(),
-                        equalTo("invalid column ordinal: 5"));
-                  }
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(c -> {
+          try {
+            Statement s = c.createStatement();
+            ResultSet rs =
+                s.executeQuery(""
+                    + "SELECT 1 as \"a\", 2 as \"b\", 3 as \"a\", 4 as \"B\"\n"
+                    + "FROM (VALUES (0))");
+            assertTrue(rs.next());
+            assertEquals(1, rs.getInt("a"));
+            assertEquals(1, rs.getInt("A"));
+            assertEquals(2, rs.getInt("b"));
+            assertEquals(2, rs.getInt("B"));
+            assertEquals(1, rs.getInt(1));
+            assertEquals(2, rs.getInt(2));
+            assertEquals(3, rs.getInt(3));
+            assertEquals(4, rs.getInt(4));
+            try {
+              int x = rs.getInt("z");
+              fail("expected error, got " + x);
+            } catch (SQLException e) {
+              // ok
+            }
+            assertEquals(1, rs.findColumn("a"));
+            assertEquals(1, rs.findColumn("A"));
+            assertEquals(2, rs.findColumn("b"));
+            assertEquals(2, rs.findColumn("B"));
+            try {
+              int x = rs.findColumn("z");
+              fail("expected error, got " + x);
+            } catch (SQLException e) {
+              assertThat(e.getMessage(), equalTo("column 'z' not found"));
+            }
+            try {
+              int x = rs.getInt(0);
+              fail("expected error, got " + x);
+            } catch (SQLException e) {
+              assertThat(e.getMessage(),
+                  equalTo("invalid column ordinal: 0"));
+            }
+            try {
+              int x = rs.getInt(5);
+              fail("expected error, got " + x);
+            } catch (SQLException e) {
+              assertThat(e.getMessage(),
+                  equalTo("invalid column ordinal: 5"));
+            }
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   @Test public void testCloneSchema()
@@ -1336,8 +1042,10 @@ public class JdbcTest {
         .with(CalciteAssert.Config.FOODMART_CLONE)
         .query("select *\n"
             + "from \"sales_fact_1997\" as s\n"
-            + "  join \"customer\" as c using (\"customer_id\")\n"
-            + "  join \"product\" as p using (\"product_id\")\n"
+            + "join \"customer\" as c\n"
+            + "  on s.\"customer_id\" = c.\"customer_id\"\n"
+            + "join \"product\" as p\n"
+            + "  on s.\"product_id\" = p.\"product_id\"\n"
             + "where c.\"city\" = 'San Francisco'\n"
             + "and p.\"brand_name\" = 'Washington'")
         .explainMatches("including all attributes ",
@@ -1358,96 +1066,96 @@ public class JdbcTest {
   @Ignore("extremely slow - a bit better if you disable ProjectMergeRule")
   @Test public void testBushy() {
     CalciteAssert.that()
-      .with(CalciteAssert.Config.FOODMART_CLONE)
-      .query("select *\n"
-          + "from \"sales_fact_1997\" as s\n"
-          + "  join \"customer\" as c using (\"customer_id\")\n"
-          + "  join \"product\" as p using (\"product_id\")\n"
-          + "  join \"product_class\" as pc using (\"product_class_id\")\n"
-          + "where c.\"city\" = 'San Francisco'\n"
-          + "and pc.\"product_department\" = 'Snacks'\n")
-        .explainMatches("including all attributes ",
-            CalciteAssert.checkMaskedResultContains(""
-                + "EnumerableCalcRel(expr#0..56=[{inputs}], expr#57=['San Francisco'], expr#58=[=($t9, $t57)], expr#59=['Snacks'], expr#60=[=($t32, $t59)], expr#61=[AND($t58, $t60)], product_id=[$t49], time_id=[$t50], customer_id=[$t51], promotion_id=[$t52], store_id=[$t53], store_sales=[$t54], store_cost=[$t55], unit_sales=[$t56], customer_id0=[$t0], account_num=[$t1], lname=[$t2], fname=[$t3], mi=[$t4], address1=[$t5], address2=[$t6], address3=[$t7], address4=[$t8], city=[$t9], state_province=[$t10], postal_code=[$t11], country=[$t12], customer_region_id=[$t13], phone1=[$t14], phone2=[$t15], birthdate=[$t16], marital_status=[$t17], yearly_income=[$t18], gender=[$t19], total_children=[$t20], num_children_at_home=[$t21], education=[$t22], date_accnt_opened=[$t23], member_card=[$t24], occupation=[$t25], houseowner=[$t26], num_cars_owned=[$t27], fullname=[$t28], product_class_id=[$t34], product_id0=[$t35], brand_name=[$t36], product_name=[$t37], SKU=[$t38], SRP=[$t39], gross_weight=[$t40], net_weight=[$t41], recyclable_package=[$t42], low_fat=[$t43], units_per_case=[$t44], cases_per_pallet=[$t45], shelf_width=[$t46], shelf_height=[$t47], shelf_depth=[$t48], product_class_id0=[$t29], product_subcategory=[$t30], product_category=[$t31], product_department=[$t32], product_family=[$t33], $condition=[$t61]): rowcount = 1953.8325, cumulative cost = {728728.1144018068 rows, 1.0519232E7 cpu, 0.0 io}\n"
-                + "  EnumerableJoinRel(condition=[=($51, $0)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {726774.2819018068 rows, 98792.0 cpu, 0.0 io}\n"
-                + "    EnumerableTableScan(table=[[foodmart2, customer]]): rowcount = 10281.0, cumulative cost = {10281.0 rows, 10282.0 cpu, 0.0 io}\n"
-                + "    EnumerableJoinRel(condition=[=($5, $0)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {447842.86095661717 rows, 88510.0 cpu, 0.0 io}\n"
-                + "      EnumerableTableScan(table=[[foodmart2, product_class]]): rowcount = 110.0, cumulative cost = {110.0 rows, 111.0 cpu, 0.0 io}\n"
-                + "      EnumerableJoinRel(condition=[=($15, $1)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {273541.80811638 rows, 88399.0 cpu, 0.0 io}\n"
-                + "        EnumerableTableScan(table=[[foodmart2, product]]): rowcount = 1560.0, cumulative cost = {1560.0 rows, 1561.0 cpu, 0.0 io}\n"
-                + "        EnumerableTableScan(table=[[foodmart2, sales_fact_1997]]): rowcount = 86837.0, cumulative cost = {86837.0 rows, 86838.0 cpu, 0.0 io}\n"));
+        .with(CalciteAssert.Config.FOODMART_CLONE)
+        .query("select *\n"
+            + "from \"sales_fact_1997\" as s\n"
+            + "  join \"customer\" as c using (\"customer_id\")\n"
+            + "  join \"product\" as p using (\"product_id\")\n"
+            + "  join \"product_class\" as pc using (\"product_class_id\")\n"
+            + "where c.\"city\" = 'San Francisco'\n"
+            + "and pc.\"product_department\" = 'Snacks'\n")
+          .explainMatches("including all attributes ",
+              CalciteAssert.checkMaskedResultContains(""
+                  + "EnumerableCalcRel(expr#0..56=[{inputs}], expr#57=['San Francisco'], expr#58=[=($t9, $t57)], expr#59=['Snacks'], expr#60=[=($t32, $t59)], expr#61=[AND($t58, $t60)], product_id=[$t49], time_id=[$t50], customer_id=[$t51], promotion_id=[$t52], store_id=[$t53], store_sales=[$t54], store_cost=[$t55], unit_sales=[$t56], customer_id0=[$t0], account_num=[$t1], lname=[$t2], fname=[$t3], mi=[$t4], address1=[$t5], address2=[$t6], address3=[$t7], address4=[$t8], city=[$t9], state_province=[$t10], postal_code=[$t11], country=[$t12], customer_region_id=[$t13], phone1=[$t14], phone2=[$t15], birthdate=[$t16], marital_status=[$t17], yearly_income=[$t18], gender=[$t19], total_children=[$t20], num_children_at_home=[$t21], education=[$t22], date_accnt_opened=[$t23], member_card=[$t24], occupation=[$t25], houseowner=[$t26], num_cars_owned=[$t27], fullname=[$t28], product_class_id=[$t34], product_id0=[$t35], brand_name=[$t36], product_name=[$t37], SKU=[$t38], SRP=[$t39], gross_weight=[$t40], net_weight=[$t41], recyclable_package=[$t42], low_fat=[$t43], units_per_case=[$t44], cases_per_pallet=[$t45], shelf_width=[$t46], shelf_height=[$t47], shelf_depth=[$t48], product_class_id0=[$t29], product_subcategory=[$t30], product_category=[$t31], product_department=[$t32], product_family=[$t33], $condition=[$t61]): rowcount = 1953.8325, cumulative cost = {728728.1144018068 rows, 1.0519232E7 cpu, 0.0 io}\n"
+                  + "  EnumerableJoinRel(condition=[=($51, $0)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {726774.2819018068 rows, 98792.0 cpu, 0.0 io}\n"
+                  + "    EnumerableTableScan(table=[[foodmart2, customer]]): rowcount = 10281.0, cumulative cost = {10281.0 rows, 10282.0 cpu, 0.0 io}\n"
+                  + "    EnumerableJoinRel(condition=[=($5, $0)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {447842.86095661717 rows, 88510.0 cpu, 0.0 io}\n"
+                  + "      EnumerableTableScan(table=[[foodmart2, product_class]]): rowcount = 110.0, cumulative cost = {110.0 rows, 111.0 cpu, 0.0 io}\n"
+                  + "      EnumerableJoinRel(condition=[=($15, $1)], joinType=[inner]): rowcount = 86837.0, cumulative cost = {273541.80811638 rows, 88399.0 cpu, 0.0 io}\n"
+                  + "        EnumerableTableScan(table=[[foodmart2, product]]): rowcount = 1560.0, cumulative cost = {1560.0 rows, 1561.0 cpu, 0.0 io}\n"
+                  + "        EnumerableTableScan(table=[[foodmart2, sales_fact_1997]]): rowcount = 86837.0, cumulative cost = {86837.0 rows, 86838.0 cpu, 0.0 io}\n"));
   }
 
   private static final String[] QUERIES = {
-    "select count(*) from (select 1 as \"c0\" from \"salary\" as \"salary\") as \"init\"",
-    "EXPR$0=21252\n",
-    "select count(*) from (select 1 as \"c0\" from \"salary\" as \"salary2\") as \"init\"",
-    "EXPR$0=21252\n",
-    "select count(*) from (select 1 as \"c0\" from \"department\" as \"department\") as \"init\"",
-    "EXPR$0=12\n",
-    "select count(*) from (select 1 as \"c0\" from \"employee\" as \"employee\") as \"init\"",
-    "EXPR$0=1155\n",
-    "select count(*) from (select 1 as \"c0\" from \"employee_closure\" as \"employee_closure\") as \"init\"",
-    "EXPR$0=7179\n",
-    "select count(*) from (select 1 as \"c0\" from \"position\" as \"position\") as \"init\"",
-    "EXPR$0=18\n",
-    "select count(*) from (select 1 as \"c0\" from \"promotion\" as \"promotion\") as \"init\"",
-    "EXPR$0=1864\n",
-    "select count(*) from (select 1 as \"c0\" from \"store\" as \"store\") as \"init\"",
-    "EXPR$0=25\n",
-    "select count(*) from (select 1 as \"c0\" from \"product\" as \"product\") as \"init\"",
-    "EXPR$0=1560\n",
-    "select count(*) from (select 1 as \"c0\" from \"product_class\" as \"product_class\") as \"init\"",
-    "EXPR$0=110\n",
-    "select count(*) from (select 1 as \"c0\" from \"time_by_day\" as \"time_by_day\") as \"init\"",
-    "EXPR$0=730\n",
-    "select count(*) from (select 1 as \"c0\" from \"customer\" as \"customer\") as \"init\"",
-    "EXPR$0=10281\n",
-    "select count(*) from (select 1 as \"c0\" from \"sales_fact_1997\" as \"sales_fact_1997\") as \"init\"",
-    "EXPR$0=86837\n",
-    "select count(*) from (select 1 as \"c0\" from \"inventory_fact_1997\" as \"inventory_fact_1997\") as \"init\"",
-    "EXPR$0=4070\n",
-    "select count(*) from (select 1 as \"c0\" from \"warehouse\" as \"warehouse\") as \"init\"",
-    "EXPR$0=24\n",
-    "select count(*) from (select 1 as \"c0\" from \"agg_c_special_sales_fact_1997\" as \"agg_c_special_sales_fact_1997\") as \"init\"",
-    "EXPR$0=86805\n",
-    "select count(*) from (select 1 as \"c0\" from \"agg_pl_01_sales_fact_1997\" as \"agg_pl_01_sales_fact_1997\") as \"init\"",
-    "EXPR$0=86829\n",
-    "select count(*) from (select 1 as \"c0\" from \"agg_l_05_sales_fact_1997\" as \"agg_l_05_sales_fact_1997\") as \"init\"",
-    "EXPR$0=86154\n",
-    "select count(*) from (select 1 as \"c0\" from \"agg_g_ms_pcat_sales_fact_1997\" as \"agg_g_ms_pcat_sales_fact_1997\") as \"init\"",
-    "EXPR$0=2637\n",
-    "select count(*) from (select 1 as \"c0\" from \"agg_c_14_sales_fact_1997\" as \"agg_c_14_sales_fact_1997\") as \"init\"",
-    "EXPR$0=86805\n",
-    "select \"time_by_day\".\"the_year\" as \"c0\" from \"time_by_day\" as \"time_by_day\" group by \"time_by_day\".\"the_year\" order by \"time_by_day\".\"the_year\" ASC",
-    "c0=1997\n"
+      "select count(*) from (select 1 as \"c0\" from \"salary\" as \"salary\") as \"init\"",
+      "EXPR$0=21252\n",
+      "select count(*) from (select 1 as \"c0\" from \"salary\" as \"salary2\") as \"init\"",
+      "EXPR$0=21252\n",
+      "select count(*) from (select 1 as \"c0\" from \"department\" as \"department\") as \"init\"",
+      "EXPR$0=12\n",
+      "select count(*) from (select 1 as \"c0\" from \"employee\" as \"employee\") as \"init\"",
+      "EXPR$0=1155\n",
+      "select count(*) from (select 1 as \"c0\" from \"employee_closure\" as \"employee_closure\") as \"init\"",
+      "EXPR$0=7179\n",
+      "select count(*) from (select 1 as \"c0\" from \"position\" as \"position\") as \"init\"",
+      "EXPR$0=18\n",
+      "select count(*) from (select 1 as \"c0\" from \"promotion\" as \"promotion\") as \"init\"",
+      "EXPR$0=1864\n",
+      "select count(*) from (select 1 as \"c0\" from \"store\" as \"store\") as \"init\"",
+      "EXPR$0=25\n",
+      "select count(*) from (select 1 as \"c0\" from \"product\" as \"product\") as \"init\"",
+      "EXPR$0=1560\n",
+      "select count(*) from (select 1 as \"c0\" from \"product_class\" as \"product_class\") as \"init\"",
+      "EXPR$0=110\n",
+      "select count(*) from (select 1 as \"c0\" from \"time_by_day\" as \"time_by_day\") as \"init\"",
+      "EXPR$0=730\n",
+      "select count(*) from (select 1 as \"c0\" from \"customer\" as \"customer\") as \"init\"",
+      "EXPR$0=10281\n",
+      "select count(*) from (select 1 as \"c0\" from \"sales_fact_1997\" as \"sales_fact_1997\") as \"init\"",
+      "EXPR$0=86837\n",
+      "select count(*) from (select 1 as \"c0\" from \"inventory_fact_1997\" as \"inventory_fact_1997\") as \"init\"",
+      "EXPR$0=4070\n",
+      "select count(*) from (select 1 as \"c0\" from \"warehouse\" as \"warehouse\") as \"init\"",
+      "EXPR$0=24\n",
+      "select count(*) from (select 1 as \"c0\" from \"agg_c_special_sales_fact_1997\" as \"agg_c_special_sales_fact_1997\") as \"init\"",
+      "EXPR$0=86805\n",
+      "select count(*) from (select 1 as \"c0\" from \"agg_pl_01_sales_fact_1997\" as \"agg_pl_01_sales_fact_1997\") as \"init\"",
+      "EXPR$0=86829\n",
+      "select count(*) from (select 1 as \"c0\" from \"agg_l_05_sales_fact_1997\" as \"agg_l_05_sales_fact_1997\") as \"init\"",
+      "EXPR$0=86154\n",
+      "select count(*) from (select 1 as \"c0\" from \"agg_g_ms_pcat_sales_fact_1997\" as \"agg_g_ms_pcat_sales_fact_1997\") as \"init\"",
+      "EXPR$0=2637\n",
+      "select count(*) from (select 1 as \"c0\" from \"agg_c_14_sales_fact_1997\" as \"agg_c_14_sales_fact_1997\") as \"init\"",
+      "EXPR$0=86805\n",
+      "select \"time_by_day\".\"the_year\" as \"c0\" from \"time_by_day\" as \"time_by_day\" group by \"time_by_day\".\"the_year\" order by \"time_by_day\".\"the_year\" ASC",
+      "c0=1997\n"
         + "c0=1998\n",
-    "select \"store\".\"store_country\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_country\") = UPPER('USA') group by \"store\".\"store_country\" order by \"store\".\"store_country\" ASC",
-    "c0=USA\n",
-    "select \"store\".\"store_state\" as \"c0\" from \"store\" as \"store\" where (\"store\".\"store_country\" = 'USA') and UPPER(\"store\".\"store_state\") = UPPER('CA') group by \"store\".\"store_state\" order by \"store\".\"store_state\" ASC",
-    "c0=CA\n",
-    "select \"store\".\"store_city\" as \"c0\", \"store\".\"store_state\" as \"c1\" from \"store\" as \"store\" where (\"store\".\"store_state\" = 'CA' and \"store\".\"store_country\" = 'USA') and UPPER(\"store\".\"store_city\") = UPPER('Los Angeles') group by \"store\".\"store_city\", \"store\".\"store_state\" order by \"store\".\"store_city\" ASC",
-    "c0=Los Angeles; c1=CA\n",
-    "select \"customer\".\"country\" as \"c0\" from \"customer\" as \"customer\" where UPPER(\"customer\".\"country\") = UPPER('USA') group by \"customer\".\"country\" order by \"customer\".\"country\" ASC",
-    "c0=USA\n",
-    "select \"customer\".\"state_province\" as \"c0\", \"customer\".\"country\" as \"c1\" from \"customer\" as \"customer\" where (\"customer\".\"country\" = 'USA') and UPPER(\"customer\".\"state_province\") = UPPER('CA') group by \"customer\".\"state_province\", \"customer\".\"country\" order by \"customer\".\"state_province\" ASC",
-    "c0=CA; c1=USA\n",
-    "select \"customer\".\"city\" as \"c0\", \"customer\".\"country\" as \"c1\", \"customer\".\"state_province\" as \"c2\" from \"customer\" as \"customer\" where (\"customer\".\"country\" = 'USA' and \"customer\".\"state_province\" = 'CA' and \"customer\".\"country\" = 'USA' and \"customer\".\"state_province\" = 'CA' and \"customer\".\"country\" = 'USA') and UPPER(\"customer\".\"city\") = UPPER('Los Angeles') group by \"customer\".\"city\", \"customer\".\"country\", \"customer\".\"state_province\" order by \"customer\".\"city\" ASC",
-    "c0=Los Angeles; c1=USA; c2=CA\n",
-    "select \"store\".\"store_country\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_country\") = UPPER('Gender') group by \"store\".\"store_country\" order by \"store\".\"store_country\" ASC",
-    "",
-    "select \"store\".\"store_type\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_type\") = UPPER('Gender') group by \"store\".\"store_type\" order by \"store\".\"store_type\" ASC",
-    "",
-    "select \"product_class\".\"product_family\" as \"c0\" from \"product\" as \"product\", \"product_class\" as \"product_class\" where \"product\".\"product_class_id\" = \"product_class\".\"product_class_id\" and UPPER(\"product_class\".\"product_family\") = UPPER('Gender') group by \"product_class\".\"product_family\" order by \"product_class\".\"product_family\" ASC",
-    "",
-    "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"media_type\") = UPPER('Gender') group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
-    "",
-    "select \"promotion\".\"promotion_name\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"promotion_name\") = UPPER('Gender') group by \"promotion\".\"promotion_name\" order by \"promotion\".\"promotion_name\" ASC",
-    "",
-    "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"media_type\") = UPPER('No Media') group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
-    "c0=No Media\n",
-    "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
-    "c0=Bulk Mail\n"
+      "select \"store\".\"store_country\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_country\") = UPPER('USA') group by \"store\".\"store_country\" order by \"store\".\"store_country\" ASC",
+      "c0=USA\n",
+      "select \"store\".\"store_state\" as \"c0\" from \"store\" as \"store\" where (\"store\".\"store_country\" = 'USA') and UPPER(\"store\".\"store_state\") = UPPER('CA') group by \"store\".\"store_state\" order by \"store\".\"store_state\" ASC",
+      "c0=CA\n",
+      "select \"store\".\"store_city\" as \"c0\", \"store\".\"store_state\" as \"c1\" from \"store\" as \"store\" where (\"store\".\"store_state\" = 'CA' and \"store\".\"store_country\" = 'USA') and UPPER(\"store\".\"store_city\") = UPPER('Los Angeles') group by \"store\".\"store_city\", \"store\".\"store_state\" order by \"store\".\"store_city\" ASC",
+      "c0=Los Angeles; c1=CA\n",
+      "select \"customer\".\"country\" as \"c0\" from \"customer\" as \"customer\" where UPPER(\"customer\".\"country\") = UPPER('USA') group by \"customer\".\"country\" order by \"customer\".\"country\" ASC",
+      "c0=USA\n",
+      "select \"customer\".\"state_province\" as \"c0\", \"customer\".\"country\" as \"c1\" from \"customer\" as \"customer\" where (\"customer\".\"country\" = 'USA') and UPPER(\"customer\".\"state_province\") = UPPER('CA') group by \"customer\".\"state_province\", \"customer\".\"country\" order by \"customer\".\"state_province\" ASC",
+      "c0=CA; c1=USA\n",
+      "select \"customer\".\"city\" as \"c0\", \"customer\".\"country\" as \"c1\", \"customer\".\"state_province\" as \"c2\" from \"customer\" as \"customer\" where (\"customer\".\"country\" = 'USA' and \"customer\".\"state_province\" = 'CA' and \"customer\".\"country\" = 'USA' and \"customer\".\"state_province\" = 'CA' and \"customer\".\"country\" = 'USA') and UPPER(\"customer\".\"city\") = UPPER('Los Angeles') group by \"customer\".\"city\", \"customer\".\"country\", \"customer\".\"state_province\" order by \"customer\".\"city\" ASC",
+      "c0=Los Angeles; c1=USA; c2=CA\n",
+      "select \"store\".\"store_country\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_country\") = UPPER('Gender') group by \"store\".\"store_country\" order by \"store\".\"store_country\" ASC",
+      "",
+      "select \"store\".\"store_type\" as \"c0\" from \"store\" as \"store\" where UPPER(\"store\".\"store_type\") = UPPER('Gender') group by \"store\".\"store_type\" order by \"store\".\"store_type\" ASC",
+      "",
+      "select \"product_class\".\"product_family\" as \"c0\" from \"product\" as \"product\", \"product_class\" as \"product_class\" where \"product\".\"product_class_id\" = \"product_class\".\"product_class_id\" and UPPER(\"product_class\".\"product_family\") = UPPER('Gender') group by \"product_class\".\"product_family\" order by \"product_class\".\"product_family\" ASC",
+      "",
+      "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"media_type\") = UPPER('Gender') group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
+      "",
+      "select \"promotion\".\"promotion_name\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"promotion_name\") = UPPER('Gender') group by \"promotion\".\"promotion_name\" order by \"promotion\".\"promotion_name\" ASC",
+      "",
+      "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" where UPPER(\"promotion\".\"media_type\") = UPPER('No Media') group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
+      "c0=No Media\n",
+      "select \"promotion\".\"media_type\" as \"c0\" from \"promotion\" as \"promotion\" group by \"promotion\".\"media_type\" order by \"promotion\".\"media_type\" ASC",
+      "c0=Bulk Mail\n"
         + "c0=Cash Register Handout\n"
         + "c0=Daily Paper\n"
         + "c0=Daily Paper, Radio\n"
@@ -1461,12 +1169,12 @@ public class JdbcTest {
         + "c0=Sunday Paper, Radio\n"
         + "c0=Sunday Paper, Radio, TV\n"
         + "c0=TV\n",
-    "select count(distinct \"the_year\") from \"time_by_day\"",
-    "EXPR$0=2\n",
-    "select \"time_by_day\".\"the_year\" as \"c0\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 group by \"time_by_day\".\"the_year\"",
-    "c0=1997; m0=266773.0000\n",
-    "select \"time_by_day\".\"the_year\" as \"c0\", \"promotion\".\"media_type\" as \"c1\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\", \"promotion\" as \"promotion\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 and \"sales_fact_1997\".\"promotion_id\" = \"promotion\".\"promotion_id\" group by \"time_by_day\".\"the_year\", \"promotion\".\"media_type\"",
-    "c0=1997; c1=Bulk Mail; m0=4320.0000\n"
+      "select count(distinct \"the_year\") from \"time_by_day\"",
+      "EXPR$0=2\n",
+      "select \"time_by_day\".\"the_year\" as \"c0\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 group by \"time_by_day\".\"the_year\"",
+      "c0=1997; m0=266773.0000\n",
+      "select \"time_by_day\".\"the_year\" as \"c0\", \"promotion\".\"media_type\" as \"c1\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\", \"promotion\" as \"promotion\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 and \"sales_fact_1997\".\"promotion_id\" = \"promotion\".\"promotion_id\" group by \"time_by_day\".\"the_year\", \"promotion\".\"media_type\"",
+      "c0=1997; c1=Bulk Mail; m0=4320.0000\n"
         + "c0=1997; c1=Radio; m0=2454.0000\n"
         + "c0=1997; c1=Street Handout; m0=5753.0000\n"
         + "c0=1997; c1=TV; m0=3607.0000\n"
@@ -1480,17 +1188,17 @@ public class JdbcTest {
         + "c0=1997; c1=Daily Paper, Radio, TV; m0=9513.0000\n"
         + "c0=1997; c1=Sunday Paper, Radio; m0=5945.0000\n"
         + "c0=1997; c1=Sunday Paper; m0=4339.0000\n",
-    "select \"store\".\"store_country\" as \"c0\", sum(\"inventory_fact_1997\".\"supply_time\") as \"m0\" from \"store\" as \"store\", \"inventory_fact_1997\" as \"inventory_fact_1997\" where \"inventory_fact_1997\".\"store_id\" = \"store\".\"store_id\" group by \"store\".\"store_country\"",
-    "c0=USA; m0=10425\n",
-    "select \"sn\".\"desc\" as \"c0\" from (SELECT * FROM (VALUES (1, 'SameName')) AS \"t\" (\"id\", \"desc\")) as \"sn\" group by \"sn\".\"desc\" order by \"sn\".\"desc\" ASC NULLS LAST",
-    "c0=SameName\n",
-    "select \"the_year\", count(*) as c, min(\"the_month\") as m\n"
+      "select \"store\".\"store_country\" as \"c0\", sum(\"inventory_fact_1997\".\"supply_time\") as \"m0\" from \"store\" as \"store\", \"inventory_fact_1997\" as \"inventory_fact_1997\" where \"inventory_fact_1997\".\"store_id\" = \"store\".\"store_id\" group by \"store\".\"store_country\"",
+      "c0=USA; m0=10425\n",
+      "select \"sn\".\"desc\" as \"c0\" from (SELECT * FROM (VALUES (1, 'SameName')) AS \"t\" (\"id\", \"desc\")) as \"sn\" group by \"sn\".\"desc\" order by \"sn\".\"desc\" ASC NULLS LAST",
+      "c0=SameName\n",
+      "select \"the_year\", count(*) as c, min(\"the_month\") as m\n"
         + "from \"foodmart2\".\"time_by_day\"\n"
         + "group by \"the_year\"\n"
         + "order by 1, 2",
-    "the_year=1997; C=365; M=April\n"
+      "the_year=1997; C=365; M=April\n"
         + "the_year=1998; C=365; M=April\n",
-    "select\n"
+      "select\n"
         + " \"store\".\"store_state\" as \"c0\",\n"
         + " \"time_by_day\".\"the_year\" as \"c1\",\n"
         + " sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\",\n"
@@ -1503,10 +1211,10 @@ public class JdbcTest {
         + "and \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\"\n"
         + "and \"time_by_day\".\"the_year\" = 1997\n"
         + "group by \"store\".\"store_state\", \"time_by_day\".\"the_year\"",
-    "c0=WA; c1=1997; m0=124366.0000; m1=263793.2200\n",
-    "select count(distinct \"product_id\") from \"product\"",
-    "EXPR$0=1560\n",
-    "select \"store\".\"store_name\" as \"c0\",\n"
+      "c0=WA; c1=1997; m0=124366.0000; m1=263793.2200\n",
+      "select count(distinct \"product_id\") from \"product\"",
+      "EXPR$0=1560\n",
+      "select \"store\".\"store_name\" as \"c0\",\n"
         + " \"time_by_day\".\"the_year\" as \"c1\",\n"
         + " sum(\"sales_fact_1997\".\"store_sales\") as \"m0\"\n"
         + "from \"store\" as \"store\",\n"
@@ -1518,13 +1226,13 @@ public class JdbcTest {
         + "and \"time_by_day\".\"the_year\" = 1997\n"
         + "group by \"store\".\"store_name\",\n"
         + " \"time_by_day\".\"the_year\"\n",
-    "c0=Store 7; c1=1997; m0=54545.2800\n"
+      "c0=Store 7; c1=1997; m0=54545.2800\n"
         + "c0=Store 24; c1=1997; m0=54431.1400\n"
         + "c0=Store 16; c1=1997; m0=49634.4600\n"
         + "c0=Store 3; c1=1997; m0=52896.3000\n"
         + "c0=Store 15; c1=1997; m0=52644.0700\n"
         + "c0=Store 11; c1=1997; m0=55058.7900\n",
-    "select \"customer\".\"yearly_income\" as \"c0\","
+      "select \"customer\".\"yearly_income\" as \"c0\","
         + " \"customer\".\"education\" as \"c1\"\n"
         + "from \"customer\" as \"customer\",\n"
         + " \"sales_fact_1997\" as \"sales_fact_1997\"\n"
@@ -1535,7 +1243,7 @@ public class JdbcTest {
         + " \"customer\".\"education\"\n"
         + "order by \"customer\".\"yearly_income\" ASC NULLS LAST,\n"
         + " \"customer\".\"education\" ASC NULLS LAST",
-    "c0=$110K - $130K; c1=Bachelors Degree\n"
+      "c0=$110K - $130K; c1=Bachelors Degree\n"
         + "c0=$110K - $130K; c1=Graduate Degree\n"
         + "c0=$110K - $130K; c1=High School Degree\n"
         + "c0=$110K - $130K; c1=Partial College\n"
@@ -1565,9 +1273,9 @@ public class JdbcTest {
         + "c0=$90K - $110K; c1=High School Degree\n"
         + "c0=$90K - $110K; c1=Partial College\n"
         + "c0=$90K - $110K; c1=Partial High School\n",
-    "ignore:select \"time_by_day\".\"the_year\" as \"c0\", \"product_class\".\"product_family\" as \"c1\", \"customer\".\"state_province\" as \"c2\", \"customer\".\"city\" as \"c3\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\", \"product_class\" as \"product_class\", \"product\" as \"product\", \"customer\" as \"customer\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 and \"sales_fact_1997\".\"product_id\" = \"product\".\"product_id\" and \"product\".\"product_class_id\" = \"product_class\".\"product_class_id\" and \"product_class\".\"product_family\" = 'Drink' and \"sales_fact_1997\".\"customer_id\" = \"customer\".\"customer_id\" and \"customer\".\"state_province\" = 'WA' and \"customer\".\"city\" in ('Anacortes', 'Ballard', 'Bellingham', 'Bremerton', 'Burien', 'Edmonds', 'Everett', 'Issaquah', 'Kirkland', 'Lynnwood', 'Marysville', 'Olympia', 'Port Orchard', 'Puyallup', 'Redmond', 'Renton', 'Seattle', 'Sedro Woolley', 'Spokane', 'Tacoma', 'Walla Walla', 'Yakima') group by \"time_by_day\".\"the_year\", \"product_class\".\"product_family\", \"customer\".\"state_province\", \"customer\".\"city\"",
-    "c0=1997; c1=Drink; c2=WA; c3=Sedro Woolley; m0=58.0000\n",
-    "select \"store\".\"store_country\" as \"c0\",\n"
+      "ignore:select \"time_by_day\".\"the_year\" as \"c0\", \"product_class\".\"product_family\" as \"c1\", \"customer\".\"state_province\" as \"c2\", \"customer\".\"city\" as \"c3\", sum(\"sales_fact_1997\".\"unit_sales\") as \"m0\" from \"time_by_day\" as \"time_by_day\", \"sales_fact_1997\" as \"sales_fact_1997\", \"product_class\" as \"product_class\", \"product\" as \"product\", \"customer\" as \"customer\" where \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\" and \"time_by_day\".\"the_year\" = 1997 and \"sales_fact_1997\".\"product_id\" = \"product\".\"product_id\" and \"product\".\"product_class_id\" = \"product_class\".\"product_class_id\" and \"product_class\".\"product_family\" = 'Drink' and \"sales_fact_1997\".\"customer_id\" = \"customer\".\"customer_id\" and \"customer\".\"state_province\" = 'WA' and \"customer\".\"city\" in ('Anacortes', 'Ballard', 'Bellingham', 'Bremerton', 'Burien', 'Edmonds', 'Everett', 'Issaquah', 'Kirkland', 'Lynnwood', 'Marysville', 'Olympia', 'Port Orchard', 'Puyallup', 'Redmond', 'Renton', 'Seattle', 'Sedro Woolley', 'Spokane', 'Tacoma', 'Walla Walla', 'Yakima') group by \"time_by_day\".\"the_year\", \"product_class\".\"product_family\", \"customer\".\"state_province\", \"customer\".\"city\"",
+      "c0=1997; c1=Drink; c2=WA; c3=Sedro Woolley; m0=58.0000\n",
+      "select \"store\".\"store_country\" as \"c0\",\n"
         + " \"time_by_day\".\"the_year\" as \"c1\",\n"
         + " sum(\"sales_fact_1997\".\"store_cost\") as \"m0\",\n"
         + " count(\"sales_fact_1997\".\"product_id\") as \"m1\",\n"
@@ -1581,10 +1289,10 @@ public class JdbcTest {
         + "and \"sales_fact_1997\".\"time_id\" = \"time_by_day\".\"time_id\"\n"
         + "and \"time_by_day\".\"the_year\" = 1997\n"
         + "group by \"store\".\"store_country\", \"time_by_day\".\"the_year\"",
-    "c0=USA; c1=1997; m0=225627.2336; m1=86837; m2=5581; m3=151211.2100\n",
+      "c0=USA; c1=1997; m0=225627.2336; m1=86837; m2=5581; m3=151211.2100\n",
       // query 6077
       // disabled (runs out of memory)
-    "ignore:select \"time_by_day\".\"the_year\" as \"c0\",\n"
+      "ignore:select \"time_by_day\".\"the_year\" as \"c0\",\n"
         + " count(distinct \"sales_fact_1997\".\"customer_id\") as \"m0\"\n"
         + "from \"time_by_day\" as \"time_by_day\",\n"
         + " \"sales_fact_1997\" as \"sales_fact_1997\",\n"
@@ -1619,10 +1327,10 @@ public class JdbcTest {
         + "   and \"product_class\".\"product_department\" = 'Household'\n"
         + "   and \"product_class\".\"product_family\" = 'Non-Consumable'))\n"
         + "group by \"time_by_day\".\"the_year\"\n",
-    "xxtodo",
+      "xxtodo",
       // query 6077, simplified
       // disabled (slow)
-    "ignore:select count(\"sales_fact_1997\".\"customer_id\") as \"m0\"\n"
+      "ignore:select count(\"sales_fact_1997\".\"customer_id\") as \"m0\"\n"
         + "from \"sales_fact_1997\" as \"sales_fact_1997\",\n"
         + " \"product_class\" as \"product_class\",\n"
         + " \"product\" as \"product\"\n"
@@ -1631,18 +1339,18 @@ public class JdbcTest {
         + "and ((\"product\".\"brand_name\" = 'Cormorant'\n"
         + "   and \"product_class\".\"product_subcategory\" = 'Pot Scrubbers')\n"
         + " or (\"product_class\".\"product_subcategory\" = 'Pots and Pans'))\n",
-    "xxxx",
+      "xxxx",
       // query 6077, simplified further
-    "select count(distinct \"sales_fact_1997\".\"customer_id\") as \"m0\"\n"
+      "select count(distinct \"sales_fact_1997\".\"customer_id\") as \"m0\"\n"
         + "from \"sales_fact_1997\" as \"sales_fact_1997\",\n"
         + " \"product_class\" as \"product_class\",\n"
         + " \"product\" as \"product\"\n"
         + "where \"sales_fact_1997\".\"product_id\" = \"product\".\"product_id\"\n"
         + "and \"product\".\"product_class_id\" = \"product_class\".\"product_class_id\"\n"
         + "and \"product\".\"brand_name\" = 'Cormorant'\n",
-    "m0=1298",
+      "m0=1298",
       // query 193
-    "select \"store\".\"store_country\" as \"c0\",\n"
+      "select \"store\".\"store_country\" as \"c0\",\n"
         + " \"time_by_day\".\"the_year\" as \"c1\",\n"
         + " \"time_by_day\".\"quarter\" as \"c2\",\n"
         + " \"product_class\".\"product_family\" as \"c3\",\n"
@@ -1665,7 +1373,7 @@ public class JdbcTest {
         + " \"time_by_day\".\"the_year\",\n"
         + " \"time_by_day\".\"quarter\",\n"
         + " \"product_class\".\"product_family\"",
-    "c0=USA; c1=1997; c2=Q3; c3=Food; m0=15449; m1=2939",
+      "c0=USA; c1=1997; c2=Q3; c3=Food; m0=15449; m1=2939",
   };
 
   public static final List<Pair<String, String>> FOODMART_QUERIES =
@@ -1673,8 +1381,9 @@ public class JdbcTest {
 
   /** Janino bug
    * <a href="https://jira.codehaus.org/browse/JANINO-169">[JANINO-169]</a>
-   * running queries against the JDBC adapter. As of janino-2.7.3 bug is
-   * open but we have a workaround in EnumerableRelImplementor. */
+   * running queries against the JDBC adapter. The bug is not present with
+   * janino-3.0.9 so the workaround in EnumerableRelImplementor was removed.
+   */
   @Test public void testJanino169() {
     CalciteAssert.that()
         .with(CalciteAssert.Config.JDBC_FOODMART)
@@ -1730,31 +1439,91 @@ public class JdbcTest {
     CalciteAssert.that()
         .with(CalciteAssert.Config.JDBC_FOODMART)
         .query("values extract(year from date '2008-2-23')")
-        .returns(
-            new Function<ResultSet, Void>() {
-              public Void apply(ResultSet a0) {
-                // The following behavior is not quite correct. See
-                //   [CALCITE-508] Reading from ResultSet before calling next()
-                //   should throw SQLException not NoSuchElementException
-                // for details.
-                try {
-                  final BigDecimal bigDecimal = a0.getBigDecimal(1);
-                  fail("expected error, got " + bigDecimal);
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                } catch (NoSuchElementException e) {
-                  // ok
-                }
-                try {
-                  assertTrue(a0.next());
-                  final BigDecimal bigDecimal = a0.getBigDecimal(1);
-                  assertThat(bigDecimal, equalTo(BigDecimal.valueOf(2008)));
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-                return null;
-              }
-            });
+        .returns(resultSet -> {
+          // The following behavior is not quite correct. See
+          //   [CALCITE-508] Reading from ResultSet before calling next()
+          //   should throw SQLException not NoSuchElementException
+          // for details.
+          try {
+            final BigDecimal bigDecimal = resultSet.getBigDecimal(1);
+            fail("expected error, got " + bigDecimal);
+          } catch (SQLException e) {
+            assertThat(e.getMessage(),
+                is("java.util.NoSuchElementException: Expecting cursor "
+                    + "position to be Position.OK, actual "
+                    + "is Position.BEFORE_START"));
+          }
+          try {
+            assertTrue(resultSet.next());
+            final BigDecimal bigDecimal = resultSet.getBigDecimal(1);
+            assertThat(bigDecimal, equalTo(BigDecimal.valueOf(2008)));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
+  }
+
+  @Test public void testExtractMonthFromTimestamp() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .query("select extract(month from \"birth_date\") as c \n"
+            + "from \"foodmart\".\"employee\" where \"employee_id\"=1")
+        .returns("C=8\n");
+  }
+
+  @Test public void testExtractYearFromTimestamp() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .query("select extract(year from \"birth_date\") as c \n"
+            + "from \"foodmart\".\"employee\" where \"employee_id\"=1")
+        .returns("C=1961\n");
+  }
+
+  @Test public void testExtractFromInterval() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .query("select extract(month from interval '2-3' year to month) as c \n"
+            + "from \"foodmart\".\"employee\" where \"employee_id\"=1")
+        // disable for MySQL, H2; cannot handle EXTRACT yet
+        .enable(CalciteAssert.DB != CalciteAssert.DatabaseInstance.MYSQL
+            && CalciteAssert.DB != CalciteAssert.DatabaseInstance.H2)
+        .returns("C=3\n");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1188">[CALCITE-1188]
+   * NullPointerException when EXTRACT is applied to NULL date field</a>.
+   * The problem occurs when EXTRACT appears in both SELECT and WHERE ... IN
+   * clauses, the latter with at least two values. */
+  @Test public void testExtractOnNullDateField() {
+    final String sql = "select\n"
+        + "  extract(year from \"end_date\"), \"hire_date\", \"birth_date\"\n"
+        + "from \"foodmart\".\"employee\"\n"
+        + "where extract(year from \"end_date\") in (1994, 1995, 1996)\n"
+        + "group by\n"
+        + "  extract(year from \"end_date\"), \"hire_date\", \"birth_date\"\n";
+    final String sql2 = sql + "\n"
+        + "limit 10000";
+    final String sql3 = "select *\n"
+        + "from \"foodmart\".\"employee\"\n"
+        + "where extract(year from \"end_date\") in (1994, 1995, 1996)";
+    final CalciteAssert.AssertThat with = CalciteAssert.that()
+        .with(CalciteAssert.Config.FOODMART_CLONE);
+    with.query(sql).returns("");
+    with.query(sql2).returns("");
+    with.query(sql3).returns("");
+  }
+
+  @Test public void testFloorDate() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .query("select floor(timestamp '2011-9-14 19:27:23' to month) as c \n"
+            + "from \"foodmart\".\"employee\" limit 1")
+        // disable for MySQL; birth_date suffers timezone shift
+        // disable for H2; Calcite generates incorrect FLOOR syntax
+        .enable(CalciteAssert.DB != CalciteAssert.DatabaseInstance.MYSQL
+            && CalciteAssert.DB != CalciteAssert.DatabaseInstance.H2)
+        .returns("C=2011-09-01 00:00:00\n");
   }
 
   /** Test case for
@@ -1793,9 +1562,39 @@ public class JdbcTest {
             + "  from \"foodmart\".\"employee\" as e1\n"
             + "  join \"foodmart\".\"employee\" as e2 on e1.\"first_name\" = e2.\"last_name\"\n"
             + "order by e1.\"last_name\" limit 3")
+        // disable for H2; gives "Unexpected code path" internal error
+        .enable(CalciteAssert.DB != CalciteAssert.DatabaseInstance.H2)
         .returns("full_name=James Aguilar\n"
             + "full_name=Carol Amyotte\n"
             + "full_name=Terry Anderson\n");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2029">[CALCITE-2029]
+   * Query with "is distinct from" condition in where or join clause fails
+   * with AssertionError: Cast for just nullability not allowed</a>. */
+  @Test public void testIsNotDistinctInFilter() {
+    CalciteAssert.that()
+      .with(CalciteAssert.Config.JDBC_FOODMART)
+      .query("select *\n"
+          + "  from \"foodmart\".\"employee\" as e1\n"
+          + "  where e1.\"last_name\" is distinct from e1.\"last_name\"")
+      .runs();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2029">[CALCITE-2029]
+   * Query with "is distinct from" condition in where or join clause fails
+   * with AssertionError: Cast for just nullability not allowed</a>. */
+  @Test public void testMixedEqualAndIsNotDistinctJoin() {
+    CalciteAssert.that()
+      .with(CalciteAssert.Config.JDBC_FOODMART)
+      .query("select *\n"
+          + "  from \"foodmart\".\"employee\" as e1\n"
+          + "  join \"foodmart\".\"employee\" as e2 on\n"
+          + "  e1.\"first_name\" = e1.\"first_name\"\n"
+          + "  and e1.\"last_name\" is distinct from e2.\"last_name\"")
+      .runs();
   }
 
   /** A join that has both equi and non-equi conditions.
@@ -2050,12 +1849,11 @@ public class JdbcTest {
             + "  ]\n"
             + "}");
 
-    Connection calciteConnection = DriverManager.getConnection(
-      "jdbc:calcite:", info);
-
+    Connection calciteConnection =
+        DriverManager.getConnection("jdbc:calcite:", info);
     Statement calciteStatement = calciteConnection.createStatement();
-    ResultSet rs = calciteStatement.executeQuery(
-      "SELECT ID, VALS FROM ARR_TABLE");
+    final String sql = "SELECT ID, VALS FROM ARR_TABLE";
+    ResultSet rs = calciteStatement.executeQuery(sql);
     assertTrue(rs.next());
     assertEquals(1, rs.getInt(1));
     Array array = rs.getArray(2);
@@ -2101,58 +1899,54 @@ public class JdbcTest {
   /** Tests JDBC support for nested arrays. */
   @Test public void testNestedArray() throws Exception {
     CalciteAssert.hr()
-        .doWithConnection(
-            new Function<CalciteConnection, Object>() {
-              public Object apply(CalciteConnection a0) {
-                try {
-                  final Statement statement = a0.createStatement();
-                  ResultSet resultSet =
-                      statement.executeQuery("select \"empid\",\n"
-                          + "  array[\n"
-                          + "    array['x', 'y', 'z'],\n"
-                          + "    array[\"name\"]] as a\n"
-                          + "from \"hr\".\"emps\"");
-                  assertThat(resultSet.next(), is(true));
-                  assertThat(resultSet.getInt(1), equalTo(100));
-                  assertThat(resultSet.getString(2),
-                      equalTo("[[x, y, z], [Bill]]"));
-                  final Array array = resultSet.getArray(2);
-                  assertThat(array.getBaseType(),
-                      equalTo(java.sql.Types.ARRAY));
-                  final Object[] arrayValues =
-                      (Object[]) array.getArray();
-                  assertThat(arrayValues.length, equalTo(2));
-                  final Array subArray = (Array) arrayValues[0];
-                  assertThat(subArray.getBaseType(),
-                      equalTo(java.sql.Types.VARCHAR));
-                  final Object[] subArrayValues =
-                      (Object[]) subArray.getArray();
-                  assertThat(subArrayValues.length, equalTo(3));
-                  assertThat(subArrayValues[2], equalTo((Object) "z"));
+        .doWithConnection(connection -> {
+          try {
+            final Statement statement = connection.createStatement();
+            ResultSet resultSet =
+                statement.executeQuery("select \"empid\",\n"
+                    + "  array[\n"
+                    + "    array['x', 'y', 'z'],\n"
+                    + "    array[\"name\"]] as a\n"
+                    + "from \"hr\".\"emps\"");
+            assertThat(resultSet.next(), is(true));
+            assertThat(resultSet.getInt(1), equalTo(100));
+            assertThat(resultSet.getString(2),
+                equalTo("[[x, y, z], [Bill]]"));
+            final Array array = resultSet.getArray(2);
+            assertThat(array.getBaseType(),
+                equalTo(Types.ARRAY));
+            final Object[] arrayValues =
+                (Object[]) array.getArray();
+            assertThat(arrayValues.length, equalTo(2));
+            final Array subArray = (Array) arrayValues[0];
+            assertThat(subArray.getBaseType(),
+                equalTo(Types.VARCHAR));
+            final Object[] subArrayValues =
+                (Object[]) subArray.getArray();
+            assertThat(subArrayValues.length, equalTo(3));
+            assertThat(subArrayValues[2], equalTo((Object) "z"));
 
-                  final ResultSet subResultSet = subArray.getResultSet();
-                  assertThat(subResultSet.next(), is(true));
-                  assertThat(subResultSet.getString(1), equalTo("x"));
-                  try {
-                    final String string = subResultSet.getString(2);
-                    fail("expected error, got " + string);
-                  } catch (SQLException e) {
-                    assertThat(e.getMessage(),
-                        equalTo("invalid column ordinal: 2"));
-                  }
-                  assertThat(subResultSet.next(), is(true));
-                  assertThat(subResultSet.next(), is(true));
-                  assertThat(subResultSet.isAfterLast(), is(false));
-                  assertThat(subResultSet.getString(1), equalTo("z"));
-                  assertThat(subResultSet.next(), is(false));
-                  assertThat(subResultSet.isAfterLast(), is(true));
-                  statement.close();
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+            final ResultSet subResultSet = subArray.getResultSet();
+            assertThat(subResultSet.next(), is(true));
+            assertThat(subResultSet.getString(1), equalTo("x"));
+            try {
+              final String string = subResultSet.getString(2);
+              fail("expected error, got " + string);
+            } catch (SQLException e) {
+              assertThat(e.getMessage(),
+                  equalTo("invalid column ordinal: 2"));
+            }
+            assertThat(subResultSet.next(), is(true));
+            assertThat(subResultSet.next(), is(true));
+            assertThat(subResultSet.isAfterLast(), is(false));
+            assertThat(subResultSet.getString(1), equalTo("z"));
+            assertThat(subResultSet.next(), is(false));
+            assertThat(subResultSet.isAfterLast(), is(true));
+            statement.close();
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   @Test public void testArrayConstructor() {
@@ -2215,6 +2009,17 @@ public class JdbcTest {
             "empid=150; deptno=10; name=Sebastian; salary=7000.0; commission=null");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2381">[CALCITE-2391]
+   * Aggregate query with UNNEST or LATERAL fails with
+   * ClassCastException</a>. */
+  @Test public void testAggUnnestColumn() {
+    final String sql = "select count(d.\"name\") as c\n"
+        + "from \"hr\".\"depts\" as d,\n"
+        + " UNNEST(d.\"employees\") as e";
+    CalciteAssert.hr().query(sql).returnsUnordered("C=3");
+  }
+
   @Test public void testArrayElement() {
     CalciteAssert.that()
         .with(CalciteAssert.Config.REGULAR)
@@ -2232,6 +2037,35 @@ public class JdbcTest {
             "empid=100; deptno=10; name=Bill; salary=10000.0; commission=1000; deptno0=10; name0=Sales; employees=[{100, 10, Bill, 10000.0, 1000}, {150, 10, Sebastian, 7000.0, null}]; location={-122, 38}",
             "empid=110; deptno=10; name=Theodore; salary=11500.0; commission=250; deptno0=10; name0=Sales; employees=[{100, 10, Bill, 10000.0, 1000}, {150, 10, Sebastian, 7000.0, null}]; location={-122, 38}",
             "empid=150; deptno=10; name=Sebastian; salary=7000.0; commission=null; deptno0=10; name0=Sales; employees=[{100, 10, Bill, 10000.0, 1000}, {150, 10, Sebastian, 7000.0, null}]; location={-122, 38}");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-531">[CALCITE-531]
+   * Window function does not work in LATERAL</a>. */
+  @Test public void testLateralWithOver() {
+    final String sql = "select \"emps\".\"name\", d.\"deptno\", d.m\n"
+        + "from \"hr\".\"emps\",\n"
+        + "  LATERAL (\n"
+        + "    select \"depts\".\"deptno\",\n"
+        + "      max(\"deptno\" + \"emps\".\"empid\") over (\n"
+        + "        partition by \"emps\".\"deptno\") as m\n"
+        + "     from \"hr\".\"depts\"\n"
+        + "     where \"emps\".\"deptno\" = \"depts\".\"deptno\") as d";
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.REGULAR)
+        .query(sql)
+        .returnsUnordered("name=Bill; deptno=10; M=190",
+            "name=Bill; deptno=30; M=190",
+            "name=Bill; deptno=40; M=190",
+            "name=Eric; deptno=10; M=240",
+            "name=Eric; deptno=30; M=240",
+            "name=Eric; deptno=40; M=240",
+            "name=Sebastian; deptno=10; M=190",
+            "name=Sebastian; deptno=30; M=190",
+            "name=Sebastian; deptno=40; M=190",
+            "name=Theodore; deptno=10; M=190",
+            "name=Theodore; deptno=30; M=190",
+            "name=Theodore; deptno=40; M=190");
   }
 
   /** Per SQL std, UNNEST is implicitly LATERAL. */
@@ -2330,8 +2164,7 @@ public class JdbcTest {
 
   private CalciteAssert.AssertQuery withFoodMartQuery(int id)
       throws IOException {
-    final FoodmartTest.FoodMartQuerySet set =
-        FoodmartTest.FoodMartQuerySet.instance();
+    final FoodMartQuerySet set = FoodMartQuerySet.instance();
     return CalciteAssert.that()
         .with(CalciteAssert.Config.FOODMART_CLONE)
         .query(set.queries.get(id).sql);
@@ -2349,8 +2182,7 @@ public class JdbcTest {
    */
   @Ignore
   @Test public void testNoCalcBetweenJoins() throws IOException {
-    final FoodmartTest.FoodMartQuerySet set =
-        FoodmartTest.FoodMartQuerySet.instance();
+    final FoodMartQuerySet set = FoodMartQuerySet.instance();
     CalciteAssert.that()
         .with(CalciteAssert.Config.FOODMART_CLONE)
         .query(set.queries.get(16).sql)
@@ -2439,8 +2271,8 @@ public class JdbcTest {
   @Ignore // DO NOT CHECK IN
   @Test public void testFoodmartLattice() throws IOException {
     // 8: select ... from customer, sales, time ... group by ...
-    final FoodmartTest.FoodmartQuery query =
-        FoodmartTest.FoodMartQuerySet.instance().queries.get(8);
+    final FoodMartQuerySet set = FoodMartQuerySet.instance();
+    final FoodMartQuerySet.FoodmartQuery query = set.queries.get(8);
     CalciteAssert.that()
         .with(CalciteAssert.Config.JDBC_FOODMART_WITH_LATTICE)
         .withDefaultSchema("foodmart")
@@ -2511,6 +2343,8 @@ public class JdbcTest {
         .with(config)
         .query(
             "select \"hire_date\", \"end_date\", \"birth_date\" from \"foodmart\".\"employee\" where \"employee_id\" = 1")
+        // disable for MySQL; birth_date suffers timezone shift
+        .enable(CalciteAssert.DB != CalciteAssert.DatabaseInstance.MYSQL)
         .returns2(
             "hire_date=1994-12-01; end_date=null; birth_date=1961-08-26\n");
   }
@@ -2593,7 +2427,7 @@ public class JdbcTest {
             + ": org.apache.calcite.runtime.SqlFunctions.substring("
             + "org.apache.calcite.runtime.SqlFunctions.trim(true, true, \" \", "
             + "org.apache.calcite.runtime.SqlFunctions.substring(inp2_, "
-            + "inp1_ * 0 + 1)), (v5 ? 4 : 5) - 2);")
+            + "inp1_ * 0 + 1), true), (v5 ? 4 : 5) - 2);")
         .returns("T=ill\n"
             + "T=ric\n"
             + "T=ebastian\n"
@@ -2630,7 +2464,7 @@ public class JdbcTest {
             + ": org.apache.calcite.runtime.SqlFunctions.substring("
             + "org.apache.calcite.runtime.SqlFunctions.trim(true, true, \" \", "
             + "org.apache.calcite.runtime.SqlFunctions.substring(inp2_, "
-            + "inp1_ * 0 + 1)), $L4J$C$5_2);")
+            + "inp1_ * 0 + 1), true), $L4J$C$5_2);")
         .returns("T=ll\n"
             + "T=ic\n"
             + "T=bastian\n"
@@ -3063,11 +2897,26 @@ public class JdbcTest {
             + "customer_id=1; postal_code=15057\n");
   }
 
+  /** Tests ORDER BY with all combinations of ASC, DESC, NULLS FIRST,
+   * NULLS LAST. */
+  @Test public void testOrderByNulls() {
+    checkOrderByNulls(CalciteAssert.Config.FOODMART_CLONE);
+    checkOrderByNulls(CalciteAssert.Config.JDBC_FOODMART);
+  }
+
+  private void checkOrderByNulls(CalciteAssert.Config clone) {
+    checkOrderByDescNullsFirst(clone);
+    checkOrderByNullsFirst(clone);
+    checkOrderByDescNullsLast(clone);
+    checkOrderByNullsLast(clone);
+  }
+
   /** Tests ORDER BY ... DESC NULLS FIRST. */
-  @Test public void testOrderByDescNullsFirst() {
+  private void checkOrderByDescNullsFirst(CalciteAssert.Config config) {
     CalciteAssert.that()
-        .with(CalciteAssert.Config.FOODMART_CLONE)
-        .query("select \"store_id\", \"grocery_sqft\" from \"store\"\n"
+        .with(config)
+        .query("select \"store_id\", \"grocery_sqft\"\n"
+            + "from \"foodmart\".\"store\"\n"
             + "where \"store_id\" < 3 order by 2 desc nulls first")
         .returns("store_id=0; grocery_sqft=null\n"
             + "store_id=2; grocery_sqft=22271\n"
@@ -3075,10 +2924,11 @@ public class JdbcTest {
   }
 
   /** Tests ORDER BY ... NULLS FIRST. */
-  @Test public void testOrderByNullsFirst() {
+  private void checkOrderByNullsFirst(CalciteAssert.Config config) {
     CalciteAssert.that()
-        .with(CalciteAssert.Config.FOODMART_CLONE)
-        .query("select \"store_id\", \"grocery_sqft\" from \"store\"\n"
+        .with(config)
+        .query("select \"store_id\", \"grocery_sqft\"\n"
+            + "from \"foodmart\".\"store\"\n"
             + "where \"store_id\" < 3 order by 2 nulls first")
         .returns("store_id=0; grocery_sqft=null\n"
             + "store_id=1; grocery_sqft=17475\n"
@@ -3086,10 +2936,11 @@ public class JdbcTest {
   }
 
   /** Tests ORDER BY ... DESC NULLS LAST. */
-  @Test public void testOrderByDescNullsLast() {
+  private void checkOrderByDescNullsLast(CalciteAssert.Config config) {
     CalciteAssert.that()
-        .with(CalciteAssert.Config.FOODMART_CLONE)
-        .query("select \"store_id\", \"grocery_sqft\" from \"store\"\n"
+        .with(config)
+        .query("select \"store_id\", \"grocery_sqft\"\n"
+            + "from \"foodmart\".\"store\"\n"
             + "where \"store_id\" < 3 order by 2 desc nulls last")
         .returns("store_id=2; grocery_sqft=22271\n"
             + "store_id=1; grocery_sqft=17475\n"
@@ -3097,10 +2948,11 @@ public class JdbcTest {
   }
 
   /** Tests ORDER BY ... NULLS LAST. */
-  @Test public void testOrderByNullsLast() {
+  private void checkOrderByNullsLast(CalciteAssert.Config config) {
     CalciteAssert.that()
-        .with(CalciteAssert.Config.FOODMART_CLONE)
-        .query("select \"store_id\", \"grocery_sqft\" from \"store\"\n"
+        .with(config)
+        .query("select \"store_id\", \"grocery_sqft\"\n"
+            + "from \"foodmart\".\"store\"\n"
             + "where \"store_id\" < 3 order by 2 nulls last")
         .returns("store_id=1; grocery_sqft=17475\n"
             + "store_id=2; grocery_sqft=22271\n"
@@ -3120,25 +2972,23 @@ public class JdbcTest {
 
   public void checkOrderBy(final boolean desc,
       final NullCollation nullCollation) {
-    final Function<ResultSet, Void> checker = new Function<ResultSet, Void>() {
-      public Void apply(ResultSet resultSet) {
-        final String msg = (desc ? "DESC" : "ASC") + ":" + nullCollation;
-        final List<Number> numbers = new ArrayList<>();
-        try {
-          while (resultSet.next()) {
-            numbers.add((Number) resultSet.getObject(2));
-          }
-        } catch (SQLException e) {
-          throw new RuntimeException(e);
+    final Consumer<ResultSet> checker = resultSet -> {
+      final String msg = (desc ? "DESC" : "ASC") + ":" + nullCollation;
+      final List<Number> numbers = new ArrayList<>();
+      try {
+        while (resultSet.next()) {
+          numbers.add((Number) resultSet.getObject(2));
         }
-        assertThat(msg, numbers.size(), is(3));
-        assertThat(msg, numbers.get(nullCollation.last(desc) ? 2 : 0), nullValue());
-        return null;
+      } catch (SQLException e) {
+        throw new RuntimeException(e);
       }
+      assertThat(msg, numbers.size(), is(3));
+      assertThat(msg, numbers.get(nullCollation.last(desc) ? 2 : 0),
+          nullValue());
     };
     final CalciteAssert.AssertThat with = CalciteAssert.that()
         .with(CalciteAssert.Config.FOODMART_CLONE)
-        .with("defaultNullCollation", nullCollation.name());
+        .with(CalciteConnectionProperty.DEFAULT_NULL_COLLATION, nullCollation);
     final String sql = "select \"store_id\", \"grocery_sqft\" from \"store\"\n"
         + "where \"store_id\" < 3 order by 2 "
         + (desc ? " DESC" : "");
@@ -3431,7 +3281,7 @@ public class JdbcTest {
 
   /** Query that reads no columns from either underlying table. */
   @Test public void testCountStar() {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
+    try (TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
       CalciteAssert.hr()
           .query("select count(*) c from \"hr\".\"emps\", \"hr\".\"depts\"")
           .convertContains("LogicalAggregate(group=[{}], C=[COUNT()])\n"
@@ -3454,6 +3304,62 @@ public class JdbcTest {
             + ")")
         .returnsUnordered(
             "C=0");
+  }
+
+  @Test public void testUnionAll() {
+    CalciteAssert.hr()
+        .query("select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
+            + "union all\n"
+            + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"empid\">=150")
+        .explainContains(""
+            + "PLAN=EnumerableUnion(all=[true])")
+        .returnsUnordered("empid=100; name=Bill",
+            "empid=110; name=Theodore",
+            "empid=150; name=Sebastian",
+            "empid=150; name=Sebastian",
+            "empid=200; name=Eric");
+  }
+
+  @Test public void testUnion() {
+    final String sql = ""
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
+        + "union\n"
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"empid\">=150";
+    CalciteAssert.hr()
+        .query(sql)
+        .explainContains(""
+            + "PLAN=EnumerableUnion(all=[false])")
+        .returnsUnordered("empid=100; name=Bill",
+            "empid=110; name=Theodore",
+            "empid=150; name=Sebastian",
+            "empid=200; name=Eric");
+  }
+
+  @Test public void testIntersect() {
+    final String sql = ""
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
+        + "intersect\n"
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"empid\">=150";
+    CalciteAssert.hr()
+        .query(sql)
+        .withHook(Hook.PLANNER, (Consumer<RelOptPlanner>) planner ->
+            planner.removeRule(IntersectToDistinctRule.INSTANCE))
+        .explainContains(""
+            + "PLAN=EnumerableIntersect(all=[false])")
+        .returnsUnordered("empid=150; name=Sebastian");
+  }
+
+  @Test public void testExcept() {
+    final String sql = ""
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
+        + "except\n"
+        + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"empid\">=150";
+    CalciteAssert.hr()
+        .query(sql)
+        .explainContains(""
+            + "PLAN=EnumerableMinus(all=[false])")
+        .returnsUnordered("empid=100; name=Bill",
+            "empid=110; name=Theodore");
   }
 
   /** Tests that SUM and AVG over empty set return null. COUNT returns 0. */
@@ -3567,7 +3473,7 @@ public class JdbcTest {
         .typeIs(
             "[deptno INTEGER NOT NULL, empid INTEGER NOT NULL, S REAL, FIVE INTEGER NOT NULL, M REAL, C BIGINT NOT NULL]")
         .explainContains(""
-            + "EnumerableCalc(expr#0..7=[{inputs}], expr#8=[0], expr#9=[>($t4, $t8)], expr#10=[CAST($t5):JavaType(class java.lang.Float)], expr#11=[null], expr#12=[CASE($t9, $t10, $t11)], expr#13=[5], deptno=[$t1], empid=[$t0], S=[$t12], FIVE=[$t13], M=[$t6], C=[$t7])\n"
+            + "EnumerableCalc(expr#0..7=[{inputs}], expr#8=[0], expr#9=[>($t4, $t8)], expr#10=[null], expr#11=[CASE($t9, $t5, $t10)], expr#12=[5], deptno=[$t1], empid=[$t0], S=[$t11], FIVE=[$t12], M=[$t6], C=[$t7])\n"
             + "  EnumerableWindow(window#0=[window(partition {1} order by [0] rows between $4 PRECEDING and CURRENT ROW aggs [COUNT($3), $SUM0($3), MIN($2), COUNT()])])\n"
             + "    EnumerableCalc(expr#0..4=[{inputs}], expr#5=[+($t3, $t0)], proj#0..1=[{exprs}], salary=[$t3], $3=[$t5])\n"
             + "      EnumerableTableScan(table=[[hr, emps]])\n")
@@ -3699,7 +3605,7 @@ public class JdbcTest {
             + " rank() over (partition by \"deptno\" order by \"empid\" desc) as rd\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, empid INTEGER NOT NULL, commission INTEGER, RCNF INTEGER NOT NULL, RCNL INTEGER NOT NULL, R INTEGER NOT NULL, RD INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, empid INTEGER NOT NULL, commission INTEGER, RCNF BIGINT NOT NULL, RCNL BIGINT NOT NULL, R BIGINT NOT NULL, RD BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; empid=100; commission=1000; RCNF=2; RCNL=1; R=1; RD=3",
             "deptno=10; empid=110; commission=250; RCNF=3; RCNL=2; R=2; RD=2",
@@ -3714,7 +3620,7 @@ public class JdbcTest {
             + " rank() over (order by \"deptno\") as r\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, R INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, R BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; R=1",
             "deptno=10; R=1",
@@ -3729,7 +3635,7 @@ public class JdbcTest {
             + " rank() over (order by \"deptno\" desc) as r\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, R INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, R BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; R=2",
             "deptno=10; R=2",
@@ -3744,7 +3650,7 @@ public class JdbcTest {
             + " dense_rank() over (order by \"deptno\") as r\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, R INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, R BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; R=1",
             "deptno=10; R=1",
@@ -3759,7 +3665,7 @@ public class JdbcTest {
             + " dense_rank() over (order by \"deptno\" desc) as r\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, R INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, R BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; R=2",
             "deptno=10; R=2",
@@ -4023,7 +3929,7 @@ public class JdbcTest {
         .query("select rn, ntile(1) over (order by rn) l\n"
             + " from " + START_OF_GROUP_DATA)
         .typeIs(
-            "[RN INTEGER NOT NULL, L INTEGER NOT NULL]")
+            "[RN INTEGER NOT NULL, L BIGINT NOT NULL]")
         .returnsUnordered(
             "RN=1; L=1",
             "RN=2; L=1",
@@ -4043,7 +3949,7 @@ public class JdbcTest {
         .query("select rn, ntile(2) over (order by rn) l\n"
             + " from " + START_OF_GROUP_DATA)
         .typeIs(
-            "[RN INTEGER NOT NULL, L INTEGER NOT NULL]")
+            "[RN INTEGER NOT NULL, L BIGINT NOT NULL]")
         .returnsUnordered(
             "RN=1; L=1",
             "RN=2; L=1",
@@ -4162,7 +4068,7 @@ public class JdbcTest {
             + " row_number() over (partition by \"deptno\" order by \"empid\" desc) as rd\n"
             + "from \"hr\".\"emps\"")
         .typeIs(
-            "[deptno INTEGER NOT NULL, empid INTEGER NOT NULL, commission INTEGER, R INTEGER NOT NULL, RCNF INTEGER NOT NULL, RCNL INTEGER NOT NULL, R INTEGER NOT NULL, RD INTEGER NOT NULL]")
+            "[deptno INTEGER NOT NULL, empid INTEGER NOT NULL, commission INTEGER, R BIGINT NOT NULL, RCNF BIGINT NOT NULL, RCNL BIGINT NOT NULL, R BIGINT NOT NULL, RD BIGINT NOT NULL]")
         .returnsUnordered(
             "deptno=10; empid=100; commission=1000; R=1; RCNF=2; RCNL=1; R=1; RD=3",
             "deptno=10; empid=110; commission=250; R=3; RCNF=3; RCNL=2; R=2; RD=2",
@@ -4269,7 +4175,7 @@ public class JdbcTest {
 
   /** Tests that field-trimming creates a project near the table scan. */
   @Test public void testTrimFields() throws Exception {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
+    try (TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
       CalciteAssert.hr()
           .query("select \"name\", count(\"commission\") + 1\n"
               + "from \"hr\".\"emps\"\n"
@@ -4284,7 +4190,7 @@ public class JdbcTest {
   /** Tests that field-trimming creates a project near the table scan, in a
    * query with windowed-aggregation. */
   @Test public void testTrimFieldsOver() throws Exception {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
+    try (TryThreadLocal.Memo ignored = Prepare.THREAD_TRIM.push(true)) {
       // The correct plan has a project on a filter on a project on a scan.
       CalciteAssert.hr()
           .query("select \"name\",\n"
@@ -4468,7 +4374,7 @@ public class JdbcTest {
             "select \"deptno\", \"employees\"[1] as e from \"hr\".\"depts\"\n").returnsUnordered(
         "deptno=10; E={100, 10, Bill, 10000.0, 1000}",
         "deptno=30; E=null",
-            "deptno=40; E={200, 20, Eric, 8000.0, 500}");
+        "deptno=40; E={200, 20, Eric, 8000.0, 500}");
   }
 
   @Test public void testVarcharEquals() {
@@ -4615,7 +4521,7 @@ public class JdbcTest {
   @Test public void testNotExistsCorrelated() {
     final String plan = "PLAN="
         + "EnumerableCalc(expr#0..5=[{inputs}], expr#6=[IS NULL($t5)], proj#0..4=[{exprs}], $condition=[$t6])\n"
-        + "  EnumerableCorrelate(correlation=[$cor0], joinType=[LEFT], requiredColumns=[{1}])\n"
+        + "  EnumerableCorrelate(correlation=[$cor0], joinType=[left], requiredColumns=[{1}])\n"
         + "    EnumerableTableScan(table=[[hr, emps]])\n"
         + "    EnumerableAggregate(group=[{0}])\n"
         + "      EnumerableCalc(expr#0..3=[{inputs}], expr#4=[true], expr#5=[$cor0], expr#6=[$t5.deptno], expr#7=[=($t6, $t0)], i=[$t4], $condition=[$t7])\n"
@@ -4624,7 +4530,7 @@ public class JdbcTest {
         + " select 1 from \"hr\".\"depts\"\n"
         + " where \"emps\".\"deptno\"=\"depts\".\"deptno\")";
     CalciteAssert.hr()
-        .with("forceDecorrelate", false)
+        .with(CalciteConnectionProperty.FORCE_DECORRELATE, false)
         .query(sql)
         .explainContains(plan)
         .returnsUnordered(
@@ -4643,11 +4549,7 @@ public class JdbcTest {
         + "    EnumerableTableScan(table=[[hr, emps]])\n"
         + "    EnumerableCalc(expr#0=[{inputs}], expr#1=[true], proj#0..1=[{exprs}])\n"
         + "      EnumerableAggregate(group=[{0}])\n"
-        + "        EnumerableJoin(condition=[=($0, $1)], joinType=[inner])\n"
-        + "          EnumerableAggregate(group=[{1}])\n"
-        + "            EnumerableTableScan(table=[[hr, emps]])\n"
-        + "          EnumerableCalc(expr#0..3=[{inputs}], deptno=[$t0])\n"
-        + "            EnumerableTableScan(table=[[hr, depts]])";
+        + "        EnumerableTableScan(table=[[hr, depts]])";
     CalciteAssert.hr()
         .query(sql)
         .explainContains(explain)
@@ -4661,7 +4563,7 @@ public class JdbcTest {
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-313">[CALCITE-313]
    * Query decorrelation fails</a>. */
-  @Test public void testJoinInCorrelatedSubquery() {
+  @Test public void testJoinInCorrelatedSubQuery() {
     CalciteAssert.hr()
         .query("select *\n"
             + "from \"hr\".\"depts\" as d\n"
@@ -4670,14 +4572,11 @@ public class JdbcTest {
             + "  from \"hr\".\"depts\" as d2\n"
             + "  join \"hr\".\"emps\" as e2 using (\"deptno\")\n"
             + "where d.\"deptno\" = d2.\"deptno\")")
-        .convertMatches(
-            new Function<RelNode, Void>() {
-              public Void apply(RelNode relNode) {
-                String s = RelOptUtil.toString(relNode);
-                assertThat(s, not(containsString("Correlate")));
-                return null;
-              }
-            });
+        .convertMatches(relNode -> {
+          String s = RelOptUtil.toString(relNode);
+          assertThat(s, not(containsString("Correlate")));
+          return null;
+        });
   }
 
   /** Tests a correlated scalar sub-query in the SELECT clause.
@@ -4685,7 +4584,7 @@ public class JdbcTest {
    * <p>Note that there should be an extra row "empid=200; deptno=20;
    * DNAME=null" but left join doesn't work.</p> */
   @Test public void testScalarSubQuery() {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
+    try (TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
       CalciteAssert.hr()
           .query("select \"empid\", \"deptno\",\n"
               + " (select \"name\" from \"hr\".\"depts\"\n"
@@ -4700,8 +4599,8 @@ public class JdbcTest {
 
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-559">[CALCITE-559]
-   * Correlated scalar subquery in WHERE gives error</a>. */
-  @Test public void testJoinCorrelatedScalarSubquery() throws SQLException {
+   * Correlated scalar sub-query in WHERE gives error</a>. */
+  @Test public void testJoinCorrelatedScalarSubQuery() throws SQLException {
     final String sql = "select e.employee_id, d.department_id "
         + " from employee e, department d "
         + " where e.department_id = d.department_id "
@@ -4713,6 +4612,32 @@ public class JdbcTest {
         .with(Lex.JAVA)
         .query(sql)
         .returnsCount(599);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-685">[CALCITE-685]
+   * Correlated scalar sub-query in SELECT clause throws</a>. */
+  @Ignore("[CALCITE-685]")
+  @Test public void testCorrelatedScalarSubQuery() throws SQLException {
+    final String sql = "select e.department_id, sum(e.employee_id),\n"
+        + "       ( select sum(e2.employee_id)\n"
+        + "         from  employee e2\n"
+        + "         where e.department_id = e2.department_id\n"
+        + "       )\n"
+        + "from employee e\n"
+        + "group by e.department_id\n";
+    final String explain = "EnumerableJoin(condition=[true], joinType=[left])\n"
+        + "  EnumerableAggregate(group=[{7}], EXPR$1=[$SUM0($0)])\n"
+        + "    EnumerableTableScan(table=[[foodmart2, employee]])\n"
+        + "  EnumerableAggregate(group=[{}], EXPR$0=[SUM($0)])\n"
+        + "    EnumerableCalc(expr#0..16=[{inputs}], expr#17=[$cor0], expr#18=[$t17.department_id], expr#19=[=($t18, $t7)], employee_id=[$t0], department_id=[$t7], $condition=[$t19])\n"
+        + "      EnumerableTableScan(table=[[foodmart2, employee]])\n";
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.FOODMART_CLONE)
+        .with(Lex.JAVA)
+        .query(sql)
+        .explainContains(explain)
+        .returnsCount(0);
   }
 
   @Test public void testLeftJoin() {
@@ -4821,7 +4746,7 @@ public class JdbcTest {
   }
 
   @Test public void testScalarSubQueryInCase() {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
+    try (TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
       CalciteAssert.hr()
           .query("select e.\"name\",\n"
               + " (CASE e.\"deptno\"\n"
@@ -4860,7 +4785,7 @@ public class JdbcTest {
         .query("select * from \"metadata\".TABLES")
         .returns(
             CalciteAssert.checkResultContains(
-                "tableSchem=metadata; tableName=COLUMNS; tableType=SYSTEM_TABLE; "));
+                "tableSchem=metadata; tableName=COLUMNS; tableType=SYSTEM TABLE; "));
 
     CalciteAssert.that()
         .with(CalciteAssert.Config.REGULAR_PLUS_METADATA)
@@ -4872,103 +4797,129 @@ public class JdbcTest {
   /** Tests that {@link java.sql.Statement#setMaxRows(int)} is honored. */
   @Test public void testSetMaxRows() throws Exception {
     CalciteAssert.hr()
-        .doWithConnection(
-            new Function<CalciteConnection, Object>() {
-              public Object apply(CalciteConnection a0) {
-                try {
-                  final Statement statement = a0.createStatement();
-                  try {
-                    statement.setMaxRows(-1);
-                    fail("expected error");
-                  } catch (SQLException e) {
-                    assertEquals(e.getMessage(), "illegal maxRows value: -1");
-                  }
-                  statement.setMaxRows(2);
-                  assertEquals(2, statement.getMaxRows());
-                  final ResultSet resultSet = statement.executeQuery(
-                      "select * from \"hr\".\"emps\"");
-                  assertTrue(resultSet.next());
-                  assertTrue(resultSet.next());
-                  assertFalse(resultSet.next());
-                  resultSet.close();
-                  statement.close();
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            final Statement statement = connection.createStatement();
+            try {
+              statement.setMaxRows(-1);
+              fail("expected error");
+            } catch (SQLException e) {
+              assertEquals(e.getMessage(), "illegal maxRows value: -1");
+            }
+            statement.setMaxRows(2);
+            assertEquals(2, statement.getMaxRows());
+            final ResultSet resultSet = statement.executeQuery(
+                "select * from \"hr\".\"emps\"");
+            assertTrue(resultSet.next());
+            assertTrue(resultSet.next());
+            assertFalse(resultSet.next());
+            resultSet.close();
+            statement.close();
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests a {@link PreparedStatement} with parameters. */
   @Test public void testPreparedStatement() throws Exception {
     CalciteAssert.hr()
-        .doWithConnection(
-            new Function<CalciteConnection, Object>() {
-              public Object apply(CalciteConnection connection) {
-                try {
-                  final PreparedStatement preparedStatement =
-                      connection.prepareStatement("select \"deptno\", \"name\" "
-                          + "from \"hr\".\"emps\"\n"
-                          + "where \"deptno\" < ? and \"name\" like ?");
+        .doWithConnection(connection -> {
+          try {
+            final PreparedStatement preparedStatement =
+                connection.prepareStatement("select \"deptno\", \"name\" "
+                    + "from \"hr\".\"emps\"\n"
+                    + "where \"deptno\" < ? and \"name\" like ?");
 
-                  // execute with vars unbound - gives error
-                  ResultSet resultSet;
-                  try {
-                    resultSet = preparedStatement.executeQuery();
-                    fail("expected error, got " + resultSet);
-                  } catch (SQLException e) {
-                    assertThat(e.getMessage(),
-                        equalTo(
-                            "exception while executing query: unbound parameter"));
-                  }
+            // execute with vars unbound - gives error
+            ResultSet resultSet;
+            try {
+              resultSet = preparedStatement.executeQuery();
+              fail("expected error, got " + resultSet);
+            } catch (SQLException e) {
+              assertThat(e.getMessage(),
+                  containsString(
+                      "exception while executing query: unbound parameter"));
+            }
 
-                  // execute with both vars null - no results
-                  preparedStatement.setNull(1, java.sql.Types.INTEGER);
-                  preparedStatement.setNull(2, java.sql.Types.VARCHAR);
-                  resultSet = preparedStatement.executeQuery();
-                  assertFalse(resultSet.next());
+            // execute with both vars null - no results
+            preparedStatement.setNull(1, Types.INTEGER);
+            preparedStatement.setNull(2, Types.VARCHAR);
+            resultSet = preparedStatement.executeQuery();
+            assertFalse(resultSet.next());
 
-                  // execute with ?0=15, ?1='%' - 3 rows
-                  preparedStatement.setInt(1, 15);
-                  preparedStatement.setString(2, "%");
-                  resultSet = preparedStatement.executeQuery();
-                  assertEquals("deptno=10; name=Bill\n"
-                      + "deptno=10; name=Sebastian\n"
-                      + "deptno=10; name=Theodore\n",
-                      CalciteAssert.toString(resultSet));
+            // execute with ?0=15, ?1='%' - 3 rows
+            preparedStatement.setInt(1, 15);
+            preparedStatement.setString(2, "%");
+            resultSet = preparedStatement.executeQuery();
+            assertEquals("deptno=10; name=Bill\n"
+                + "deptno=10; name=Sebastian\n"
+                + "deptno=10; name=Theodore\n",
+                CalciteAssert.toString(resultSet));
 
-                  // execute with ?0=15 (from last bind), ?1='%r%' - 1 row
-                  preparedStatement.setString(2, "%r%");
-                  resultSet = preparedStatement.executeQuery();
-                  assertEquals(
-                      "deptno=10; name=Theodore\n",
-                      CalciteAssert.toString(resultSet));
+            // execute with ?0=15 (from last bind), ?1='%r%' - 1 row
+            preparedStatement.setString(2, "%r%");
+            resultSet = preparedStatement.executeQuery();
+            assertEquals(
+                "deptno=10; name=Theodore\n",
+                CalciteAssert.toString(resultSet));
 
-                  // Now BETWEEN, with 3 arguments, 2 of which are parameters
-                  final String sql2 = "select \"deptno\", \"name\" "
-                      + "from \"hr\".\"emps\"\n"
-                      + "where \"deptno\" between symmetric ? and ?\n"
-                      + "order by 2";
-                  final PreparedStatement preparedStatement2 =
-                      connection.prepareStatement(sql2);
-                  preparedStatement2.setInt(1, 15);
-                  preparedStatement2.setInt(2, 5);
-                  resultSet = preparedStatement2.executeQuery();
-                  assertThat(CalciteAssert.toString(resultSet),
-                      is("deptno=10; name=Bill\n"
-                          + "deptno=10; name=Sebastian\n"
-                          + "deptno=10; name=Theodore\n"));
+            // Now BETWEEN, with 3 arguments, 2 of which are parameters
+            final String sql2 = "select \"deptno\", \"name\" "
+                + "from \"hr\".\"emps\"\n"
+                + "where \"deptno\" between symmetric ? and ?\n"
+                + "order by 2";
+            final PreparedStatement preparedStatement2 =
+                connection.prepareStatement(sql2);
+            preparedStatement2.setInt(1, 15);
+            preparedStatement2.setInt(2, 5);
+            resultSet = preparedStatement2.executeQuery();
+            assertThat(CalciteAssert.toString(resultSet),
+                is("deptno=10; name=Bill\n"
+                    + "deptno=10; name=Sebastian\n"
+                    + "deptno=10; name=Theodore\n"));
 
-                  resultSet.close();
-                  preparedStatement2.close();
-                  preparedStatement.close();
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+            resultSet.close();
+            preparedStatement2.close();
+            preparedStatement.close();
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2061">[CALCITE-2061]
+   * Dynamic parameters in offset/fetch</a>. */
+  @Test public void testPreparedOffsetFetch() throws Exception {
+    checkPreparedOffsetFetch(0, 0, Matchers.returnsUnordered());
+    checkPreparedOffsetFetch(100, 4, Matchers.returnsUnordered());
+    checkPreparedOffsetFetch(3, 4,
+        Matchers.returnsUnordered("name=Eric"));
+  }
+
+  private void checkPreparedOffsetFetch(final int offset, final int fetch,
+      final Matcher<? super ResultSet> matcher) throws Exception {
+    CalciteAssert.hr()
+        .doWithConnection(connection -> {
+          final String sql = "select \"name\"\n"
+              + "from \"hr\".\"emps\"\n"
+              + "order by \"empid\" offset ? fetch next ? rows only";
+          try (PreparedStatement p =
+                   connection.prepareStatement(sql)) {
+            final ParameterMetaData pmd = p.getParameterMetaData();
+            assertThat(pmd.getParameterCount(), is(2));
+            assertThat(pmd.getParameterType(1), is(Types.INTEGER));
+            assertThat(pmd.getParameterType(2), is(Types.INTEGER));
+            p.setInt(1, offset);
+            p.setInt(2, fetch);
+            try (ResultSet r = p.executeQuery()) {
+              assertThat(r, matcher);
+            }
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests a JDBC connection that provides a model (a single schema based on
@@ -5110,24 +5061,20 @@ public class JdbcTest {
             + "  ]\n"
             + "}");
     // check that the specified 'defaultSchema' was used
-    that.doWithConnection(
-        new Function<CalciteConnection, Object>() {
-          public Object apply(CalciteConnection connection) {
-            try {
-              assertEquals("adhoc", connection.getSchema());
-              return null;
-            } catch (SQLException e) {
-              throw new RuntimeException(e);
-            }
-          }
-        });
+    that.doWithConnection(connection -> {
+      try {
+        assertEquals("adhoc", connection.getSchema());
+      } catch (SQLException e) {
+        throw new RuntimeException(e);
+      }
+    });
     that.query("select * from \"adhoc\".ELVIS where \"deptno\" = 10")
         .returns(""
             + "empid=100; deptno=10; name=Bill; salary=10000.0; commission=1000\n"
             + "empid=150; deptno=10; name=Sebastian; salary=7000.0; commission=null\n"
             + "empid=110; deptno=10; name=Theodore; salary=11500.0; commission=250\n");
     that.query("select * from \"adhoc\".EMPLOYEES")
-        .throws_("Table 'adhoc.EMPLOYEES' not found");
+        .throws_("Object 'EMPLOYEES' not found within 'adhoc'");
   }
 
   /** Test case for
@@ -5147,8 +5094,7 @@ public class JdbcTest {
   private void checkCustomSchemaInFileInPwd(String fileName)
       throws SQLException {
     final File file = new File(fileName);
-    try (final FileWriter fw = new FileWriter(file);
-         final PrintWriter pw = new PrintWriter(fw)) {
+    try (PrintWriter pw = Util.printWriter(file)) {
       file.deleteOnExit();
       pw.println("{\n"
           + "  version: '1.0',\n"
@@ -5347,73 +5293,84 @@ public class JdbcTest {
             + "empid=100; deptno=10; name=Bill; salary=10000.0; commission=1000\n");
 
     // Make sure that views appear in metadata.
-    with.doWithConnection(
-        new Function<CalciteConnection, Void>() {
-          public Void apply(CalciteConnection a0) {
-            try {
-              final DatabaseMetaData metaData = a0.getMetaData();
+    with.doWithConnection(connection -> {
+      try {
+        final DatabaseMetaData metaData = connection.getMetaData();
 
-              // all table types
-              assertEquals(
-                  "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=MUTABLE_EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; TABLE_TYPE=VIEW; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n",
-                  CalciteAssert.toString(
-                      metaData.getTables(null, "adhoc", null, null)));
+        // all table types
+        try (ResultSet r =
+             metaData.getTables(null, "adhoc", null, null)) {
+          assertEquals(
+              "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=MUTABLE_EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; TABLE_TYPE=VIEW; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              // views only
-              assertEquals(
-                  "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; TABLE_TYPE=VIEW; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n",
-                  CalciteAssert.toString(
-                      metaData.getTables(
-                          null, "adhoc", null,
-                          new String[]{
-                              Schema.TableType.VIEW.name()
-                          })));
+        // including system tables; note that table type is "SYSTEM TABLE"
+        // not "SYSTEM_TABLE"
+        try (ResultSet r = metaData.getTables(null, null, null, null)) {
+          assertEquals(
+              "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=MUTABLE_EMPLOYEES; TABLE_TYPE=TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; TABLE_TYPE=VIEW; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=metadata; TABLE_NAME=COLUMNS; TABLE_TYPE=SYSTEM TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=metadata; TABLE_NAME=TABLES; TABLE_TYPE=SYSTEM TABLE; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              // columns
-              assertEquals(
-                  "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=empid; DATA_TYPE=4; TYPE_NAME=JavaType(int) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=1; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=null; IS_GENERATEDCOLUMN=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=deptno; DATA_TYPE=4; TYPE_NAME=JavaType(int) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=2; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=null; IS_GENERATEDCOLUMN=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=name; DATA_TYPE=12; TYPE_NAME=JavaType(class java.lang.String); COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=1; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=3; IS_NULLABLE=YES; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=null; IS_GENERATEDCOLUMN=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=salary; DATA_TYPE=7; TYPE_NAME=JavaType(float) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=4; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=null; IS_GENERATEDCOLUMN=null\n"
-                      + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=commission; DATA_TYPE=4; TYPE_NAME=JavaType(class java.lang.Integer); COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=1; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=5; IS_NULLABLE=YES; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=null; IS_GENERATEDCOLUMN=null\n",
-                  CalciteAssert.toString(
-                      metaData.getColumns(
-                          null, "adhoc", "V", null)));
+        // views only
+        try (ResultSet r = metaData.getTables(null, "adhoc", null,
+            new String[]{Schema.TableType.VIEW.jdbcName})) {
+          assertEquals(
+              "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; TABLE_TYPE=VIEW; REMARKS=null; TYPE_CAT=null; TYPE_SCHEM=null; TYPE_NAME=null; SELF_REFERENCING_COL_NAME=null; REF_GENERATION=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              // catalog
-              assertEquals(
-                  "TABLE_CAT=null\n",
-                  CalciteAssert.toString(
-                      metaData.getCatalogs()));
+        // columns
+        try (ResultSet r =
+                 metaData.getColumns(null, "adhoc", "V", null)) {
+          assertEquals(
+              "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=empid; DATA_TYPE=4; TYPE_NAME=JavaType(int) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=1; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=; IS_GENERATEDCOLUMN=\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=deptno; DATA_TYPE=4; TYPE_NAME=JavaType(int) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=2; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=; IS_GENERATEDCOLUMN=\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=name; DATA_TYPE=12; TYPE_NAME=JavaType(class java.lang.String); COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=1; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=3; IS_NULLABLE=YES; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=; IS_GENERATEDCOLUMN=\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=salary; DATA_TYPE=7; TYPE_NAME=JavaType(float) NOT NULL; COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=0; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=4; IS_NULLABLE=NO; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=; IS_GENERATEDCOLUMN=\n"
+                  + "TABLE_CAT=null; TABLE_SCHEM=adhoc; TABLE_NAME=V; COLUMN_NAME=commission; DATA_TYPE=4; TYPE_NAME=JavaType(class java.lang.Integer); COLUMN_SIZE=-1; BUFFER_LENGTH=null; DECIMAL_DIGITS=null; NUM_PREC_RADIX=10; NULLABLE=1; REMARKS=null; COLUMN_DEF=null; SQL_DATA_TYPE=null; SQL_DATETIME_SUB=null; CHAR_OCTET_LENGTH=-1; ORDINAL_POSITION=5; IS_NULLABLE=YES; SCOPE_CATALOG=null; SCOPE_SCHEMA=null; SCOPE_TABLE=null; SOURCE_DATA_TYPE=null; IS_AUTOINCREMENT=; IS_GENERATEDCOLUMN=\n",
+              CalciteAssert.toString(r));
+        }
 
-              // schemas
-              assertEquals(
-                  "TABLE_SCHEM=adhoc; TABLE_CATALOG=null\n"
-                      + "TABLE_SCHEM=metadata; TABLE_CATALOG=null\n",
-                  CalciteAssert.toString(
-                      metaData.getSchemas()));
+        // catalog
+        try (ResultSet r = metaData.getCatalogs()) {
+          assertEquals(
+              "TABLE_CAT=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              // schemas (qualified)
-              assertEquals(
-                  "TABLE_SCHEM=adhoc; TABLE_CATALOG=null\n",
-                  CalciteAssert.toString(
-                      metaData.getSchemas(null, "adhoc")));
+        // schemas
+        try (ResultSet r = metaData.getSchemas()) {
+          assertEquals(
+              "TABLE_SCHEM=adhoc; TABLE_CATALOG=null\n"
+                  + "TABLE_SCHEM=metadata; TABLE_CATALOG=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              // table types
-              assertEquals(
-                  "TABLE_TYPE=TABLE\n"
-                      + "TABLE_TYPE=VIEW\n",
-                  CalciteAssert.toString(
-                      metaData.getTableTypes()));
+        // schemas (qualified)
+        try (ResultSet r = metaData.getSchemas(null, "adhoc")) {
+          assertEquals(
+              "TABLE_SCHEM=adhoc; TABLE_CATALOG=null\n",
+              CalciteAssert.toString(r));
+        }
 
-              return null;
-            } catch (SQLException e) {
-              throw new RuntimeException(e);
-            }
-          }
-        });
+        // table types
+        try (ResultSet r = metaData.getTableTypes()) {
+          assertEquals("TABLE_TYPE=TABLE\n"
+                  + "TABLE_TYPE=VIEW\n",
+              CalciteAssert.toString(r));
+        }
+      } catch (SQLException e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
 
   /** Tests a view with ORDER BY and LIMIT clauses. */
@@ -5437,6 +5394,79 @@ public class JdbcTest {
             + "name=Theodore\n");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1900">[CALCITE-1900]
+   * Improve error message for cyclic views</a>.
+   * Previously got a {@link StackOverflowError}. */
+  @Test public void testSelfReferentialView() throws Exception {
+    final CalciteAssert.AssertThat with =
+        modelWithView("select * from \"V\"", null);
+    with.query("select \"name\" from \"adhoc\".V")
+        .throws_("Cannot resolve 'adhoc.V'; it references view 'adhoc.V', "
+            + "whose definition is cyclic");
+  }
+
+  @Test public void testSelfReferentialView2() throws Exception {
+    final String model = "{\n"
+        + "  version: '1.0',\n"
+        + "  defaultSchema: 'adhoc',\n"
+        + "  schemas: [ {\n"
+        + "    name: 'adhoc',\n"
+        + "    tables: [ {\n"
+        + "      name: 'A',\n"
+        + "      type: 'view',\n"
+        + "      sql: "
+        + new JsonBuilder().toJsonString("select * from B") + "\n"
+        + "    }, {\n"
+        + "      name: 'B',\n"
+        + "      type: 'view',\n"
+        + "      sql: "
+        + new JsonBuilder().toJsonString("select * from C") + "\n"
+        + "    }, {\n"
+        + "      name: 'C',\n"
+        + "      type: 'view',\n"
+        + "      sql: "
+        + new JsonBuilder().toJsonString("select * from D, B") + "\n"
+        + "    }, {\n"
+        + "      name: 'D',\n"
+        + "      type: 'view',\n"
+        + "      sql: "
+        + new JsonBuilder().toJsonString(
+            "select * from (values (1, 'a')) as t(x, y)") + "\n"
+        + "    } ]\n"
+        + "  } ]\n"
+        + "}";
+    final CalciteAssert.AssertThat with =
+        CalciteAssert.model(model);
+    //
+    //       +-----+
+    //       V     |
+    // A --> B --> C --> D
+    //
+    // A is not in a cycle, but depends on cyclic views
+    // B is cyclic
+    // C is cyclic
+    // D is not cyclic
+    with.query("select x from \"adhoc\".a")
+        .throws_("Cannot resolve 'adhoc.A'; it references view 'adhoc.B', "
+            + "whose definition is cyclic");
+    with.query("select x from \"adhoc\".b")
+        .throws_("Cannot resolve 'adhoc.B'; it references view 'adhoc.B', "
+            + "whose definition is cyclic");
+    // as previous, but implicit schema
+    with.query("select x from b")
+        .throws_("Cannot resolve 'B'; it references view 'adhoc.B', "
+            + "whose definition is cyclic");
+    with.query("select x from \"adhoc\".c")
+        .throws_("Cannot resolve 'adhoc.C'; it references view 'adhoc.C', "
+            + "whose definition is cyclic");
+    with.query("select x from \"adhoc\".d")
+        .returns("X=1\n");
+    with.query("select x from \"adhoc\".d except select x from \"adhoc\".a")
+        .throws_("Cannot resolve 'adhoc.A'; it references view 'adhoc.B', "
+            + "whose definition is cyclic");
+  }
+
   /** Tests saving query results into temporary tables, per
    * {@link org.apache.calcite.avatica.Handler.ResultSink}. */
   @Test public void testAutomaticTemporaryTable() throws Exception {
@@ -5455,21 +5485,17 @@ public class JdbcTest {
                 return connection;
               }
             })
-        .doWithConnection(
-            new Function<CalciteConnection, Object>() {
-              public Object apply(CalciteConnection a0) {
-                try {
-                  a0.createStatement()
-                      .executeQuery(
-                          "select * from \"hr\".\"emps\" "
-                              + "where \"deptno\" = 10");
-                  assertEquals(1, objects.size());
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            final String sql = "select * from \"hr\".\"emps\" "
+                + "where \"deptno\" = 10";
+            connection.createStatement()
+                .executeQuery(sql);
+            assertThat(objects.size(), is(1));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   @Test public void testExplain() {
@@ -5477,6 +5503,44 @@ public class JdbcTest {
         CalciteAssert.that().with(CalciteAssert.Config.FOODMART_CLONE);
     with.query("explain plan for values (1, 'ab')")
         .returns("PLAN=EnumerableValues(tuples=[[{ 1, 'ab' }]])\n\n");
+    final String expectedXml = "PLAN=<RelNode type=\"EnumerableValues\">\n"
+        + "\t<Property name=\"tuples\">\n"
+        + "\t\t[{ 1, &#39;ab&#39; }]\t</Property>\n"
+        + "\t<Inputs/>\n"
+        + "</RelNode>\n"
+        + "\n";
+    with.query("explain plan as xml for values (1, 'ab')")
+        .returns(expectedXml);
+    final String expectedJson = "PLAN={\n"
+        + "  \"rels\": [\n"
+        + "    {\n"
+        + "      \"id\": \"0\",\n"
+        + "      \"relOp\": \"org.apache.calcite.adapter.enumerable.EnumerableValues\",\n"
+        + "      \"type\": [\n"
+        + "        {\n"
+        + "          \"type\": \"INTEGER\",\n"
+        + "          \"nullable\": false,\n"
+        + "          \"name\": \"EXPR$0\"\n"
+        + "        },\n"
+        + "        {\n"
+        + "          \"type\": \"CHAR\",\n"
+        + "          \"nullable\": false,\n"
+        + "          \"precision\": 2,\n"
+        + "          \"name\": \"EXPR$1\"\n"
+        + "        }\n"
+        + "      ],\n"
+        + "      \"tuples\": [\n"
+        + "        [\n"
+        + "          1,\n"
+        + "          \"ab\"\n"
+        + "        ]\n"
+        + "      ],\n"
+        + "      \"inputs\": []\n"
+        + "    }\n"
+        + "  ]\n"
+        + "}\n";
+    with.query("explain plan as json for values (1, 'ab')")
+        .returns(expectedJson);
     with.query("explain plan with implementation for values (1, 'ab')")
         .returns("PLAN=EnumerableValues(tuples=[[{ 1, 'ab' }]])\n\n");
     with.query("explain plan without implementation for values (1, 'ab')")
@@ -5508,58 +5572,50 @@ public class JdbcTest {
    * is executed. */
   @Test public void testCurrentTimestamp() throws Exception {
     CalciteAssert.that()
-        .with("timezone", "GMT+1:00")
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  final PreparedStatement statement =
-                      connection.prepareStatement("VALUES CURRENT_TIMESTAMP");
-                  ResultSet resultSet;
+        .with(CalciteConnectionProperty.TIME_ZONE, "GMT+1:00")
+        .doWithConnection(connection -> {
+          try {
+            final PreparedStatement statement =
+                connection.prepareStatement("VALUES CURRENT_TIMESTAMP");
+            ResultSet resultSet;
 
-                  resultSet = statement.executeQuery();
-                  assertTrue(resultSet.next());
-                  String s0 = resultSet.getString(1);
-                  assertFalse(resultSet.next());
+            resultSet = statement.executeQuery();
+            assertTrue(resultSet.next());
+            String s0 = resultSet.getString(1);
+            assertFalse(resultSet.next());
 
-                  try {
-                    Thread.sleep(1000);
-                  } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                  }
+            try {
+              Thread.sleep(1000);
+            } catch (InterruptedException e) {
+              throw new RuntimeException(e);
+            }
 
-                  resultSet = statement.executeQuery();
-                  assertTrue(resultSet.next());
-                  String s1 = resultSet.getString(1);
-                  assertFalse(resultSet.next());
+            resultSet = statement.executeQuery();
+            assertTrue(resultSet.next());
+            String s1 = resultSet.getString(1);
+            assertFalse(resultSet.next());
 
-                  assertTrue("\n"
-                          + "s0=" + s0 + "\n"
-                          + "s1=" + s1 + "\n",
-                      s0.compareTo(s1) < 0);
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+            assertTrue("\n"
+                    + "s0=" + s0 + "\n"
+                    + "s1=" + s1 + "\n",
+                s0.compareTo(s1) < 0);
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Test for timestamps and time zones, based on pgsql TimezoneTest. */
   @Test public void testGetTimestamp() throws Exception {
     CalciteAssert.that()
-        .with("timezone", "GMT+1:00")
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  checkGetTimestamp(connection);
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .with(CalciteConnectionProperty.TIME_ZONE, "GMT+1:00")
+        .doWithConnection(connection -> {
+          try {
+            checkGetTimestamp(connection);
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   private void checkGetTimestamp(Connection con) throws SQLException {
@@ -5583,10 +5639,10 @@ public class JdbcTest {
     TimeZone tzGmt05 = TimeZone.getTimeZone("GMT-05"); // -0500 always
     TimeZone tzGmt13 = TimeZone.getTimeZone("GMT+13"); // +1000 always
 
-    Calendar cUtc   = Calendar.getInstance(tzUtc);
-    Calendar cGmt03 = Calendar.getInstance(tzGmt03);
-    Calendar cGmt05 = Calendar.getInstance(tzGmt05);
-    Calendar cGmt13 = Calendar.getInstance(tzGmt13);
+    Calendar cUtc   = Calendar.getInstance(tzUtc, Locale.ROOT);
+    Calendar cGmt03 = Calendar.getInstance(tzGmt03, Locale.ROOT);
+    Calendar cGmt05 = Calendar.getInstance(tzGmt05, Locale.ROOT);
+    Calendar cGmt13 = Calendar.getInstance(tzGmt13, Locale.ROOT);
 
     Timestamp ts;
     String s;
@@ -5695,25 +5751,21 @@ public class JdbcTest {
   @Test
   public void testGetDate() throws Exception {
     CalciteAssert.that()
-      .with(CalciteAssert.Config.JDBC_FOODMART)
-      .doWithConnection(
-          new Function<CalciteConnection, Object>() {
-            public Object apply(CalciteConnection conn) {
-              try {
-                Statement stmt = conn.createStatement();
-                ResultSet rs = stmt.executeQuery(
-                    "select min(\"date\") mindate from \"foodmart\".\"currency\"");
-                assertTrue(rs.next());
-                assertEquals(
-                    Date.valueOf("1997-01-01"),
-                    rs.getDate(1));
-                assertFalse(rs.next());
-                return null;
-              } catch (SQLException e) {
-                throw new RuntimeException(e);
-              }
-            }
-          });
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .doWithConnection(connection -> {
+          try {
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                "select min(\"date\") mindate from \"foodmart\".\"currency\"");
+            assertTrue(rs.next());
+            assertEquals(
+                Date.valueOf("1997-01-01"),
+                rs.getDate(1));
+            assertFalse(rs.next());
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests accessing a date as a string in a JDBC source whose type is DATE. */
@@ -5724,28 +5776,30 @@ public class JdbcTest {
       .returns2("MINDATE=1997-01-01\n");
   }
 
-  @Test
-  public void testGetTimestampObject() throws Exception {
+  @Test public void testGetTimestampObject() throws Exception {
     CalciteAssert.that()
-      .with(CalciteAssert.Config.JDBC_FOODMART)
-      .doWithConnection(
-          new Function<CalciteConnection, Object>() {
-            public Object apply(CalciteConnection conn) {
-              try {
-                Statement stmt = conn.createStatement();
-                ResultSet rs = stmt.executeQuery(
-                    "select \"hire_date\" from \"foodmart\".\"employee\" where \"employee_id\" = 1");
-                assertTrue(rs.next());
-                assertEquals(
-                    Timestamp.valueOf("1994-12-01 00:00:00"),
-                    rs.getTimestamp(1));
-                assertFalse(rs.next());
-                return null;
-              } catch (SQLException e) {
-                throw new RuntimeException(e);
-              }
-            }
-          });
+        .with(CalciteAssert.Config.JDBC_FOODMART)
+        .doWithConnection(connection -> {
+          try {
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                "select \"hire_date\" from \"foodmart\".\"employee\" where \"employee_id\" = 1");
+            assertTrue(rs.next());
+            assertEquals(
+                Timestamp.valueOf("1994-12-01 00:00:00"),
+                rs.getTimestamp(1));
+            assertFalse(rs.next());
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
+  }
+
+  @Test public void testRowComparison() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_SCOTT)
+        .query("SELECT empno FROM JDBC_SCOTT.emp WHERE (ename, job) < ('Blake', 'Manager')")
+        .returnsUnordered("EMPNO=7876", "EMPNO=7499", "EMPNO=7698");
   }
 
   @Test public void testUnicode() throws Exception {
@@ -5787,214 +5841,190 @@ public class JdbcTest {
   @Test public void testLexMySQL() throws Exception {
     CalciteAssert.that()
         .with(Lex.MYSQL)
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(), equalTo("`"));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(), equalTo("`"));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests metadata for the MySQL ANSI lexical scheme. */
   @Test public void testLexMySQLANSI() throws Exception {
     CalciteAssert.that()
         .with(Lex.MYSQL_ANSI)
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(), equalTo("\""));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(), equalTo("\""));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests metadata for different the "SQL_SERVER" lexical scheme. */
   @Test public void testLexSqlServer() throws Exception {
     CalciteAssert.that()
         .with(Lex.SQL_SERVER)
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(), equalTo("["));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(), equalTo("["));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests metadata for the ORACLE (and default) lexical scheme. */
   @Test public void testLexOracle() throws Exception {
     CalciteAssert.that()
         .with(Lex.ORACLE)
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(),
-                      equalTo("\""));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  // Oracle JDBC 12.1.0.1.0 returns true here, however it is
-                  // not clear if the bug is in JDBC specification or Oracle
-                  // driver
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(),
+                equalTo("\""));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            // Oracle JDBC 12.1.0.1.0 returns true here, however it is
+            // not clear if the bug is in JDBC specification or Oracle
+            // driver
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests metadata for the JAVA lexical scheme. */
   @Test public void testLexJava() throws Exception {
     CalciteAssert.that()
         .with(Lex.JAVA)
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(),
-                      equalTo("`"));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(),
+                equalTo("`"));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests metadata for the ORACLE lexical scheme overridden like JAVA. */
   @Test public void testLexOracleAsJava() throws Exception {
     CalciteAssert.that()
         .with(Lex.ORACLE)
-        .with("quoting", "BACK_TICK")
-        .with("unquotedCasing", "UNCHANGED")
-        .with("quotedCasing", "UNCHANGED")
-        .with("caseSensitive", "TRUE")
-        .doWithConnection(
-            new Function<CalciteConnection, Void>() {
-              public Void apply(CalciteConnection connection) {
-                try {
-                  DatabaseMetaData metaData = connection.getMetaData();
-                  assertThat(metaData.getIdentifierQuoteString(),
-                      equalTo("`"));
-                  assertThat(metaData.supportsMixedCaseIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesMixedCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
-                      equalTo(true));
-                  assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
-                      equalTo(false));
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-            });
+        .with(CalciteConnectionProperty.QUOTING, Quoting.BACK_TICK)
+        .with(CalciteConnectionProperty.UNQUOTED_CASING, Casing.UNCHANGED)
+        .with(CalciteConnectionProperty.QUOTED_CASING, Casing.UNCHANGED)
+        .with(CalciteConnectionProperty.CASE_SENSITIVE, true)
+        .doWithConnection(connection -> {
+          try {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getIdentifierQuoteString(),
+                equalTo("`"));
+            assertThat(metaData.supportsMixedCaseIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesMixedCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.supportsMixedCaseQuotedIdentifiers(),
+                equalTo(true));
+            assertThat(metaData.storesMixedCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesUpperCaseQuotedIdentifiers(),
+                equalTo(false));
+            assertThat(metaData.storesLowerCaseQuotedIdentifiers(),
+                equalTo(false));
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Tests case-insensitive resolution of schema and table names. */
@@ -6010,13 +6040,36 @@ public class JdbcTest {
     final CalciteAssert.AssertThat with2 =
         CalciteAssert.that().with(Lex.JAVA);
     with2.query("select COUNT(*) as c from `metaData`.`tAbles`")
-        .throws_("Table 'metaData.tAbles' not found");
+        .throws_("Object 'metaData' not found; did you mean 'metadata'?");
+    with2.query("select COUNT(*) as c from `metaData`.`TABLES`")
+        .throws_("Object 'metaData' not found; did you mean 'metadata'?");
+    with2.query("select COUNT(*) as c from `metaData`.`tables`")
+        .throws_("Object 'metaData' not found; did you mean 'metadata'?");
+    with2.query("select COUNT(*) as c from `metaData`.`nonExistent`")
+        .throws_("Object 'metaData' not found; did you mean 'metadata'?");
+    with2.query("select COUNT(*) as c from `metadata`.`tAbles`")
+        .throws_("Object 'tAbles' not found within 'metadata'; did you mean 'TABLES'?");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1563">[CALCITE-1563]
+   * In case-insensitive connection, non-existent tables use alphabetically
+   * preceding table</a>. */
+  @Test public void testLexCaseInsensitiveFindsNonexistentTable() {
+    final CalciteAssert.AssertThat with =
+        CalciteAssert.that().with(Lex.MYSQL);
+    // With [CALCITE-1563], the following query succeeded; it queried
+    // metadata.tables.
+    with.query("select COUNT(*) as c from `metaData`.`zoo`")
+        .throws_("Object 'zoo' not found within 'metadata'");
+    with.query("select COUNT(*) as c from `metaData`.`tAbLes`")
+        .returns("c=2\n");
   }
 
   /** Tests case-insensitive resolution of sub-query columns.
    *
    * <p>Test case for
-   * <a href="https://issues.apache.org/jira/browse/CALCITE-555">[CALCITE-555]
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-550">[CALCITE-550]
    * Case-insensitive matching of sub-query columns fails</a>. */
   @Test public void testLexCaseInsensitiveSubQueryField() {
     CalciteAssert.that()
@@ -6040,7 +6093,7 @@ public class JdbcTest {
 
   @Test public void testFunOracle() {
     CalciteAssert.that(CalciteAssert.Config.REGULAR)
-        .with("fun", "oracle")
+        .with(CalciteConnectionProperty.FUN, "oracle")
         .query("select nvl(\"commission\", -99) as c from \"hr\".\"emps\"")
         .returnsUnordered("C=-99",
             "C=1000",
@@ -6053,24 +6106,68 @@ public class JdbcTest {
         .throws_("No match found for function signature NVL(<NUMERIC>, <NUMERIC>)");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2072">[CALCITE-2072]
+   * Enable spatial operator table by adding 'fun=spatial'to JDBC URL</a>. */
+  @Test public void testFunSpatial() {
+    final String sql = "select distinct\n"
+        + "  ST_PointFromText('POINT(-71.0642.28)') as c\n"
+        + "from \"hr\".\"emps\"";
+    CalciteAssert.that(CalciteAssert.Config.REGULAR)
+        .with(CalciteConnectionProperty.FUN, "spatial")
+        .query(sql)
+        .returnsUnordered("C={\"x\":-71.0642,\"y\":0.28}");
+
+    // NVL is present in the Oracle operator table, but not spatial or core
+    CalciteAssert.that(CalciteAssert.Config.REGULAR)
+        .query("select nvl(\"commission\", -99) as c from \"hr\".\"emps\"")
+        .throws_("No match found for function signature NVL(<NUMERIC>, <NUMERIC>)");
+  }
+
+  /** Unit test for LATERAL CROSS JOIN to table function. */
+  @Test public void testLateralJoin() {
+    final String sql = "SELECT *\n"
+        + "FROM AUX.SIMPLETABLE ST\n"
+        + "CROSS JOIN LATERAL TABLE(AUX.TBLFUN(ST.INTCOL))";
+    CalciteAssert.that(CalciteAssert.Config.AUX)
+        .query(sql)
+        .returnsUnordered(
+            "STRCOL=ABC; INTCOL=1; n=0; s=",
+            "STRCOL=DEF; INTCOL=2; n=0; s=",
+            "STRCOL=DEF; INTCOL=2; n=1; s=a",
+            "STRCOL=GHI; INTCOL=3; n=0; s=",
+            "STRCOL=GHI; INTCOL=3; n=1; s=a",
+            "STRCOL=GHI; INTCOL=3; n=2; s=ab");
+  }
+
+  /** Unit test for view expansion with lateral join. */
+  @Test public void testExpandViewWithLateralJoin() {
+    final String sql = "SELECT * FROM AUX.VIEWLATERAL";
+    CalciteAssert.that(CalciteAssert.Config.AUX)
+        .query(sql)
+        .returnsUnordered(
+            "STRCOL=ABC; INTCOL=1; n=0; s=",
+            "STRCOL=DEF; INTCOL=2; n=0; s=",
+            "STRCOL=DEF; INTCOL=2; n=1; s=a",
+            "STRCOL=GHI; INTCOL=3; n=0; s=",
+            "STRCOL=GHI; INTCOL=3; n=1; s=a",
+            "STRCOL=GHI; INTCOL=3; n=2; s=ab");
+  }
+
   /** Tests that {@link Hook#PARSE_TREE} works. */
   @Test public void testHook() {
     final int[] callCount = {0};
-    final Hook.Closeable hook = Hook.PARSE_TREE.addThread(
-        new Function<Object[], Object>() {
-          public Void apply(Object[] args) {
-            assertThat(args.length, equalTo(2));
-            assertThat(args[0], instanceOf(String.class));
-            assertThat((String) args[0],
-                equalTo("select \"deptno\", \"commission\", sum(\"salary\") s\n"
-                    + "from \"hr\".\"emps\"\n"
-                    + "group by \"deptno\", \"commission\""));
-            assertThat(args[1], instanceOf(SqlSelect.class));
-            ++callCount[0];
-            return null;
-          }
-        });
-    try {
+    try (Hook.Closeable ignored = Hook.PARSE_TREE.<Object[]>addThread(
+        args -> {
+          assertThat(args.length, equalTo(2));
+          assertThat(args[0], instanceOf(String.class));
+          assertThat(args[0],
+              equalTo("select \"deptno\", \"commission\", sum(\"salary\") s\n"
+                  + "from \"hr\".\"emps\"\n"
+                  + "group by \"deptno\", \"commission\""));
+          assertThat(args[1], instanceOf(SqlSelect.class));
+          ++callCount[0];
+        })) {
       // Simple query does not run the hook.
       testSimple();
       assertThat(callCount[0], equalTo(0));
@@ -6078,8 +6175,6 @@ public class JdbcTest {
       // Non-trivial query runs hook once.
       testGroupByNull();
       assertThat(callCount[0], equalTo(1));
-    } finally {
-      hook.close();
     }
   }
 
@@ -6091,18 +6186,12 @@ public class JdbcTest {
         .query("select count(*) as c from \"foodmart\".\"employee\" as e1\n"
             + "  where \"first_name\" = 'abcde'\n"
             + "  and \"gender\" = 'F'")
-        .withHook(Hook.QUERY_PLAN,
-            new Function<String, Void>() {
-              public Void apply(String sql) {
-                sqls[0] = sql;
-                return null;
-              }
-            })
+        .withHook(Hook.QUERY_PLAN, (Consumer<String>) sql -> sqls[0] = sql)
         .returns("C=0\n");
     switch (CalciteAssert.DB) {
     case HSQLDB:
-      assertThat(Util.toLinux(sqls[0]),
-          equalTo("SELECT COUNT(*) AS \"C\"\n"
+      assertThat(sqls[0],
+          isLinux("SELECT COUNT(*) AS \"C\"\n"
               + "FROM \"foodmart\".\"employee\"\n"
               + "WHERE \"first_name\" = 'abcde' AND \"gender\" = 'F'"));
       break;
@@ -6160,6 +6249,42 @@ public class JdbcTest {
     assertThat(aSchema.getSubSchemaNames().size(), is(2));
   }
 
+  @Test public void testSimpleCalciteSchemaWithView() throws Exception {
+    final SchemaPlus rootSchema = CalciteSchema.createRootSchema(false, false).plus();
+
+    final Multimap<String, org.apache.calcite.schema.Function> functionMap =
+        LinkedListMultimap.create();
+    // create schema "/a"
+    final SchemaPlus aSchema = rootSchema.add("a",
+        new AbstractSchema() {
+          @Override protected Multimap<String, org.apache.calcite.schema.Function>
+          getFunctionMultimap() {
+            return functionMap;
+          }
+        });
+    // add view definition
+    final String viewName = "V";
+    final org.apache.calcite.schema.Function view =
+        ViewTable.viewMacro(rootSchema.getSubSchema("a"),
+            "values('1', '2')", null, null, false);
+    functionMap.put(viewName, view);
+
+    final CalciteSchema calciteSchema = CalciteSchema.from(aSchema);
+    assertThat(
+        calciteSchema.getTableBasedOnNullaryFunction(viewName, true), notNullValue());
+    assertThat(
+        calciteSchema.getTableBasedOnNullaryFunction(viewName, false), notNullValue());
+    assertThat(
+        calciteSchema.getTableBasedOnNullaryFunction("V1", true), nullValue());
+    assertThat(
+        calciteSchema.getTableBasedOnNullaryFunction("V1", false), nullValue());
+
+    assertThat(calciteSchema.getFunctions(viewName, true), hasItem(view));
+    assertThat(calciteSchema.getFunctions(viewName, false), hasItem(view));
+    assertThat(calciteSchema.getFunctions("V1", true), not(hasItem(view)));
+    assertThat(calciteSchema.getFunctions("V1", false), not(hasItem(view)));
+  }
+
   @Test public void testSchemaCaching() throws Exception {
     final Connection connection =
         CalciteAssert.that(CalciteAssert.Config.JDBC_FOODMART).connect();
@@ -6176,11 +6301,6 @@ public class JdbcTest {
     });
     aSchema.setCacheEnabled(true);
     assertThat(aSchema.getSubSchemaNames().size(), is(0));
-
-    // AbstractSchema never thinks its contents have changed; subsequent tests
-    // assume this
-    assertThat(aSchema.contentsHaveChangedSince(-1, 1), equalTo(false));
-    assertThat(aSchema.contentsHaveChangedSince(1, 1), equalTo(false));
 
     // first call, to populate the cache
     assertThat(aSchema.getSubSchemaNames().size(), is(0));
@@ -6211,33 +6331,24 @@ public class JdbcTest {
 
     // create schema "/a2"
     final Map<String, Schema> a2SubSchemaMap = new HashMap<>();
-    final boolean[] changed = {false};
     final SchemaPlus a2Schema = rootSchema.add("a", new AbstractSchema() {
       @Override protected Map<String, Schema> getSubSchemaMap() {
         return a2SubSchemaMap;
-      }
-      @Override public boolean contentsHaveChangedSince(long lastCheck,
-          long now) {
-        return changed[0];
       }
     });
     a2Schema.setCacheEnabled(true);
     assertThat(a2Schema.getSubSchemaNames().size(), is(0));
 
-    // create schema "/a2/b3". Appears only when we mark the schema changed.
+    // create schema "/a2/b3". Change not visible since caching is enabled.
     a2SubSchemaMap.put("b3", new AbstractSchema());
     assertThat(a2Schema.getSubSchemaNames().size(), is(0));
     Thread.sleep(1);
     assertThat(a2Schema.getSubSchemaNames().size(), is(0));
-    changed[0] = true;
-    assertThat(a2Schema.getSubSchemaNames().size(), is(1));
-    changed[0] = false;
 
-    // or if we disable caching
-    a2SubSchemaMap.put("b4", new AbstractSchema());
-    assertThat(a2Schema.getSubSchemaNames().size(), is(1));
+    // Change visible after we turn off caching.
     a2Schema.setCacheEnabled(false);
-    a2Schema.setCacheEnabled(true);
+    assertThat(a2Schema.getSubSchemaNames().size(), is(1));
+    a2SubSchemaMap.put("b4", new AbstractSchema());
     assertThat(a2Schema.getSubSchemaNames().size(), is(2));
     for (String name : aSchema.getSubSchemaNames()) {
       assertThat(aSchema.getSubSchema(name), notNullValue());
@@ -6366,27 +6477,27 @@ public class JdbcTest {
 
     Properties info = new Properties();
     info.put("model",
-      "inline:"
-      + "{\n"
-      + "  version: '1.0',\n"
-      + "  defaultSchema: 'BASEJDBC',\n"
-      + "  schemas: [\n"
-      + "     {\n"
-      + "       type: 'jdbc',\n"
-      + "       name: 'BASEJDBC',\n"
-      + "       jdbcDriver: '" + jdbcDriver.class.getName() + "',\n"
-      + "       jdbcUrl: '" + hsqldbMemUrl + "',\n"
-      + "       jdbcCatalog: null,\n"
-      + "       jdbcSchema: null\n"
-      + "     }\n"
-      + "  ]\n"
-      + "}");
+        "inline:"
+        + "{\n"
+        + "  version: '1.0',\n"
+        + "  defaultSchema: 'BASEJDBC',\n"
+        + "  schemas: [\n"
+        + "     {\n"
+        + "       type: 'jdbc',\n"
+        + "       name: 'BASEJDBC',\n"
+        + "       jdbcDriver: '" + jdbcDriver.class.getName() + "',\n"
+        + "       jdbcUrl: '" + hsqldbMemUrl + "',\n"
+        + "       jdbcCatalog: null,\n"
+        + "       jdbcSchema: null\n"
+        + "     }\n"
+        + "  ]\n"
+        + "}");
 
-    Connection calciteConnection = DriverManager.getConnection(
-      "jdbc:calcite:", info);
+    Connection calciteConnection =
+        DriverManager.getConnection("jdbc:calcite:", info);
 
     ResultSet rs = calciteConnection.prepareStatement("select * from t1")
-      .executeQuery();
+        .executeQuery();
 
     assertThat(rs.next(), is(true));
     assertThat((Integer) rs.getObject("ID"), equalTo(1));
@@ -6403,6 +6514,76 @@ public class JdbcTest {
     rs.close();
     calciteConnection.close();
 
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2054">[CALCITE-2054]
+   * Error while validating UPDATE with dynamic parameter in SET clause</a>.
+   */
+  @Test public void testUpdateBind() throws Exception {
+    String hsqldbMemUrl = "jdbc:hsqldb:mem:.";
+    try (Connection baseConnection = DriverManager.getConnection(hsqldbMemUrl);
+         Statement baseStmt = baseConnection.createStatement()) {
+      baseStmt.execute("CREATE TABLE T2 (\n"
+          + "ID INTEGER,\n"
+          + "VALS DOUBLE)");
+      baseStmt.execute("INSERT INTO T2 VALUES (1, 1.0)");
+      baseStmt.execute("INSERT INTO T2 VALUES (2, null)");
+      baseStmt.execute("INSERT INTO T2 VALUES (null, 2.0)");
+
+      baseStmt.close();
+      baseConnection.commit();
+
+      Properties info = new Properties();
+      final String model = "inline:"
+          + "{\n"
+          + "  version: '1.0',\n"
+          + "  defaultSchema: 'BASEJDBC',\n"
+          + "  schemas: [\n"
+          + "     {\n"
+          + "       type: 'jdbc',\n"
+          + "       name: 'BASEJDBC',\n"
+          + "       jdbcDriver: '" + jdbcDriver.class.getName() + "',\n"
+          + "       jdbcUrl: '" + hsqldbMemUrl + "',\n"
+          + "       jdbcCatalog: null,\n"
+          + "       jdbcSchema: null\n"
+          + "     }\n"
+          + "  ]\n"
+          + "}";
+      info.put("model", model);
+
+      Connection calciteConnection =
+          DriverManager.getConnection("jdbc:calcite:", info);
+
+      ResultSet rs = calciteConnection.prepareStatement("select * from t2")
+          .executeQuery();
+
+      assertThat(rs.next(), is(true));
+      assertThat((Integer) rs.getObject("ID"), is(1));
+      assertThat((Double) rs.getObject("VALS"), is(1.0));
+
+      assertThat(rs.next(), is(true));
+      assertThat((Integer) rs.getObject("ID"), is(2));
+      assertThat(rs.getObject("VALS"), nullValue());
+
+      assertThat(rs.next(), is(true));
+      assertThat(rs.getObject("ID"), nullValue());
+      assertThat((Double) rs.getObject("VALS"), equalTo(2.0));
+
+      rs.close();
+
+      final String sql = "update t2 set vals=? where id=?";
+      try (PreparedStatement ps =
+               calciteConnection.prepareStatement(sql)) {
+        ParameterMetaData pmd = ps.getParameterMetaData();
+        assertThat(pmd.getParameterCount(), is(2));
+        assertThat(pmd.getParameterType(1), is(Types.DOUBLE));
+        assertThat(pmd.getParameterType(2), is(Types.INTEGER));
+        ps.close();
+      }
+      calciteConnection.close();
+    }
   }
 
   /** Test case for
@@ -6425,23 +6606,19 @@ public class JdbcTest {
             + "   } } ]\n"
             + "}")
         .query("select * from emp")
-        .returns(
-            new Function<ResultSet, Void>() {
-              public Void apply(ResultSet input) {
-                final StringBuilder buf = new StringBuilder();
-                try {
-                  final int columnCount = input.getMetaData().getColumnCount();
-                  while (input.next()) {
-                    for (int i = 0; i < columnCount; i++) {
-                      buf.append(input.getObject(i + 1));
-                    }
-                  }
-                  return null;
-                } catch (SQLException e) {
-                  throw Throwables.propagate(e);
-                }
+        .returns(input -> {
+          final StringBuilder buf = new StringBuilder();
+          try {
+            final int columnCount = input.getMetaData().getColumnCount();
+            while (input.next()) {
+              for (int i = 0; i < columnCount; i++) {
+                buf.append(input.getObject(i + 1));
               }
-            });
+            }
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+        });
   }
 
   /** Test case for
@@ -6481,6 +6658,134 @@ public class JdbcTest {
     connection.close();
   }
 
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2224">[CALCITE-2224]
+   * WITHIN GROUP clause for aggregate functions</a>. */
+  @Test public void testWithinGroupClause1() {
+    final String sql = "select X,\n"
+        + " collect(Y) within group (order by Y desc) as \"SET\"\n"
+        + "from (values (1, 'a'), (1, 'b'),\n"
+        + "             (3, 'c'), (3, 'd')) AS t(X, Y)\n"
+        + "group by X\n"
+        + "limit 10";
+    CalciteAssert.that().query(sql)
+        .returnsUnordered("X=1; SET=[b, a]",
+            "X=3; SET=[d, c]");
+  }
+
+  @Test public void testWithinGroupClause2() {
+    final String sql = "select X,\n"
+        + " collect(Y) within group (order by Y desc) as SET_1,\n"
+        + " collect(Y) within group (order by Y asc) as SET_2\n"
+        + "from (values (1, 'a'), (1, 'b'), (3, 'c'), (3, 'd')) AS t(X, Y)\n"
+        + "group by X\n"
+        + "limit 10";
+    CalciteAssert
+        .that()
+        .query(sql)
+        .returnsUnordered("X=1; SET_1=[b, a]; SET_2=[a, b]",
+            "X=3; SET_1=[d, c]; SET_2=[c, d]");
+  }
+
+  @Test public void testWithinGroupClause3() {
+    final String sql = "select"
+        + " collect(Y) within group (order by Y desc) as SET_1,\n"
+        + " collect(Y) within group (order by Y asc) as SET_2\n"
+        + "from (values (1, 'a'), (1, 'b'), (3, 'c'), (3, 'd')) AS t(X, Y)\n"
+        + "limit 10";
+    CalciteAssert.that().query(sql)
+        .returns("SET_1=[d, c, b, a]; SET_2=[a, b, c, d]\n");
+  }
+
+  @Test public void testWithinGroupClause4() {
+    final String sql = "select"
+        + " collect(Y) within group (order by Y desc) as SET_1,\n"
+        + " collect(Y) within group (order by Y asc) as SET_2\n"
+        + "from (values (1, 'a'), (1, 'b'), (3, 'c'), (3, 'd')) AS t(X, Y)\n"
+        + "group by X\n"
+        + "limit 10";
+    CalciteAssert.that().query(sql)
+        .returnsUnordered("SET_1=[b, a]; SET_2=[a, b]",
+            "SET_1=[d, c]; SET_2=[c, d]");
+  }
+
+  @Test public void testWithinGroupClause5() {
+    CalciteAssert
+        .that()
+        .query("select collect(array[X, Y])\n"
+            + " within group (order by Y desc) as \"SET\"\n"
+            + "from (values ('b', 'a'), ('a', 'b'), ('a', 'c'),\n"
+            + "             ('a', 'd')) AS t(X, Y)\n"
+            + "limit 10")
+        .returns("SET=[[a, d], [a, c], [a, b], [b, a]]\n");
+  }
+
+  @Test public void testWithinGroupClause6() {
+    final String sql = "select collect(\"commission\")"
+        + " within group (order by \"commission\")\n"
+        + "from \"hr\".\"emps\"";
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.REGULAR)
+        .query(sql)
+        .explainContains("EnumerableAggregate(group=[{}], "
+            + "EXPR$0=[COLLECT($4) WITHIN GROUP ([4])])")
+        .returns("EXPR$0=[250, 500, 1000]\n");
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2609">[CALCITE-2609]
+   * Dynamic parameters ("?") pushed to underlying JDBC schema, causing
+   * error</a>.
+   */
+  @Test public void testQueryWithParameter() throws Exception {
+    String hsqldbMemUrl = "jdbc:hsqldb:mem:.";
+    try (Connection baseConnection = DriverManager.getConnection(hsqldbMemUrl);
+         Statement baseStmt = baseConnection.createStatement()) {
+      baseStmt.execute("CREATE TABLE T3 (\n"
+          + "ID INTEGER,\n"
+          + "VALS DOUBLE)");
+      baseStmt.execute("INSERT INTO T3 VALUES (1, 1.0)");
+      baseStmt.execute("INSERT INTO T3 VALUES (2, null)");
+      baseStmt.execute("INSERT INTO T3 VALUES (null, 2.0)");
+      baseStmt.close();
+      baseConnection.commit();
+
+      Properties info = new Properties();
+      final String model = "inline:"
+          + "{\n"
+          + "  version: '1.0',\n"
+          + "  defaultSchema: 'BASEJDBC',\n"
+          + "  schemas: [\n"
+          + "     {\n"
+          + "       type: 'jdbc',\n"
+          + "       name: 'BASEJDBC',\n"
+          + "       jdbcDriver: '" + jdbcDriver.class.getName() + "',\n"
+          + "       jdbcUrl: '" + hsqldbMemUrl + "',\n"
+          + "       jdbcCatalog: null,\n"
+          + "       jdbcSchema: null\n"
+          + "     }\n"
+          + "  ]\n"
+          + "}";
+      info.put("model", model);
+
+      Connection calciteConnection =
+          DriverManager.getConnection("jdbc:calcite:", info);
+
+      final String sql = "select * from t3 where vals = ?";
+      try (PreparedStatement ps =
+               calciteConnection.prepareStatement(sql)) {
+        ParameterMetaData pmd = ps.getParameterMetaData();
+        assertThat(pmd.getParameterCount(), is(1));
+        assertThat(pmd.getParameterType(1), is(Types.DOUBLE));
+        ps.setDouble(1, 1.0);
+        ps.executeQuery();
+      }
+      calciteConnection.close();
+    }
+  }
+
   private static String sums(int n, boolean c) {
     final StringBuilder b = new StringBuilder();
     for (int i = 0; i < n; i++) {
@@ -6511,8 +6816,7 @@ public class JdbcTest {
     public final Department[] depts = {
       new Department(10, "Sales", Arrays.asList(emps[0], emps[2]),
           new Location(-122, 38)),
-      new Department(30, "Marketing", Collections.<Employee>emptyList(),
-          new Location(0, 52)),
+      new Department(30, "Marketing", ImmutableList.of(), new Location(0, 52)),
       new Department(40, "HR", Collections.singletonList(emps[1]), null),
     };
     public final Dependent[] dependents = {
@@ -6631,6 +6935,26 @@ public class JdbcTest {
     }
   }
 
+  public static class Event {
+    public final int eventid;
+    public final Timestamp ts;
+
+    public Event(int eventid, Timestamp ts) {
+      this.eventid = eventid;
+      this.ts = ts;
+    }
+
+    @Override public String toString() {
+      return "Event [eventid: " + eventid + ", ts: " + ts + "]";
+    }
+
+    @Override public boolean equals(Object obj) {
+      return obj == this
+          || obj instanceof Event
+          && eventid == ((Event) obj).eventid;
+    }
+  }
+
   public static class FoodmartSchema {
     public final SalesFact[] sales_fact_1997 = {
       new SalesFact(100, 10),
@@ -6717,9 +7041,10 @@ public class JdbcTest {
         RelNode child,
         TableModify.Operation operation,
         List<String> updateColumnList,
+        List<RexNode> sourceExpressionList,
         boolean flattened) {
       return LogicalTableModify.create(table, catalogReader, child, operation,
-          updateColumnList, flattened);
+          updateColumnList, sourceExpressionList, flattened);
     }
   }
 
@@ -6795,10 +7120,7 @@ public class JdbcTest {
           final Map<String, Table> tableMap = super.getTableMap();
           final Table table = tableMap.get("emps");
           final String tableName = (String) operand.get("tableName");
-          return ImmutableMap.<String, Table>builder()
-              .putAll(tableMap)
-              .put(tableName, table)
-              .build();
+          return FlatLists.append(tableMap, tableName, table);
         }
 
         @Override public boolean isMutable() {
@@ -6856,22 +7178,17 @@ public class JdbcTest {
         @Override public CalcitePrepare apply() {
           return new CalcitePrepareImpl() {
             @Override protected SqlParser.ConfigBuilder createParserConfig() {
-              return super.createParserConfig().setParserFactory(
-                  new SqlParserImplFactory() {
-                    @Override public SqlAbstractParserImpl
-                    getParser(Reader stream) {
-                      return new SqlParserImpl(stream) {
-                        @Override public SqlNode parseSqlStmtEof() {
-                          return new SqlCall(SqlParserPos.ZERO) {
-                            @Override public SqlOperator getOperator() {
-                              return new SqlSpecialOperator("COMMIT",
-                                  SqlKind.COMMIT);
-                            }
+              return super.createParserConfig().setParserFactory(stream ->
+                  new SqlParserImpl(stream) {
+                    @Override public SqlNode parseSqlStmtEof() {
+                      return new SqlCall(SqlParserPos.ZERO) {
+                        @Override public SqlOperator getOperator() {
+                          return new SqlSpecialOperator("COMMIT",
+                              SqlKind.COMMIT);
+                        }
 
-                            @Override public List<SqlNode> getOperandList() {
-                              return ImmutableList.of();
-                            }
-                          };
+                        @Override public List<SqlNode> getOperandList() {
+                          return ImmutableList.of();
                         }
                       };
                     }

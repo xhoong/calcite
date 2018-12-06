@@ -52,11 +52,7 @@ public class Ord<E> implements Map.Entry<Integer, E> {
    * Creates an iterable of {@code Ord}s over an iterable.
    */
   public static <E> Iterable<Ord<E>> zip(final Iterable<? extends E> iterable) {
-    return new Iterable<Ord<E>>() {
-      public Iterator<Ord<E>> iterator() {
-        return zip(iterable.iterator());
-      }
-    };
+    return () -> zip(iterable.iterator());
   }
 
   /**
@@ -114,23 +110,19 @@ public class Ord<E> implements Map.Entry<Integer, E> {
    */
   public static <E> Iterable<Ord<E>> reverse(Iterable<? extends E> elements) {
     final ImmutableList<E> elementList = ImmutableList.copyOf(elements);
-    return new Iterable<Ord<E>>() {
-      public Iterator<Ord<E>> iterator() {
-        return new Iterator<Ord<E>>() {
-          int i = elementList.size() - 1;
+    return () -> new Iterator<Ord<E>>() {
+      int i = elementList.size() - 1;
 
-          public boolean hasNext() {
-            return i >= 0;
-          }
+      public boolean hasNext() {
+        return i >= 0;
+      }
 
-          public Ord<E> next() {
-            return Ord.of(i, elementList.get(i--));
-          }
+      public Ord<E> next() {
+        return Ord.of(i, elementList.get(i--));
+      }
 
-          public void remove() {
-            throw new UnsupportedOperationException("remove");
-          }
-        };
+      public void remove() {
+        throw new UnsupportedOperationException("remove");
       }
     };
   }
@@ -147,11 +139,13 @@ public class Ord<E> implements Map.Entry<Integer, E> {
     throw new UnsupportedOperationException();
   }
 
-  /** List of {@link Ord} backed by a list of elements. */
+  /** List of {@link Ord} backed by a list of elements.
+   *
+   * @param <E> element type */
   private static class OrdList<E> extends AbstractList<Ord<E>> {
     private final List<? extends E> elements;
 
-    public OrdList(List<? extends E> elements) {
+    OrdList(List<? extends E> elements) {
       this.elements = elements;
     }
 
@@ -164,20 +158,24 @@ public class Ord<E> implements Map.Entry<Integer, E> {
     }
   }
 
-  /** List of {@link Ord} backed by a random-access list of elements. */
+  /** List of {@link Ord} backed by a random-access list of elements.
+   *
+   * @param <E> element type */
   private static class OrdRandomAccessList<E> extends OrdList<E>
       implements RandomAccess {
-    public OrdRandomAccessList(List<? extends E> elements) {
+    OrdRandomAccessList(List<? extends E> elements) {
       super(elements);
     }
   }
 
-  /** List of {@link Ord} backed by an array of elements. */
+  /** List of {@link Ord} backed by an array of elements.
+   *
+   * @param <E> element type */
   private static class OrdArrayList<E> extends AbstractList<Ord<E>>
       implements RandomAccess {
     private final E[] elements;
 
-    public OrdArrayList(E[] elements) {
+    OrdArrayList(E[] elements) {
       this.elements = elements;
     }
 

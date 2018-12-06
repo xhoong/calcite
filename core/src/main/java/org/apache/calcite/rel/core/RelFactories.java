@@ -20,23 +20,28 @@ import org.apache.calcite.plan.Contexts;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelTraitSet;
+import org.apache.calcite.plan.ViewExpanders;
 import org.apache.calcite.rel.RelCollation;
+import org.apache.calcite.rel.RelDistribution;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalCorrelate;
+import org.apache.calcite.rel.logical.LogicalExchange;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalIntersect;
 import org.apache.calcite.rel.logical.LogicalJoin;
+import org.apache.calcite.rel.logical.LogicalMatch;
 import org.apache.calcite.rel.logical.LogicalMinus;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalSort;
+import org.apache.calcite.rel.logical.LogicalSortExchange;
 import org.apache.calcite.rel.logical.LogicalTableScan;
 import org.apache.calcite.rel.logical.LogicalUnion;
 import org.apache.calcite.rel.logical.LogicalValues;
 import org.apache.calcite.rel.type.RelDataType;
-import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.schema.TranslatableTable;
 import org.apache.calcite.sql.SemiJoinType;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.tools.RelBuilder;
@@ -46,7 +51,10 @@ import org.apache.calcite.util.ImmutableBitSet;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.SortedSet;
+import javax.annotation.Nonnull;
 
 /**
  * Contains factory interface and default implementation for creating various
@@ -68,10 +76,19 @@ public class RelFactories {
       new SemiJoinFactoryImpl();
 
   public static final SortFactory DEFAULT_SORT_FACTORY =
-    new SortFactoryImpl();
+      new SortFactoryImpl();
+
+  public static final ExchangeFactory DEFAULT_EXCHANGE_FACTORY =
+      new ExchangeFactoryImpl();
+
+  public static final SortExchangeFactory DEFAULT_SORT_EXCHANGE_FACTORY =
+      new SortExchangeFactoryImpl();
 
   public static final AggregateFactory DEFAULT_AGGREGATE_FACTORY =
-    new AggregateFactoryImpl();
+      new AggregateFactoryImpl();
+
+  public static final MatchFactory DEFAULT_MATCH_FACTORY =
+      new MatchFactoryImpl();
 
   public static final SetOpFactory DEFAULT_SET_OP_FACTORY =
       new SetOpFactoryImpl();
@@ -91,7 +108,10 @@ public class RelFactories {
               DEFAULT_JOIN_FACTORY,
               DEFAULT_SEMI_JOIN_FACTORY,
               DEFAULT_SORT_FACTORY,
+              DEFAULT_EXCHANGE_FACTORY,
+              DEFAULT_SORT_EXCHANGE_FACTORY,
               DEFAULT_AGGREGATE_FACTORY,
+              DEFAULT_MATCH_FACTORY,
               DEFAULT_SET_OP_FACTORY,
               DEFAULT_VALUES_FACTORY,
               DEFAULT_TABLE_SCAN_FACTORY));
@@ -153,6 +173,55 @@ public class RelFactories {
   }
 
   /**
+   * Can create a {@link org.apache.calcite.rel.core.Exchange}
+   * of the appropriate type for a rule's calling convention.
+   */
+  public interface ExchangeFactory {
+    /** Creates a Exchange. */
+    RelNode createExchange(RelNode input, RelDistribution distribution);
+  }
+
+  /**
+   * Implementation of
+   * {@link RelFactories.ExchangeFactory}
+   * that returns a {@link Exchange}.
+   */
+  private static class ExchangeFactoryImpl implements ExchangeFactory {
+    @Override public RelNode createExchange(
+        RelNode input, RelDistribution distribution) {
+      return LogicalExchange.create(input, distribution);
+    }
+  }
+
+  /**
+   * Can create a {@link SortExchange}
+   * of the appropriate type for a rule's calling convention.
+   */
+  public interface SortExchangeFactory {
+    /**
+     * Creates a {@link SortExchange}.
+     */
+    RelNode createSortExchange(
+        RelNode input,
+        RelDistribution distribution,
+        RelCollation collation);
+  }
+
+  /**
+   * Implementation of
+   * {@link RelFactories.SortExchangeFactory}
+   * that returns a {@link SortExchange}.
+   */
+  private static class SortExchangeFactoryImpl implements SortExchangeFactory {
+    @Override public RelNode createSortExchange(
+        RelNode input,
+        RelDistribution distribution,
+        RelCollation collation) {
+      return LogicalSortExchange.create(input, distribution, collation);
+    }
+  }
+
+  /**
    * Can create a {@link SetOp} for a particular kind of
    * set operation (UNION, EXCEPT, INTERSECT) and of the appropriate type
    * for this rule's calling convention.
@@ -199,6 +268,7 @@ public class RelFactories {
    * that returns a vanilla {@link LogicalAggregate}.
    */
   private static class AggregateFactoryImpl implements AggregateFactory {
+    @SuppressWarnings("deprecation")
     public RelNode createAggregate(RelNode input, boolean indicator,
         ImmutableBitSet groupSet, ImmutableList<ImmutableBitSet> groupSets,
         List<AggregateCall> aggCalls) {
@@ -264,7 +334,7 @@ public class RelFactories {
         RexNode condition, Set<CorrelationId> variablesSet,
         JoinRelType joinType, boolean semiJoinDone) {
       return LogicalJoin.create(left, right, condition, variablesSet, joinType,
-          semiJoinDone, ImmutableList.<RelDataTypeField>of());
+          semiJoinDone, ImmutableList.of());
     }
 
     public RelNode createJoin(RelNode left, RelNode right, RexNode condition,
@@ -379,6 +449,78 @@ public class RelFactories {
   private static class TableScanFactoryImpl implements TableScanFactory {
     public RelNode createScan(RelOptCluster cluster, RelOptTable table) {
       return LogicalTableScan.create(cluster, table);
+    }
+  }
+
+  /**
+   * Creates a {@link TableScanFactory} that can expand
+   * {@link TranslatableTable} instances, but explodes on views.
+   *
+   * @param tableScanFactory Factory for non-translatable tables
+   * @return Table scan factory
+   */
+  @Nonnull public static TableScanFactory expandingScanFactory(
+      @Nonnull TableScanFactory tableScanFactory) {
+    return expandingScanFactory(
+        (rowType, queryString, schemaPath, viewPath) -> {
+          throw new UnsupportedOperationException("cannot expand view");
+        },
+        tableScanFactory);
+  }
+
+  /**
+   * Creates a {@link TableScanFactory} that uses a
+   * {@link org.apache.calcite.plan.RelOptTable.ViewExpander} to handle
+   * {@link TranslatableTable} instances, and falls back to a default
+   * factory for other tables.
+   *
+   * @param viewExpander View expander
+   * @param tableScanFactory Factory for non-translatable tables
+   * @return Table scan factory
+   */
+  @Nonnull public static TableScanFactory expandingScanFactory(
+      @Nonnull RelOptTable.ViewExpander viewExpander,
+      @Nonnull TableScanFactory tableScanFactory) {
+    return (cluster, table) -> {
+      final TranslatableTable translatableTable =
+          table.unwrap(TranslatableTable.class);
+      if (translatableTable != null) {
+        final RelOptTable.ToRelContext toRelContext =
+            ViewExpanders.toRelContext(viewExpander, cluster);
+        return translatableTable.toRel(toRelContext, table);
+      }
+      return tableScanFactory.createScan(cluster, table);
+    };
+  }
+
+  /**
+   * Can create a {@link Match} of
+   * the appropriate type for a rule's calling convention.
+   */
+  public interface MatchFactory {
+    /** Creates a {@link Match}. */
+    RelNode createMatch(RelNode input, RexNode pattern,
+        RelDataType rowType, boolean strictStart, boolean strictEnd,
+        Map<String, RexNode> patternDefinitions, Map<String, RexNode> measures,
+        RexNode after, Map<String, ? extends SortedSet<String>> subsets,
+        boolean allRows, List<RexNode> partitionKeys, RelCollation orderKeys,
+        RexNode interval);
+  }
+
+  /**
+   * Implementation of {@link MatchFactory}
+   * that returns a {@link LogicalMatch}.
+   */
+  private static class MatchFactoryImpl implements MatchFactory {
+    public RelNode createMatch(RelNode input, RexNode pattern,
+        RelDataType rowType, boolean strictStart, boolean strictEnd,
+        Map<String, RexNode> patternDefinitions, Map<String, RexNode> measures,
+        RexNode after, Map<String, ? extends SortedSet<String>> subsets,
+        boolean allRows, List<RexNode> partitionKeys, RelCollation orderKeys,
+        RexNode interval) {
+      return LogicalMatch.create(input, rowType, pattern, strictStart,
+          strictEnd, patternDefinitions, measures, after, subsets, allRows,
+          partitionKeys, orderKeys, interval);
     }
   }
 }

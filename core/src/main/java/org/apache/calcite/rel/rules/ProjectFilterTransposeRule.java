@@ -18,6 +18,7 @@ package org.apache.calcite.rel.rules;
 
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
+import org.apache.calcite.plan.RelOptRuleOperand;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Project;
@@ -33,9 +34,9 @@ import org.apache.calcite.tools.RelBuilderFactory;
  * past a {@link org.apache.calcite.rel.core.Filter}.
  */
 public class ProjectFilterTransposeRule extends RelOptRule {
-  public static final ProjectFilterTransposeRule INSTANCE = new ProjectFilterTransposeRule(
-      LogicalProject.class, LogicalFilter.class, RelFactories.LOGICAL_BUILDER,
-      PushProjector.ExprCondition.FALSE);
+  public static final ProjectFilterTransposeRule INSTANCE =
+      new ProjectFilterTransposeRule(LogicalProject.class, LogicalFilter.class,
+          RelFactories.LOGICAL_BUILDER, expr -> false);
 
   //~ Instance fields --------------------------------------------------------
 
@@ -57,11 +58,17 @@ public class ProjectFilterTransposeRule extends RelOptRule {
       Class<? extends Filter> filterClass,
       RelBuilderFactory relBuilderFactory,
       PushProjector.ExprCondition preserveExprCondition) {
-    super(
+    this(
         operand(
             projectClass,
             operand(filterClass, any())),
-        relBuilderFactory, null);
+        preserveExprCondition, relBuilderFactory);
+  }
+
+  protected ProjectFilterTransposeRule(RelOptRuleOperand operand,
+      PushProjector.ExprCondition preserveExprCondition,
+      RelBuilderFactory relBuilderFactory) {
+    super(operand, relBuilderFactory, null);
     this.preserveExprCondition = preserveExprCondition;
   }
 
@@ -71,8 +78,7 @@ public class ProjectFilterTransposeRule extends RelOptRule {
   public void onMatch(RelOptRuleCall call) {
     Project origProj;
     Filter filter;
-
-    if (call.rels.length == 2) {
+    if (call.rels.length >= 2) {
       origProj = call.rel(0);
       filter = call.rel(1);
     } else {
@@ -94,8 +100,7 @@ public class ProjectFilterTransposeRule extends RelOptRule {
 
     PushProjector pushProjector =
         new PushProjector(
-            origProj, origFilter, rel, preserveExprCondition,
-            relBuilderFactory.create(origProj.getCluster(), null));
+            origProj, origFilter, rel, preserveExprCondition, call.builder());
     RelNode topProject = pushProjector.convertProject(null);
 
     if (topProject != null) {

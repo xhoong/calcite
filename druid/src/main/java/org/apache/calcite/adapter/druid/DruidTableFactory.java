@@ -28,6 +28,8 @@ import com.google.common.collect.ImmutableList;
 import org.joda.time.Interval;
 import org.joda.time.chrono.ISOChronology;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,6 +47,7 @@ public class DruidTableFactory implements TableFactory {
 
   private DruidTableFactory() {}
 
+  // name that is also the same name as a complex metric
   public Table create(SchemaPlus schema, String name, Map operand,
       RelDataType rowType) {
     final DruidSchema druidSchema = schema.unwrap(DruidSchema.class);
@@ -52,27 +55,62 @@ public class DruidTableFactory implements TableFactory {
     final String dataSource = (String) operand.get("dataSource");
     final Set<String> metricNameBuilder = new LinkedHashSet<>();
     final Map<String, SqlTypeName> fieldBuilder = new LinkedHashMap<>();
+    final Map<String, List<ComplexMetric>> complexMetrics = new HashMap<>();
     final String timestampColumnName;
-    if (operand.get("timestampColumn") != null) {
-      timestampColumnName = (String) operand.get("timestampColumn");
+    final SqlTypeName timestampColumnType;
+    final Object timestampInfo = operand.get("timestampColumn");
+    if (timestampInfo != null) {
+      if (timestampInfo instanceof Map) {
+        Map map = (Map) timestampInfo;
+        if (!(map.get("name") instanceof String)) {
+          throw new IllegalArgumentException("timestampColumn array must have name");
+        }
+        timestampColumnName = (String) map.get("name");
+        if (!(map.get("type") instanceof String)
+            || map.get("type").equals("timestamp with local time zone")) {
+          timestampColumnType = SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE;
+        } else if (map.get("type").equals("timestamp")) {
+          timestampColumnType = SqlTypeName.TIMESTAMP;
+        } else {
+          throw new IllegalArgumentException("unexpected type for timestampColumn array");
+        }
+      } else {
+        // String (for backwards compatibility)
+        timestampColumnName = (String) timestampInfo;
+        timestampColumnType = SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE;
+      }
     } else {
       timestampColumnName = DruidTable.DEFAULT_TIMESTAMP_COLUMN;
+      timestampColumnType = SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE;
     }
-    fieldBuilder.put(timestampColumnName, SqlTypeName.TIMESTAMP);
+    fieldBuilder.put(timestampColumnName, timestampColumnType);
     final Object dimensionsRaw = operand.get("dimensions");
     if (dimensionsRaw instanceof List) {
-      //noinspection unchecked
+      // noinspection unchecked
       final List<String> dimensions = (List<String>) dimensionsRaw;
       for (String dimension : dimensions) {
         fieldBuilder.put(dimension, SqlTypeName.VARCHAR);
       }
     }
+
+    // init the complex metric map
+    final Object complexMetricsRaw = operand.get("complexMetrics");
+    if (complexMetricsRaw instanceof List) {
+      // noinspection unchecked
+      final List<String> complexMetricList = (List<String>) complexMetricsRaw;
+      for (String metric : complexMetricList) {
+        complexMetrics.put(metric, new ArrayList<>());
+      }
+    }
+
     final Object metricsRaw = operand.get("metrics");
     if (metricsRaw instanceof List) {
       final List metrics = (List) metricsRaw;
       for (Object metric : metrics) {
-        final SqlTypeName sqlTypeName;
+        DruidType druidType = DruidType.LONG;
         final String metricName;
+        String fieldName = null;
+
         if (metric instanceof Map) {
           Map map2 = (Map) metric;
           if (!(map2.get("name") instanceof String)) {
@@ -80,41 +118,53 @@ public class DruidTableFactory implements TableFactory {
           }
           metricName = (String) map2.get("name");
 
-          final Object type = map2.get("type");
-          if ("long".equals(type)) {
-            sqlTypeName = SqlTypeName.BIGINT;
-          } else if ("double".equals(type)) {
-            sqlTypeName = SqlTypeName.DOUBLE;
-          } else {
-            sqlTypeName = SqlTypeName.BIGINT;
-          }
+          final String type = (String) map2.get("type");
+          fieldName = (String) map2.get("fieldName");
+
+          druidType = DruidType.getTypeFromMetric(type);
         } else {
           metricName = (String) metric;
-          sqlTypeName = SqlTypeName.BIGINT;
         }
-        fieldBuilder.put(metricName, sqlTypeName);
-        metricNameBuilder.add(metricName);
+
+        if (!druidType.isComplex()) {
+          fieldBuilder.put(metricName, druidType.sqlType);
+          metricNameBuilder.add(metricName);
+        } else {
+          assert fieldName != null;
+          // Only add the complex metric if there exists an alias for it
+          if (complexMetrics.containsKey(fieldName)) {
+            SqlTypeName type = fieldBuilder.get(fieldName);
+            if (type != SqlTypeName.VARCHAR) {
+              fieldBuilder.put(fieldName, SqlTypeName.VARBINARY);
+              // else, this complex metric is also a dimension, so it's type should remain as
+              // VARCHAR, but it'll also be added as a complex metric.
+            }
+            complexMetrics.get(fieldName).add(new ComplexMetric(metricName, druidType));
+          }
+        }
       }
     }
-    final String dataSourceName = Util.first(dataSource, name);
-    DruidConnectionImpl c;
-    if (dimensionsRaw == null || metricsRaw == null) {
-      c = new DruidConnectionImpl(druidSchema.url, druidSchema.url.replace(":8082", ":8081"));
-    } else {
-      c = null;
-    }
-    final Object intervalString = operand.get("interval");
+    final Object interval = operand.get("interval");
     final List<Interval> intervals;
-    if (intervalString instanceof String) {
+    if (interval instanceof String) {
       intervals = ImmutableList.of(
-          new Interval(intervalString, ISOChronology.getInstanceUTC()));
+          new Interval((String) interval, ISOChronology.getInstanceUTC()));
     } else {
       intervals = null;
     }
-    return DruidTable.create(druidSchema, dataSourceName, intervals,
-        fieldBuilder, metricNameBuilder, timestampColumnName, c);
-  }
 
+    final String dataSourceName = Util.first(dataSource, name);
+
+    if (dimensionsRaw == null || metricsRaw == null) {
+      DruidConnectionImpl connection = new DruidConnectionImpl(druidSchema.url,
+              druidSchema.url.replace(":8082", ":8081"));
+      return DruidTable.create(druidSchema, dataSourceName, intervals, fieldBuilder,
+              metricNameBuilder, timestampColumnName, connection, complexMetrics);
+    } else {
+      return DruidTable.create(druidSchema, dataSourceName, intervals, fieldBuilder,
+              metricNameBuilder, timestampColumnName, complexMetrics);
+    }
+  }
 }
 
 // End DruidTableFactory.java

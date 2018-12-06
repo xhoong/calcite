@@ -39,7 +39,6 @@ import org.apache.calcite.runtime.Hook;
 import org.apache.calcite.util.BuiltInMethod;
 import org.apache.calcite.util.Pair;
 
-import com.google.common.base.Function;
 import com.google.common.collect.Lists;
 
 import java.util.AbstractList;
@@ -51,8 +50,8 @@ import java.util.Map;
  * Relational expression representing a scan of a table in a Cassandra data source.
  */
 public class CassandraToEnumerableConverter
-  extends ConverterImpl
-  implements EnumerableRel {
+    extends ConverterImpl
+    implements EnumerableRel {
   protected CassandraToEnumerableConverter(
       RelOptCluster cluster,
       RelTraitSet traits,
@@ -94,7 +93,7 @@ public class CassandraToEnumerableConverter
                       }
                     }),
                 Pair.class));
-    List<Map.Entry<String, String>> selectList = new ArrayList<Map.Entry<String, String>>();
+    List<Map.Entry<String, String>> selectList = new ArrayList<>();
     for (Map.Entry<String, String> entry
             : Pair.zip(cassandraImplementor.selectFields.keySet(),
                 cassandraImplementor.selectFields.values())) {
@@ -144,12 +143,7 @@ public class CassandraToEnumerableConverter
   /** E.g. {@code constantList("x", "y")} returns
    * {@code {ConstantExpression("x"), ConstantExpression("y")}}. */
   private static <T> List<Expression> constantList(List<T> values) {
-    return Lists.transform(values,
-        new Function<T, Expression>() {
-          public Expression apply(T a0) {
-            return Expressions.constant(a0);
-          }
-        });
+    return Lists.transform(values, Expressions::constant);
   }
 }
 

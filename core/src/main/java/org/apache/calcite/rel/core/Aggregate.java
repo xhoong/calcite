@@ -44,12 +44,12 @@ import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Sets;
 import com.google.common.math.IntMath;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -72,22 +72,32 @@ public abstract class Aggregate extends SingleRel {
   /**
    * @see org.apache.calcite.util.Bug#CALCITE_461_FIXED
    */
-  public static final Predicate<Aggregate> IS_SIMPLE =
-      new Predicate<Aggregate>() {
-        public boolean apply(Aggregate input) {
-          return input.getGroupType() == Group.SIMPLE;
-        }
-      };
+  public static boolean isSimple(Aggregate aggregate) {
+    return aggregate.getGroupType() == Group.SIMPLE;
+  }
 
-  public static final Predicate<Aggregate> IS_NOT_GRAND_TOTAL =
-      new Predicate<Aggregate>() {
-        public boolean apply(Aggregate input) {
-          return input.getGroupCount() > 0;
-        }
-      };
+  @SuppressWarnings("Guava")
+  @Deprecated // to be converted to Java Predicate before 2.0
+  public static final com.google.common.base.Predicate<Aggregate> IS_SIMPLE =
+      Aggregate::isSimple;
+
+  @SuppressWarnings("Guava")
+  @Deprecated // to be converted to Java Predicate before 2.0
+  public static final com.google.common.base.Predicate<Aggregate> NO_INDICATOR =
+      Aggregate::noIndicator;
+
+  @SuppressWarnings("Guava")
+  @Deprecated // to be converted to Java Predicate before 2.0
+  public static final com.google.common.base.Predicate<Aggregate>
+      IS_NOT_GRAND_TOTAL = Aggregate::isNotGrandTotal;
 
   //~ Instance fields --------------------------------------------------------
 
+  /** Whether there are indicator fields.
+   *
+   * <p>We strongly discourage the use indicator fields, because they cause the
+   * output row type of GROUPING SETS queries to be different from regular GROUP
+   * BY queries, and recommend that you set this field to {@code false}. */
   public final boolean indicator;
   protected final List<AggregateCall> aggCalls;
   protected final ImmutableBitSet groupSet;
@@ -117,8 +127,7 @@ public abstract class Aggregate extends SingleRel {
    * @param traits   Traits
    * @param child    Child
    * @param indicator Whether row type should include indicator fields to
-   *                 indicate which grouping set is active; must be true if
-   *                 aggregate is not simple
+   *                 indicate which grouping set is active; true is deprecated
    * @param groupSet Bit set of grouping fields
    * @param groupSets List of all grouping sets; null for just {@code groupSet}
    * @param aggCalls Collection of calls to aggregate functions
@@ -132,9 +141,9 @@ public abstract class Aggregate extends SingleRel {
       List<ImmutableBitSet> groupSets,
       List<AggregateCall> aggCalls) {
     super(cluster, traits, child);
-    this.indicator = indicator;
+    this.indicator = indicator; // true is allowed, but discouraged
     this.aggCalls = ImmutableList.copyOf(aggCalls);
-    this.groupSet = Preconditions.checkNotNull(groupSet);
+    this.groupSet = Objects.requireNonNull(groupSet);
     if (groupSets == null) {
       this.groupSets = ImmutableList.of(groupSet);
     } else {
@@ -151,6 +160,14 @@ public abstract class Aggregate extends SingleRel {
           || isPredicate(child, aggCall.filterArg),
           "filter must be BOOLEAN NOT NULL");
     }
+  }
+
+  public static boolean isNotGrandTotal(Aggregate aggregate) {
+    return aggregate.getGroupCount() > 0;
+  }
+
+  public static boolean noIndicator(Aggregate aggregate) {
+    return !aggregate.indicator;
   }
 
   private boolean isPredicate(RelNode input, int index) {
@@ -338,13 +355,16 @@ public abstract class Aggregate extends SingleRel {
       final List<AggregateCall> aggCalls) {
     final List<Integer> groupList = groupSet.asList();
     assert groupList.size() == groupSet.cardinality();
-    final RelDataTypeFactory.FieldInfoBuilder builder = typeFactory.builder();
+    final RelDataTypeFactory.Builder builder = typeFactory.builder();
     final List<RelDataTypeField> fieldList = inputRowType.getFieldList();
-    final Set<String> containedNames = Sets.newHashSet();
+    final Set<String> containedNames = new HashSet<>();
     for (int groupKey : groupList) {
       final RelDataTypeField field = fieldList.get(groupKey);
       containedNames.add(field.getName());
       builder.add(field);
+      if (groupSets != null && !allContain(groupSets, groupKey)) {
+        builder.nullable(true);
+      }
     }
     if (indicator) {
       for (int groupKey : groupList) {
@@ -379,8 +399,18 @@ public abstract class Aggregate extends SingleRel {
     return builder.build();
   }
 
-  public boolean isValid(Litmus litmus) {
-    return super.isValid(litmus)
+  private static boolean allContain(List<ImmutableBitSet> groupSets,
+      int groupKey) {
+    for (ImmutableBitSet groupSet : groupSets) {
+      if (!groupSet.get(groupKey)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public boolean isValid(Litmus litmus, Context context) {
+    return super.isValid(litmus, context)
         && litmus.check(Util.isDistinct(getRowType().getFieldNames()),
             "distinct field names: {}", getRowType());
   }

@@ -18,32 +18,36 @@ package org.apache.calcite.test;
 
 import org.apache.calcite.adapter.java.ReflectiveSchema;
 import org.apache.calcite.avatica.AvaticaUtils;
+import org.apache.calcite.config.CalciteConnectionProperty;
 import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.runtime.Hook;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.AbstractTable;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Bug;
-import org.apache.calcite.util.TryThreadLocal;
+import org.apache.calcite.util.Closer;
+import org.apache.calcite.util.Sources;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Function;
 import com.google.common.collect.Lists;
 import com.google.common.io.PatternFilenameFilter;
 
+import net.hydromatic.quidem.CommandHandler;
 import net.hydromatic.quidem.Quidem;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FilenameFilter;
+import java.io.Reader;
+import java.io.Writer;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.sql.Connection;
@@ -58,25 +62,41 @@ import static org.junit.Assert.fail;
  * Test that runs every Quidem file as a test.
  */
 @RunWith(Parameterized.class)
-public class QuidemTest {
-  private final String path;
-  private final Method method;
+public abstract class QuidemTest {
+  protected final String path;
+  protected final Method method;
 
-  public QuidemTest(String path) {
+  /** Creates a QuidemTest. */
+  protected QuidemTest(String path) {
     this.path = path;
     this.method = findMethod(path);
   }
 
-  /** Run a test from the command line. */
-  public static void main(String[] args) throws Exception {
-    final String path = "sql/lateral.iq";
-    new QuidemTest(path).test();
+  private static Object getEnv(String varName) {
+    switch (varName) {
+    case "jdk18":
+      return System.getProperty("java.version").startsWith("1.8");
+    case "fixed":
+      // Quidem requires a Guava function
+      return (com.google.common.base.Function<String, Object>) v -> {
+        switch (v) {
+        case "calcite1045":
+          return Bug.CALCITE_1045_FIXED;
+        case "calcite1048":
+          return Bug.CALCITE_1048_FIXED;
+        }
+        return null;
+      };
+    default:
+      return null;
+    }
   }
 
   private Method findMethod(String path) {
     // E.g. path "sql/agg.iq" gives method "testSqlAgg"
     String methodName =
-        AvaticaUtils.toCamelCase("test_" + path.replace('/', '_').replaceAll("\\.iq$", ""));
+        AvaticaUtils.toCamelCase(
+            "test_" + path.replace(File.separatorChar, '_').replaceAll("\\.iq$", ""));
     Method m;
     try {
       m = getClass().getMethod(methodName);
@@ -86,37 +106,21 @@ public class QuidemTest {
     return m;
   }
 
-  /** For {@link org.junit.runners.Parameterized} runner. */
-  @Parameterized.Parameters(name = "{index}: quidem({0})")
-  public static Collection<Object[]> data() {
-    // Start with a test file we know exists, then find the directory and list
-    // its files.
-    final String first = "sql/agg.iq";
+  protected static Collection<Object[]> data(String first) {
     // inUrl = "file:/home/fred/calcite/core/target/test-classes/sql/agg.iq"
-    final URL inUrl = JdbcTest.class.getResource("/" + first);
-    String x = inUrl.getFile();
-    assert x.endsWith(first);
-    final String base =
-        File.separatorChar == '\\'
-            ? x.substring(1, x.length() - first.length())
-                .replace('/', File.separatorChar)
-            : x.substring(0, x.length() - first.length());
-    final File firstFile = new File(x);
+    final URL inUrl = JdbcTest.class.getResource("/" + n2u(first));
+    final File firstFile = Sources.of(inUrl).file();
+    final int commonPrefixLength = firstFile.getAbsolutePath().length() - first.length();
     final File dir = firstFile.getParentFile();
     final List<String> paths = new ArrayList<>();
-    for (File f : dir.listFiles(new PatternFilenameFilter(".*\\.iq$"))) {
-      assert f.getAbsolutePath().startsWith(base)
-          : "f: " + f.getAbsolutePath() + "; base: " + base;
-      paths.add(f.getAbsolutePath().substring(base.length()));
+    final FilenameFilter filter = new PatternFilenameFilter(".*\\.iq$");
+    for (File f : Util.first(dir.listFiles(filter), new File[0])) {
+      paths.add(f.getAbsolutePath().substring(commonPrefixLength));
     }
-    return Lists.transform(paths, new Function<String, Object[]>() {
-      public Object[] apply(String path) {
-        return new Object[] {path};
-      }
-    });
+    return Lists.transform(paths, path -> new Object[] {path});
   }
 
-  private void checkRun(String path) throws Exception {
+  protected void checkRun(String path) throws Exception {
     final File inFile;
     final File outFile;
     final File f = new File(path);
@@ -128,27 +132,49 @@ public class QuidemTest {
       // e.g. path = "sql/outer.iq"
       // inUrl = "file:/home/fred/calcite/core/target/test-classes/sql/outer.iq"
       final URL inUrl = JdbcTest.class.getResource("/" + n2u(path));
-      String x = u2n(inUrl.getFile());
-      assert x.endsWith(path)
-          : "x: " + x + "; path: " + path;
-      x = x.substring(0, x.length() - path.length());
-      assert x.endsWith(u2n("/test-classes/"));
-      x = x.substring(0, x.length() - u2n("/test-classes/").length());
-      final File base = new File(x);
-      inFile = new File(base, u2n("/test-classes/") + path);
-      outFile = new File(base, u2n("/surefire/") + path);
+      inFile = Sources.of(inUrl).file();
+      outFile = new File(inFile.getAbsoluteFile().getParent(), u2n("surefire/") + path);
     }
     Util.discard(outFile.getParentFile().mkdirs());
-    final FileReader fileReader = new FileReader(inFile);
-    final BufferedReader bufferedReader = new BufferedReader(fileReader);
-    final FileWriter writer = new FileWriter(outFile);
-    new Quidem(bufferedReader, writer, env(), new QuidemConnectionFactory())
-        .execute();
+    try (Reader reader = Util.reader(inFile);
+         Writer writer = Util.printWriter(outFile);
+         Closer closer = new Closer()) {
+      final Quidem.Config config = Quidem.configBuilder()
+          .withReader(reader)
+          .withWriter(writer)
+          .withConnectionFactory(createConnectionFactory())
+          .withCommandHandler(createCommandHandler())
+          .withPropertyHandler((propertyName, value) -> {
+            if (propertyName.equals("bindable")) {
+              final boolean b = value instanceof Boolean
+                  && (Boolean) value;
+              closer.add(Hook.ENABLE_BINDABLE.addThread(Hook.propertyJ(b)));
+            }
+            if (propertyName.equals("expand")) {
+              final boolean b = value instanceof Boolean
+                  && (Boolean) value;
+              closer.add(Prepare.THREAD_EXPAND.push(b));
+            }
+          })
+          .withEnv(QuidemTest::getEnv)
+          .build();
+      new Quidem(config).execute();
+    }
     final String diff = DiffTestCase.diff(inFile, outFile);
     if (!diff.isEmpty()) {
       fail("Files differ: " + outFile + " " + inFile + "\n"
           + diff);
     }
+  }
+
+  /** Creates a command handler. */
+  protected CommandHandler createCommandHandler() {
+    return Quidem.EMPTY_COMMAND_HANDLER;
+  }
+
+  /** Creates a connection factory. */
+  protected Quidem.ConnectionFactory createConnectionFactory() {
+    return new QuidemConnectionFactory();
   }
 
   /** Converts a path from Unix to native. On Windows, converts
@@ -165,70 +191,28 @@ public class QuidemTest {
         : s;
   }
 
-  private Function<String, Object> env() {
-    return new Function<String, Object>() {
-      public Object apply(String varName) {
-        switch (varName) {
-        case "jdk18":
-          return System.getProperty("java.version").startsWith("1.8");
-        case "fixed":
-          return new Function<String, Object>() {
-            public Object apply(String v) {
-              switch (v) {
-              case "calcite1045":
-                return Bug.CALCITE_1045_FIXED;
-              case "calcite1048":
-                return Bug.CALCITE_1048_FIXED;
-              }
-              return null;
-            }
-          };
-        default:
-          return null;
-        }
-      }
-    };
-  }
-
   @Test public void test() throws Exception {
     if (method != null) {
-      method.invoke(this);
+      try {
+        method.invoke(this);
+      } catch (InvocationTargetException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof Exception) {
+          throw (Exception) cause;
+        }
+        if (cause instanceof Error) {
+          throw (Error) cause;
+        }
+        throw e;
+      }
     } else {
       checkRun(path);
     }
   }
 
-  /** Override settings for "sql/misc.iq". */
-  public void testSqlMisc() throws Exception {
-    switch (CalciteAssert.DB) {
-    case ORACLE:
-      // There are formatting differences (e.g. "4.000" vs "4") when using
-      // Oracle as the JDBC data source.
-      return;
-    }
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
-      checkRun(path);
-    }
-  }
-
-  /** Override settings for "sql/scalar.iq". */
-  public void testSqlScalar() throws Exception {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
-      checkRun(path);
-    }
-  }
-
-  /** Runs the dummy script "sql/dummy.iq", which is checked in empty but
-   * which you may use as scratch space during development. */
-  // Do not add disable this test; just remember not to commit changes to dummy.iq
-  public void testSqlDummy() throws Exception {
-    try (final TryThreadLocal.Memo ignored = Prepare.THREAD_EXPAND.push(true)) {
-      checkRun(path);
-    }
-  }
-
   /** Quidem connection factory for Calcite's built-in test schemas. */
-  private static class QuidemConnectionFactory implements Quidem.NewConnectionFactory {
+  protected static class QuidemConnectionFactory
+      implements Quidem.ConnectionFactory {
     public Connection connect(String name) throws Exception {
       return connect(name, false);
     }
@@ -247,46 +231,49 @@ public class QuidemTest {
         }
         return null;
       }
-      if (name.equals("hr")) {
+      switch (name) {
+      case "hr":
         return CalciteAssert.hr()
             .connect();
-      }
-      if (name.equals("foodmart")) {
+      case "foodmart":
         return CalciteAssert.that()
             .with(CalciteAssert.Config.FOODMART_CLONE)
             .connect();
-      }
-      if (name.equals("scott")) {
+      case "geo":
+        return CalciteAssert.that()
+            .with(CalciteAssert.Config.GEO)
+            .connect();
+      case "scott":
         return CalciteAssert.that()
             .with(CalciteAssert.Config.SCOTT)
             .connect();
-      }
-      if (name.equals("jdbc_scott")) {
+      case "jdbc_scott":
         return CalciteAssert.that()
             .with(CalciteAssert.Config.JDBC_SCOTT)
             .connect();
-      }
-      if (name.equals("post")) {
+      case "post":
         return CalciteAssert.that()
             .with(CalciteAssert.Config.REGULAR)
             .with(CalciteAssert.SchemaSpec.POST)
-            .withDefaultSchema("POST")
             .connect();
-      }
-      if (name.equals("catchall")) {
+      case "catchall":
         return CalciteAssert.that()
             .withSchema("s",
                 new ReflectiveSchema(
                     new ReflectiveSchemaTest.CatchallSchema()))
             .connect();
-      }
-      if (name.equals("orinoco")) {
+      case "orinoco":
         return CalciteAssert.that()
             .with(CalciteAssert.SchemaSpec.ORINOCO)
-            .withDefaultSchema("ORINOCO")
             .connect();
-      }
-      if (name.equals("seq")) {
+      case "blank":
+        return CalciteAssert.that()
+            .with(CalciteConnectionProperty.PARSER_FACTORY,
+                "org.apache.calcite.sql.parser.parserextensiontesting"
+                    + ".ExtensionSqlParserImpl#FACTORY")
+            .with(CalciteAssert.SchemaSpec.BLANK)
+            .connect();
+      case "seq":
         final Connection connection = CalciteAssert.that()
             .withSchema("s", new AbstractSchema())
             .connect();
@@ -305,10 +292,12 @@ public class QuidemTest {
                   }
                 });
         return connection;
+      default:
+        throw new RuntimeException("unknown connection '" + name + "'");
       }
-      throw new RuntimeException("unknown connection '" + name + "'");
     }
   }
+
 }
 
 // End QuidemTest.java

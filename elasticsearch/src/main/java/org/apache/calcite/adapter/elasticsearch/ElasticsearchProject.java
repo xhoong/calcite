@@ -27,17 +27,17 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.Pair;
-import org.apache.calcite.util.Util;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of {@link org.apache.calcite.rel.core.Project}
  * relational expression in Elasticsearch.
  */
 public class ElasticsearchProject extends Project implements ElasticsearchRel {
-  public ElasticsearchProject(RelOptCluster cluster, RelTraitSet traitSet, RelNode input,
+  ElasticsearchProject(RelOptCluster cluster, RelTraitSet traitSet, RelNode input,
       List<? extends RexNode> projects, RelDataType rowType) {
     super(cluster, traitSet, input, projects, rowType);
     assert getConvention() == ElasticsearchRel.CONVENTION;
@@ -56,39 +56,53 @@ public class ElasticsearchProject extends Project implements ElasticsearchRel {
   @Override public void implement(Implementor implementor) {
     implementor.visitChild(0, getInput());
 
+    final List<String> inFields =
+            ElasticsearchRules.elasticsearchFieldNames(getInput().getRowType());
     final ElasticsearchRules.RexToElasticsearchTranslator translator =
-      new ElasticsearchRules.RexToElasticsearchTranslator(
-        (JavaTypeFactory) getCluster().getTypeFactory(),
-        ElasticsearchRules.elasticsearchFieldNames(getInput().getRowType()));
+            new ElasticsearchRules.RexToElasticsearchTranslator(
+                    (JavaTypeFactory) getCluster().getTypeFactory(), inFields);
 
-    final List<String> findItems = new ArrayList<>();
-    final List<String> scriptFieldItems = new ArrayList<>();
+    final List<String> fields = new ArrayList<>();
+    final List<String> scriptFields = new ArrayList<>();
     for (Pair<RexNode, String> pair: getNamedProjects()) {
       final String name = pair.right;
       final String expr = pair.left.accept(translator);
 
       if (expr.equals("\"" + name + "\"")) {
-        findItems.add(ElasticsearchRules.quote(name));
+        fields.add(name);
       } else if (expr.matches("\"literal\":.+")) {
-        scriptFieldItems.add(ElasticsearchRules.quote(name) + ":{\"script\": "
-          + expr.split(":")[1] + "}");
+        scriptFields.add(ElasticsearchRules.quote(name)
+                + ":{\"script\": "
+                + expr.split(":")[1] + "}");
       } else {
-        scriptFieldItems.add(ElasticsearchRules.quote(name) + ":{\"script\":\"_source."
-          + expr.replaceAll("\"", "") + "\"}");
+        scriptFields.add(ElasticsearchRules.quote(name)
+                + ":{\"script\":"
+                // _source (ES2) vs params._source (ES5)
+                + "\"" + implementor.elasticsearchTable.scriptedFieldPrefix() + "."
+                + expr.replaceAll("\"", "") + "\"}");
       }
     }
-    final String findString = Util.toString(findItems, "", ", ", "");
-    final String scriptFieldString = "\"script_fields\": {"
-        + Util.toString(scriptFieldItems, "", ", ", "") + "}";
-    final String fieldString = "\"fields\" : [" + findString + "]"
-        + ", " + scriptFieldString;
 
-    for (String opfield : implementor.list) {
-      if (opfield.startsWith("\"fields\"")) {
-        implementor.list.remove(opfield);
+    StringBuilder query = new StringBuilder();
+    if (scriptFields.isEmpty()) {
+      List<String> newList = fields.stream().map(ElasticsearchRules::quote)
+          .collect(Collectors.toList());
+
+      final String findString = String.join(", ", newList);
+      query.append("\"_source\" : [").append(findString).append("]");
+    } else {
+      // if scripted fields are present, ES ignores _source attribute
+      for (String field: fields) {
+        scriptFields.add(ElasticsearchRules.quote(field) + ":{\"script\": "
+                // _source (ES2) vs params._source (ES5)
+                + "\"" + implementor.elasticsearchTable.scriptedFieldPrefix() + "."
+                + field + "\"}");
       }
+      query.append("\"script_fields\": {" + String.join(", ", scriptFields) + "}");
     }
-    implementor.add(fieldString);
+
+    implementor.list.removeIf(l -> l.startsWith("\"_source\""));
+    implementor.add("{" + query.toString() + "}");
   }
 }
 

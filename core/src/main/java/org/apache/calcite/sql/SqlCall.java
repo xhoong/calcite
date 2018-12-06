@@ -84,7 +84,7 @@ public abstract class SqlCall extends SqlNode {
   @Override public SqlNode clone(SqlParserPos pos) {
     final List<SqlNode> operandList = getOperandList();
     return getOperator().createCall(getFunctionQuantifier(), pos,
-        operandList.toArray(new SqlNode[operandList.size()]));
+        operandList.toArray(new SqlNode[0]));
   }
 
   public void unparse(
@@ -92,14 +92,15 @@ public abstract class SqlCall extends SqlNode {
       int leftPrec,
       int rightPrec) {
     final SqlOperator operator = getOperator();
+    final SqlDialect dialect = writer.getDialect();
     if (leftPrec > operator.getLeftPrec()
         || (operator.getRightPrec() <= rightPrec && (rightPrec != 0))
         || writer.isAlwaysUseParentheses() && isA(SqlKind.EXPRESSION)) {
       final SqlWriter.Frame frame = writer.startList("(", ")");
-      operator.unparse(writer, this, 0, 0);
+      dialect.unparseCall(writer, this, 0, 0);
       writer.endList(frame);
     } else {
-      operator.unparse(writer, this, leftPrec, rightPrec);
+      dialect.unparseCall(writer, this, leftPrec, rightPrec);
     }
   }
 

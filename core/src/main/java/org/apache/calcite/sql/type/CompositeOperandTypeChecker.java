@@ -22,11 +22,11 @@ import org.apache.calcite.sql.SqlOperandCountRange;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
 import java.util.AbstractList;
 import java.util.List;
+import java.util.Objects;
 import javax.annotation.Nullable;
 
 /**
@@ -36,25 +36,19 @@ import javax.annotation.Nullable;
  *
  * <blockquote>
  * <pre><code>
- *
  * CompositeOperandsTypeChecking newCompositeRule =
- *  new CompositeOperandsTypeChecking(
- *    Composition.OR,
- *    new SqlOperandTypeChecker[]{stringRule, numericRule});
- *
+ *     new CompositeOperandsTypeChecking(Composition.OR,
+ *         new SqlOperandTypeChecker[]{stringRule, numericRule});
  * </code></pre>
  * </blockquote>
  *
- * Similary a rule that would only allow a numeric literal can be done by:
+ * <p>Similarly a rule that would only allow a numeric literal can be done by:
  *
  * <blockquote>
  * <pre><code>
- *
  * CompositeOperandsTypeChecking newCompositeRule =
- *  new CompositeOperandsTypeChecking(
- *    Composition.AND,
- *    new SqlOperandTypeChecker[]{numericRule, literalRule});
- *
+ *     new CompositeOperandsTypeChecking(Composition.AND,
+ *         new SqlOperandTypeChecker[]{numericRule, literalRule});
  * </code></pre>
  * </blockquote>
  *
@@ -63,12 +57,9 @@ import javax.annotation.Nullable;
  *
  * <blockquote>
  * <pre><code>
- *
  * CompositeOperandsTypeChecking newCompositeRule =
- *  new CompositeOperandsTypeChecking(
- *    Composition.SEQUENCE,
- *    new SqlOperandTypeChecker[]{stringRule, numericRule});
- *
+ *     new CompositeOperandsTypeChecking(Composition.SEQUENCE,
+ *         new SqlOperandTypeChecker[]{stringRule, numericRule});
  * </code></pre>
  * </blockquote>
  *
@@ -102,8 +93,8 @@ public class CompositeOperandTypeChecker implements SqlOperandTypeChecker {
       ImmutableList<? extends SqlOperandTypeChecker> allowedRules,
       @Nullable String allowedSignatures,
       @Nullable SqlOperandCountRange range) {
-    this.allowedRules = Preconditions.checkNotNull(allowedRules);
-    this.composition = Preconditions.checkNotNull(composition);
+    this.allowedRules = Objects.requireNonNull(allowedRules);
+    this.composition = Objects.requireNonNull(composition);
     this.allowedSignatures = allowedSignatures;
     this.range = range;
     assert (range != null) == (composition == Composition.REPEAT);
@@ -138,7 +129,8 @@ public class CompositeOperandTypeChecker implements SqlOperandTypeChecker {
           "specify allowedSignatures or override getAllowedSignatures");
     }
     StringBuilder ret = new StringBuilder();
-    for (Ord<SqlOperandTypeChecker> ord : Ord.zip(allowedRules)) {
+    for (Ord<SqlOperandTypeChecker> ord
+        : Ord.<SqlOperandTypeChecker>zip(allowedRules)) {
       if (ord.i > 0) {
         ret.append(SqlOperator.NL);
       }
@@ -281,7 +273,8 @@ public class CompositeOperandTypeChecker implements SqlOperandTypeChecker {
       if (callBinding.getOperandCount() != allowedRules.size()) {
         return false;
       }
-      for (Ord<SqlOperandTypeChecker> ord : Ord.zip(allowedRules)) {
+      for (Ord<SqlOperandTypeChecker> ord
+          : Ord.<SqlOperandTypeChecker>zip(allowedRules)) {
         SqlOperandTypeChecker rule = ord.e;
         if (!((SqlSingleOperandTypeChecker) rule).checkSingleOperandType(
             callBinding,
@@ -294,7 +287,8 @@ public class CompositeOperandTypeChecker implements SqlOperandTypeChecker {
       return true;
 
     case AND:
-      for (Ord<SqlOperandTypeChecker> ord : Ord.zip(allowedRules)) {
+      for (Ord<SqlOperandTypeChecker> ord
+          : Ord.<SqlOperandTypeChecker>zip(allowedRules)) {
         SqlOperandTypeChecker rule = ord.e;
         if (!rule.checkOperandTypes(callBinding, false)) {
           // Avoid trying other rules in AND if the first one fails.
@@ -304,7 +298,8 @@ public class CompositeOperandTypeChecker implements SqlOperandTypeChecker {
       return true;
 
     case OR:
-      for (Ord<SqlOperandTypeChecker> ord : Ord.zip(allowedRules)) {
+      for (Ord<SqlOperandTypeChecker> ord
+          : Ord.<SqlOperandTypeChecker>zip(allowedRules)) {
         SqlOperandTypeChecker rule = ord.e;
         if (rule.checkOperandTypes(callBinding, false)) {
           return true;

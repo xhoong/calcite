@@ -16,6 +16,7 @@
  */
 package org.apache.calcite.sql;
 
+import org.apache.calcite.rel.RelCollations;
 import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
@@ -95,7 +96,9 @@ public interface SqlSplittableAggFunction {
       AggregateCall aggregateCall);
 
   /** Collection in which one can register an element. Registering may return
-   * a reference to an existing element. */
+   * a reference to an existing element.
+   *
+   * @param <E> element type */
   interface Registry<E> {
     int register(E e);
   }
@@ -115,8 +118,8 @@ public interface SqlSplittableAggFunction {
     }
 
     public AggregateCall other(RelDataTypeFactory typeFactory, AggregateCall e) {
-      return AggregateCall.create(SqlStdOperatorTable.COUNT, false,
-          ImmutableIntList.of(), -1,
+      return AggregateCall.create(SqlStdOperatorTable.COUNT, false, false,
+          ImmutableIntList.of(), -1, RelCollations.EMPTY,
           typeFactory.createSqlType(SqlTypeName.BIGINT), null);
     }
 
@@ -144,16 +147,17 @@ public interface SqlSplittableAggFunction {
         throw new AssertionError("unexpected count " + merges);
       }
       int ordinal = extra.register(node);
-      return AggregateCall.create(SqlStdOperatorTable.SUM0, false,
-          ImmutableList.of(ordinal), -1, aggregateCall.type,
-          aggregateCall.name);
+      return AggregateCall.create(SqlStdOperatorTable.SUM0, false, false,
+          ImmutableList.of(ordinal), -1, aggregateCall.collation,
+          aggregateCall.type, aggregateCall.name);
     }
 
     /**
      * {@inheritDoc}
      *
-     * COUNT(*) and COUNT applied to all NOT NULL arguments become {@code 1};
-     * otherwise {@code CASE WHEN arg0 IS NOT NULL THEN 1 ELSE 0 END}.
+     * <p>{@code COUNT(*)}, and {@code COUNT} applied to all NOT NULL arguments,
+     * become {@code 1}; otherwise
+     * {@code CASE WHEN arg0 IS NOT NULL THEN 1 ELSE 0 END}.
      */
     public RexNode singleton(RexBuilder rexBuilder, RelDataType inputRowType,
         AggregateCall aggregateCall) {
@@ -204,14 +208,15 @@ public interface SqlSplittableAggFunction {
         Registry<RexNode> extra, int offset, RelDataType inputRowType,
         AggregateCall aggregateCall, int leftSubTotal, int rightSubTotal) {
       assert (leftSubTotal >= 0) != (rightSubTotal >= 0);
+      assert aggregateCall.collation.getFieldCollations().isEmpty();
       final int arg = leftSubTotal >= 0 ? leftSubTotal : rightSubTotal;
-      return aggregateCall.copy(ImmutableIntList.of(arg), -1);
+      return aggregateCall.copy(ImmutableIntList.of(arg), -1,
+          RelCollations.EMPTY);
     }
   }
 
-  /** Splitting strategy for {@code SUM}. */
-  class SumSplitter implements SqlSplittableAggFunction {
-    public static final SumSplitter INSTANCE = new SumSplitter();
+  /** Common splitting strategy for {@code SUM} and {@code SUM0} functions. */
+  abstract class AbstractSumSplitter implements SqlSplittableAggFunction {
 
     public RexNode singleton(RexBuilder rexBuilder,
         RelDataType inputRowType, AggregateCall aggregateCall) {
@@ -226,8 +231,9 @@ public interface SqlSplittableAggFunction {
     }
 
     public AggregateCall other(RelDataTypeFactory typeFactory, AggregateCall e) {
-      return AggregateCall.create(SqlStdOperatorTable.COUNT, false,
+      return AggregateCall.create(SqlStdOperatorTable.COUNT, false, false,
           ImmutableIntList.of(), -1,
+          RelCollations.EMPTY,
           typeFactory.createSqlType(SqlTypeName.BIGINT), null);
     }
 
@@ -257,9 +263,30 @@ public interface SqlSplittableAggFunction {
         throw new AssertionError("unexpected count " + merges);
       }
       int ordinal = extra.register(node);
-      return AggregateCall.create(SqlStdOperatorTable.SUM, false,
-          ImmutableList.of(ordinal), -1, aggregateCall.type,
-          aggregateCall.name);
+      return AggregateCall.create(getMergeAggFunctionOfTopSplit(), false, false,
+          ImmutableList.of(ordinal), -1, aggregateCall.collation,
+          aggregateCall.type, aggregateCall.name);
+    }
+
+    protected abstract SqlAggFunction getMergeAggFunctionOfTopSplit();
+
+  }
+
+  /** Splitting strategy for {@code SUM} function. */
+  class SumSplitter extends AbstractSumSplitter {
+    public static final SumSplitter INSTANCE = new SumSplitter();
+
+    @Override public SqlAggFunction getMergeAggFunctionOfTopSplit() {
+      return SqlStdOperatorTable.SUM;
+    }
+  }
+
+  /** Splitting strategy for {@code SUM0} function. */
+  class Sum0Splitter extends AbstractSumSplitter {
+    public static final Sum0Splitter INSTANCE = new Sum0Splitter();
+
+    @Override public SqlAggFunction getMergeAggFunctionOfTopSplit() {
+      return SqlStdOperatorTable.SUM0;
     }
   }
 }

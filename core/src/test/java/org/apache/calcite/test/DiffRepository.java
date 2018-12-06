@@ -18,6 +18,7 @@ package org.apache.calcite.test;
 
 import org.apache.calcite.avatica.util.Spaces;
 import org.apache.calcite.util.Pair;
+import org.apache.calcite.util.Sources;
 import org.apache.calcite.util.Util;
 import org.apache.calcite.util.XmlOutput;
 
@@ -34,7 +35,6 @@ import org.w3c.dom.Text;
 import org.xml.sax.SAXException;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.net.URL;
@@ -55,18 +55,17 @@ import javax.xml.parsers.ParserConfigurationException;
  * <p>Typical usage is as follows. A test case class defines a method
  *
  * <blockquote><pre><code>
- *
  * package com.acme.test;
- *
+ * &nbsp;
  * public class MyTest extends TestCase {
  *   public DiffRepository getDiffRepos() {
  *     return DiffRepository.lookup(MyTest.class);
  *   }
- *
+ * &nbsp;
  *   &#64;Test public void testToUpper() {
  *     getDiffRepos().assertEquals("${result}", "${string}");
  *   }
- *
+ * &nbsp;
  *   &#64;Test public void testToLower() {
  *     getDiffRepos().assertEquals("Multi-line\nstring", "${string}");
  *   }
@@ -77,7 +76,6 @@ import javax.xml.parsers.ParserConfigurationException;
  * <code>src/test/resources/com/acme/test/MyTest.xml</code>:</p>
  *
  * <blockquote><pre><code>
- *
  * &lt;Root&gt;
  *     &lt;TestCase name="testToUpper"&gt;
  *         &lt;Resource name="string"&gt;
@@ -217,7 +215,7 @@ public class DiffRepository {
             + "', but found '" + root.getNodeName() + "'");
       }
     } catch (ParserConfigurationException | SAXException e) {
-      throw Util.newInternal(e, "error while creating xml parser");
+      throw new RuntimeException("error while creating xml parser", e);
     }
     indent = logFile.getPath().contains("RelOptRulesTest")
         || logFile.getPath().contains("SqlToRelConverterTest")
@@ -523,23 +521,15 @@ public class DiffRepository {
    * Flushes the reference document to the file system.
    */
   private void flushDoc() {
-    FileWriter w = null;
     try {
       boolean b = logFile.getParentFile().mkdirs();
       Util.discard(b);
-      w = new FileWriter(logFile);
-      write(doc, w, indent);
-    } catch (IOException e) {
-      throw Util.newInternal(e,
-          "error while writing test reference log '" + logFile + "'");
-    } finally {
-      if (w != null) {
-        try {
-          w.close();
-        } catch (IOException e) {
-          // ignore
-        }
+      try (Writer w = Util.printWriter(logFile)) {
+        write(doc, w, indent);
       }
+    } catch (IOException e) {
+      throw new RuntimeException("error while writing test reference log '"
+          + logFile + "'", e);
     }
   }
 
@@ -757,7 +747,9 @@ public class DiffRepository {
     if (diffRepository == null) {
       final URL refFile = findFile(clazz, ".xml");
       final File logFile =
-          new File(refFile.getFile().replace("test-classes", "surefire"));
+          new File(
+              Sources.of(refFile).file().getAbsolutePath()
+                  .replace("test-classes", "surefire"));
       diffRepository =
           new DiffRepository(refFile, logFile, baseRepository, filter);
       MAP_CLASS_TO_REPOSITORY.put(clazz, diffRepository);

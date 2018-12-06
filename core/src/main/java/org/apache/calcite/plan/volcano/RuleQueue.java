@@ -37,7 +37,6 @@ import java.io.StringWriter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.EnumMap;
@@ -118,7 +117,7 @@ class RuleQueue {
 
     // init empty sets for all phases
     for (VolcanoPlannerPhase phase : VolcanoPlannerPhase.values()) {
-      phaseRuleMapping.put(phase, new HashSet<String>());
+      phaseRuleMapping.put(phase, new HashSet<>());
     }
 
     // configure phases
@@ -144,6 +143,9 @@ class RuleQueue {
   public void clear() {
     this.subsetImportances.clear();
     this.boostedSubsets.clear();
+    for (PhaseMatchList matchList : matchListMap.values()) {
+      matchList.clear();
+    }
   }
 
   /**
@@ -232,32 +234,26 @@ class RuleQueue {
       }
     }
 
-    Collections.sort(
-        boostRemovals,
-        new Comparator<RelSubset>() {
-          public int compare(RelSubset o1, RelSubset o2) {
-            int o1children = countChildren(o1);
-            int o2children = countChildren(o2);
-            int c = compare(o1children, o2children);
-            if (c == 0) {
-              // for determinism
-              c = compare(o1.getId(), o2.getId());
-            }
-            return c;
-          }
+    boostRemovals.sort(new Comparator<RelSubset>() {
+      public int compare(RelSubset o1, RelSubset o2) {
+        int o1children = countChildren(o1);
+        int o2children = countChildren(o2);
+        int c = Integer.compare(o1children, o2children);
+        if (c == 0) {
+          // for determinism
+          c = Integer.compare(o1.getId(), o2.getId());
+        }
+        return c;
+      }
 
-          private int compare(int i1, int i2) {
-            return (i1 < i2) ? -1 : ((i1 == i2) ? 0 : 1);
-          }
-
-          private int countChildren(RelSubset subset) {
-            int count = 0;
-            for (RelNode rel : subset.getRels()) {
-              count += rel.getInputs().size();
-            }
-            return count;
-          }
-        });
+      private int countChildren(RelSubset subset) {
+        int count = 0;
+        for (RelNode rel : subset.getRels()) {
+          count += rel.getInputs().size();
+        }
+        return count;
+      }
+    });
 
     for (RelSubset subset : boostRemovals) {
       subset.propagateBoostRemoval(planner);
@@ -368,15 +364,15 @@ class RuleQueue {
    * node's algorithm.</li>
    * </ul>
    *
-   * The formula for the importance I of node n is:
+   * <p>The formula for the importance <i>I</i> of node n is:
    *
    * <blockquote>I<sub>n</sub> = Sum<sub>parents p of n</sub>{I<sub>p</sub> .
    * W <sub>n, p</sub>}</blockquote>
    *
-   * where W<sub>n, p</sub>, the weight of n within its parent p, is
+   * <p>where W<sub>n, p</sub>, the weight of n within its parent p, is
    *
    * <blockquote>W<sub>n, p</sub> = Cost<sub>n</sub> / (SelfCost<sub>p</sub> +
-   * Cost<sub>n<sub>0</sub></sub> + ... + Cost<sub>n<sub>k</sub></sub>)
+   * Cost<sub>n0</sub> + ... + Cost<sub>nk</sub>)
    * </blockquote>
    */
   double computeImportance(RelSubset subset) {
@@ -385,7 +381,7 @@ class RuleQueue {
       // The root always has importance = 1
       importance = 1.0;
     } else {
-      final RelMetadataQuery mq = RelMetadataQuery.instance();
+      final RelMetadataQuery mq = subset.getCluster().getMetadataQuery();
 
       // The importance of a subset is the max of its importance to its
       // parents
@@ -449,7 +445,7 @@ class RuleQueue {
         return null;
       }
       if (LOGGER.isTraceEnabled()) {
-        Collections.sort(matchList, MATCH_COMPARATOR);
+        matchList.sort(MATCH_COMPARATOR);
         match = matchList.remove(0);
 
         StringBuilder b = new StringBuilder();
@@ -532,15 +528,15 @@ class RuleQueue {
    * from root of the operand tree to one of the leaves.
    *
    * <p>It is OK for a match to have duplicate subsets if they are not on the
-   * same path. For example,</p>
+   * same path. For example,
    *
-   * <pre>
+   * <blockquote><pre>
    *   Join
    *  /   \
    * X     X
-   * </pre>
+   * </pre></blockquote>
    *
-   * <p>is a valid match.</p>
+   * <p>is a valid match.
    *
    * @throws org.apache.calcite.util.Util.FoundOne on match
    */

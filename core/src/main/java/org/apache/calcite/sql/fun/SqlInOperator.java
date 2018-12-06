@@ -33,6 +33,7 @@ import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.sql.validate.SqlValidator;
+import org.apache.calcite.sql.validate.SqlValidatorImpl;
 import org.apache.calcite.sql.validate.SqlValidatorScope;
 import org.apache.calcite.util.Litmus;
 
@@ -45,44 +46,37 @@ import static org.apache.calcite.util.Static.RESOURCE;
 
 /**
  * Definition of the SQL <code>IN</code> operator, which tests for a value's
- * membership in a subquery or a list of values.
+ * membership in a sub-query or a list of values.
  */
 public class SqlInOperator extends SqlBinaryOperator {
   //~ Instance fields --------------------------------------------------------
 
-  /**
-   * If true the call represents 'NOT IN'.
-   */
-  private final boolean isNotIn;
-
   //~ Constructors -----------------------------------------------------------
 
   /**
-   * Creates a SqlInOperator
+   * Creates a SqlInOperator.
    *
-   * @param isNotIn Whether this is the 'NOT IN' operator
+   * @param kind IN or NOT IN
    */
-  SqlInOperator(boolean isNotIn) {
-    super(
-        isNotIn ? "NOT IN" : "IN",
-        SqlKind.IN,
+  SqlInOperator(SqlKind kind) {
+    this(kind.sql, kind);
+    assert kind == SqlKind.IN || kind == SqlKind.NOT_IN;
+  }
+
+  protected SqlInOperator(String name, SqlKind kind) {
+    super(name, kind,
         32,
         true,
         ReturnTypes.BOOLEAN_NULLABLE,
         InferTypes.FIRST_KNOWN,
         null);
-    this.isNotIn = isNotIn;
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  /**
-   * Returns whether this is the 'NOT IN' operator
-   *
-   * @return whether this is the 'NOT IN' operator
-   */
+  @Deprecated // to be removed before 2.0
   public boolean isNotIn() {
-    return isNotIn;
+    return kind == SqlKind.NOT_IN;
   }
 
   @Override public boolean validRexOperands(int count, Litmus litmus) {
@@ -126,9 +120,7 @@ public class SqlInOperator extends SqlBinaryOperator {
       }
 
       // Record the RHS type for use by SqlToRelConverter.
-      validator.setValidatedNodeType(
-          nodeList,
-          rightType);
+      ((SqlValidatorImpl) validator).setValidatedNodeType(nodeList, rightType);
     } else {
       // Handle the 'IN (query)' form.
       rightType = validator.deriveType(scope, right);
@@ -183,7 +175,7 @@ public class SqlInOperator extends SqlBinaryOperator {
   public boolean argumentMustBeScalar(int ordinal) {
     // Argument #0 must be scalar, argument #1 can be a list (1, 2) or
     // a query (select deptno from emp). So, only coerce argument #0 into
-    // a scalar subquery. For example, in
+    // a scalar sub-query. For example, in
     //  select * from emp
     //  where (select count(*) from dept) in (select deptno from dept)
     // we should coerce the LHS to a scalar.

@@ -22,6 +22,7 @@ import org.apache.calcite.plan.RelOptSchema;
 import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelCollation;
+import org.apache.calcite.rel.RelCollations;
 import org.apache.calcite.rel.RelDistribution;
 import org.apache.calcite.rel.RelInput;
 import org.apache.calcite.rel.RelNode;
@@ -46,6 +47,7 @@ import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -188,7 +190,8 @@ public class RelJsonReader {
       }
 
       public <E extends Enum<E>> E getEnum(String tag, Class<E> enumClass) {
-        return Util.enumVal(enumClass, getString(tag).toUpperCase());
+        return Util.enumVal(enumClass,
+            getString(tag).toUpperCase(Locale.ROOT));
       }
 
       public List<RexNode> getExpressionList(String tag) {
@@ -277,8 +280,10 @@ public class RelJsonReader {
     final Integer filterOperand = (Integer) jsonAggCall.get("filter");
     final RelDataType type =
         relJson.toType(cluster.getTypeFactory(), jsonAggCall.get("type"));
-    return AggregateCall.create(aggregation, distinct, operands,
-        filterOperand == null ? -1 : filterOperand, type, null);
+    return AggregateCall.create(aggregation, distinct, false, operands,
+        filterOperand == null ? -1 : filterOperand,
+        RelCollations.EMPTY,
+        type, null);
   }
 
   private RelNode lookupInput(String jsonInput) {

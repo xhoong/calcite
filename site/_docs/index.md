@@ -45,11 +45,14 @@ public static class HrSchema {
 Class.forName("org.apache.calcite.jdbc.Driver");
 Properties info = new Properties();
 info.setProperty("lex", "JAVA");
-Connection connection = DriverManager.getConnection("jdbc:calcite:", info);
+Connection connection =
+    DriverManager.getConnection("jdbc:calcite:", info);
 CalciteConnection calciteConnection =
     connection.unwrap(CalciteConnection.class);
-ReflectiveSchema.create(calciteConnection,
-    calciteConnection.getRootSchema(), "hr", new HrSchema());
+SchemaPlus rootSchema = calciteConnection.getRootSchema();
+Schema schema = ReflectiveSchema.create(calciteConnection,
+    rootSchema, "hr", new HrSchema());
+rootSchema.add("hr", schema);
 Statement statement = calciteConnection.createStatement();
 ResultSet resultSet = statement.executeQuery(
     "select d.deptno, min(e.empid)\n"
@@ -76,8 +79,8 @@ library. But Calcite can also process data in other data formats, such
 as JDBC. In the first example, replace
 
 {% highlight java %}
-ReflectiveSchema.create(calciteConnection,
-    calciteConnection.getRootSchema(), "hr", new HrSchema());
+Schema schema = ReflectiveSchema.create(calciteConnection,
+    rootSchema, "hr", new HrSchema());
 {% endhighlight %}
 
 with
@@ -88,8 +91,8 @@ BasicDataSource dataSource = new BasicDataSource();
 dataSource.setUrl("jdbc:mysql://localhost");
 dataSource.setUsername("username");
 dataSource.setPassword("password");
-JdbcSchema.create(calciteConnection.getRootSchema(), "name", dataSource,
-    null, "hr");
+Schema schema = JdbcSchema.create(rootSchema, "hr", dataSource,
+    null, "name");
 {% endhighlight %}
 
 and Calcite will execute the same query in JDBC. To the application,
@@ -137,7 +140,7 @@ The following features are complete.
   FIRST/LAST), set operations (UNION, INTERSECT, MINUS), sub-queries
   (including correlated sub-queries), windowed aggregates, LIMIT
   (syntax as <a
-  href="http://www.postgresql.org/docs/8.4/static/sql-select.html#SQL-LIMIT">Postgres</a>);
+  href="https://www.postgresql.org/docs/8.4/static/sql-select.html#SQL-LIMIT">Postgres</a>);
   more details in the [SQL reference](reference.html)
 * Local and remote JDBC drivers; see [Avatica](avatica_overview.html)
 * Several [adapters](adapter.html)

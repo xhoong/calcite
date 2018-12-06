@@ -28,6 +28,7 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Relational expression representing a scan of an Elasticsearch type.
@@ -48,13 +49,13 @@ public class ElasticsearchTableScan extends TableScan implements ElasticsearchRe
    * @param elasticsearchTable Elasticsearch table
    * @param projectRowType Fields and types to project; null to project raw row
    */
-  protected ElasticsearchTableScan(RelOptCluster cluster, RelTraitSet traitSet, RelOptTable table,
-      ElasticsearchTable elasticsearchTable, RelDataType projectRowType) {
+  ElasticsearchTableScan(RelOptCluster cluster, RelTraitSet traitSet,
+       RelOptTable table, ElasticsearchTable elasticsearchTable,
+       RelDataType projectRowType) {
     super(cluster, traitSet, table);
-    this.elasticsearchTable = elasticsearchTable;
+    this.elasticsearchTable = Objects.requireNonNull(elasticsearchTable, "elasticsearchTable");
     this.projectRowType = projectRowType;
 
-    assert elasticsearchTable != null;
     assert getConvention() == ElasticsearchRel.CONVENTION;
   }
 

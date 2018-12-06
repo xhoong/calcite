@@ -19,18 +19,22 @@ package org.apache.calcite.util;
 import org.apache.calcite.runtime.Utilities;
 
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Maps;
 
 import org.junit.Test;
 
 import java.nio.LongBuffer;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.SortedMap;
+import java.util.TreeMap;
 
+import static org.hamcrest.CoreMatchers.anyOf;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
@@ -150,7 +154,7 @@ public class ImmutableBitSetTest {
 
   @Test public void testCompare2() {
     final List<ImmutableBitSet> sorted = getSortedList();
-    Collections.sort(sorted, ImmutableBitSet.COMPARATOR);
+    sorted.sort(ImmutableBitSet.COMPARATOR);
     assertThat(sorted.toString(),
         equalTo("[{0, 1, 3}, {0, 1}, {1, 1000}, {1}, {1}, {2, 3}, {}]"));
   }
@@ -179,18 +183,44 @@ public class ImmutableBitSetTest {
 
   /**
    * Tests the methods
-   * {@link org.apache.calcite.util.ImmutableBitSet#toList} and
-   * {@link org.apache.calcite.util.ImmutableBitSet#asList}.
+   * {@link org.apache.calcite.util.ImmutableBitSet#toList}, and
+   * {@link org.apache.calcite.util.ImmutableBitSet#asList} and
+   * {@link org.apache.calcite.util.ImmutableBitSet#asSet}.
    */
   @Test public void testAsList() {
     final List<ImmutableBitSet> list = getSortedList();
+
+    // create a set of integers in and not in the lists
+    final Set<Integer> integers = new HashSet<>();
+    for (ImmutableBitSet set : list) {
+      for (Integer integer : set) {
+        integers.add(integer);
+        integers.add(integer + 1);
+        integers.add(integer + 10);
+      }
+    }
+
     for (ImmutableBitSet bitSet : list) {
       final List<Integer> list1 = bitSet.toList();
       final List<Integer> listView = bitSet.asList();
+      final Set<Integer> setView = bitSet.asSet();
       assertThat(list1.size(), equalTo(bitSet.cardinality()));
+      assertThat(listView.size(), equalTo(bitSet.cardinality()));
+      assertThat(setView.size(), equalTo(bitSet.cardinality()));
       assertThat(list1.toString(), equalTo(listView.toString()));
+      assertThat(list1.toString(), equalTo(setView.toString()));
       assertTrue(list1.equals(listView));
       assertThat(list1.hashCode(), equalTo(listView.hashCode()));
+
+      final Set<Integer> set = new HashSet<>(list1);
+      assertThat(setView.hashCode(), is(set.hashCode()));
+      assertThat(setView, equalTo(set));
+
+      for (Integer integer : integers) {
+        final boolean b = list1.contains(integer);
+        assertThat(listView.contains(integer), is(b));
+        assertThat(setView.contains(integer), is(b));
+      }
     }
   }
 
@@ -360,12 +390,12 @@ public class ImmutableBitSetTest {
   /** Tests the method
    * {@link org.apache.calcite.util.BitSets#closure(java.util.SortedMap)}. */
   @Test public void testClosure() {
-    final SortedMap<Integer, ImmutableBitSet> empty = Maps.newTreeMap();
+    final SortedMap<Integer, ImmutableBitSet> empty = new TreeMap<>();
     assertThat(ImmutableBitSet.closure(empty), equalTo(empty));
 
     // Currently you need an entry for each position, otherwise you get an NPE.
     // We should fix that.
-    final SortedMap<Integer, ImmutableBitSet> map = Maps.newTreeMap();
+    final SortedMap<Integer, ImmutableBitSet> map = new TreeMap<>();
     map.put(0, ImmutableBitSet.of(3));
     map.put(1, ImmutableBitSet.of());
     map.put(2, ImmutableBitSet.of(7));
@@ -386,7 +416,7 @@ public class ImmutableBitSetTest {
     assertThat("argument modified", map.toString(), equalTo(original));
 
     // Now a similar map with missing entries. Same result.
-    final SortedMap<Integer, ImmutableBitSet> map2 = Maps.newTreeMap();
+    final SortedMap<Integer, ImmutableBitSet> map2 = new TreeMap<>();
     map2.put(0, ImmutableBitSet.of(3));
     map2.put(2, ImmutableBitSet.of(7));
     map2.put(3, ImmutableBitSet.of(4, 12));
@@ -462,6 +492,14 @@ public class ImmutableBitSetTest {
     assertThat(bitSet.clearIf(29, true), equalTo(bitSet2));
   }
 
+  @Test public void testSet2() {
+    final ImmutableBitSet bitSet = ImmutableBitSet.of(29, 4, 1969);
+    final ImmutableBitSet bitSet2 = ImmutableBitSet.of(29, 4, 1969, 30);
+    assertThat(bitSet.set(30, false), sameInstance(bitSet));
+    assertThat(bitSet.set(30, true), equalTo(bitSet2));
+    assertThat(bitSet.set(29, true), sameInstance(bitSet));
+  }
+
   @Test public void testShift() {
     final ImmutableBitSet bitSet = ImmutableBitSet.of(29, 4, 1969);
     assertThat(bitSet.shift(0), is(bitSet));
@@ -471,7 +509,7 @@ public class ImmutableBitSetTest {
       final ImmutableBitSet x = bitSet.shift(-5);
       fail("Expected error, got " + x);
     } catch (ArrayIndexOutOfBoundsException e) {
-      assertThat(e.getMessage(), is("-1"));
+      assertThat(e.getMessage(), anyOf(is("-1"), is("Index -1 out of bounds for length 0")));
     }
     final ImmutableBitSet empty = ImmutableBitSet.of();
     assertThat(empty.shift(-100), is(empty));

@@ -18,30 +18,38 @@ package org.apache.calcite.rel.rules;
 
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
+import org.apache.calcite.plan.RelOptRuleOperand;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.RelFactories;
-import org.apache.calcite.rel.type.RelDataTypeFactory;
-import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexOver;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.tools.RelBuilderFactory;
 
+import java.util.function.Predicate;
+
 /**
  * Planner rule that pushes
- * a {@link org.apache.calcite.rel.logical.LogicalFilter}
- * past a {@link org.apache.calcite.rel.logical.LogicalProject}.
+ * a {@link org.apache.calcite.rel.core.Filter}
+ * past a {@link org.apache.calcite.rel.core.Project}.
  */
 public class FilterProjectTransposeRule extends RelOptRule {
   /** The default instance of
    * {@link org.apache.calcite.rel.rules.FilterProjectTransposeRule}.
    *
-   * <p>It matches any kind of join or filter, and generates the same kind of
-   * join and filter. */
+   * <p>It matches any kind of {@link org.apache.calcite.rel.core.Join} or
+   * {@link org.apache.calcite.rel.core.Filter}, and generates the same kind of
+   * Join and Filter.
+   *
+   * <p>It does not allow a Filter to be pushed past the Project if
+   * {@link RexUtil#containsCorrelation there is a correlation condition})
+   * anywhere in the Filter, since in some cases it can prevent a
+   * {@link org.apache.calcite.rel.core.Correlate} from being de-correlated.
+   */
   public static final FilterProjectTransposeRule INSTANCE =
       new FilterProjectTransposeRule(Filter.class, Project.class, true, true,
           RelFactories.LOGICAL_BUILDER);
@@ -54,20 +62,47 @@ public class FilterProjectTransposeRule extends RelOptRule {
   /**
    * Creates a FilterProjectTransposeRule.
    *
-   * <p>If {@code filterFactory} is null, creates the same kind of filter as
-   * matched in the rule. Similarly {@code projectFactory}.</p>
+   * <p>Equivalent to the rule created by
+   * {@link #FilterProjectTransposeRule(Class, Predicate, Class, Predicate, boolean, boolean, RelBuilderFactory)}
+   * with some default predicates that do not allow a filter to be pushed
+   * past the project if there is a correlation condition anywhere in the
+   * filter (since in some cases it can prevent a
+   * {@link org.apache.calcite.rel.core.Correlate} from being de-correlated).
    */
   public FilterProjectTransposeRule(
       Class<? extends Filter> filterClass,
       Class<? extends Project> projectClass,
       boolean copyFilter, boolean copyProject,
       RelBuilderFactory relBuilderFactory) {
-    super(
-        operand(filterClass,
-            operand(projectClass, any())),
-        relBuilderFactory, null);
-    this.copyFilter = copyFilter;
-    this.copyProject = copyProject;
+    this(filterClass,
+        filter -> !RexUtil.containsCorrelation(filter.getCondition()),
+        projectClass, project -> true,
+        copyFilter, copyProject, relBuilderFactory);
+  }
+
+  /**
+   * Creates a FilterProjectTransposeRule.
+   *
+   * <p>If {@code copyFilter} is true, creates the same kind of Filter as
+   * matched in the rule, otherwise it creates a Filter using the RelBuilder
+   * obtained by the {@code relBuilderFactory}.
+   * Similarly for {@code copyProject}.
+   *
+   * <p>Defining predicates for the Filter (using {@code filterPredicate})
+   * and/or the Project (using {@code projectPredicate} allows making the rule
+   * more restrictive.
+   */
+  public <F extends Filter, P extends Project> FilterProjectTransposeRule(
+      Class<F> filterClass,
+      Predicate<? super F> filterPredicate,
+      Class<P> projectClass,
+      Predicate<? super P> projectPredicate,
+      boolean copyFilter, boolean copyProject,
+      RelBuilderFactory relBuilderFactory) {
+    this(
+        operandJ(filterClass, null, filterPredicate,
+            operandJ(projectClass, null, projectPredicate, any())),
+        copyFilter, copyProject, relBuilderFactory);
   }
 
   @Deprecated // to be removed before 2.0
@@ -76,9 +111,21 @@ public class FilterProjectTransposeRule extends RelOptRule {
       RelFactories.FilterFactory filterFactory,
       Class<? extends Project> projectClass,
       RelFactories.ProjectFactory projectFactory) {
-    this(filterClass, projectClass, filterFactory == null,
+    this(filterClass, filter -> !RexUtil.containsCorrelation(filter.getCondition()),
+        projectClass, project -> true,
+        filterFactory == null,
         projectFactory == null,
         RelBuilder.proto(filterFactory, projectFactory));
+  }
+
+  protected FilterProjectTransposeRule(
+      RelOptRuleOperand operand,
+      boolean copyFilter,
+      boolean copyProject,
+      RelBuilderFactory relBuilderFactory) {
+    super(operand, relBuilderFactory, null);
+    this.copyFilter = copyFilter;
+    this.copyProject = copyProject;
   }
 
   //~ Methods ----------------------------------------------------------------
@@ -96,32 +143,20 @@ public class FilterProjectTransposeRule extends RelOptRule {
       // it can be pushed down. For now we don't support this.
       return;
     }
-
-    if (RexUtil.containsCorrelation(filter.getCondition())) {
-      // If there is a correlation condition anywhere in the filter, don't
-      // push this filter past project since in some cases it can prevent a
-      // Correlate from being de-correlated.
-      return;
-    }
-
     // convert the filter to one that references the child of the project
     RexNode newCondition =
         RelOptUtil.pushPastProject(filter.getCondition(), project);
 
-    // Remove cast of BOOLEAN NOT NULL to BOOLEAN or vice versa. Filter accepts
-    // nullable and not-nullable conditions, but a CAST might get in the way of
-    // other rewrites.
-    final RelDataTypeFactory typeFactory = filter.getCluster().getTypeFactory();
-    if (RexUtil.isNullabilityCast(typeFactory, newCondition)) {
-      newCondition = ((RexCall) newCondition).getOperands().get(0);
-    }
-
     final RelBuilder relBuilder = call.builder();
-    RelNode newFilterRel =
-        copyFilter
-            ? filter.copy(filter.getTraitSet(), project.getInput(),
-                newCondition)
-            : relBuilder.push(project.getInput()).filter(newCondition).build();
+    RelNode newFilterRel;
+    if (copyFilter) {
+      newFilterRel = filter.copy(filter.getTraitSet(), project.getInput(),
+          RexUtil.removeNullabilityCast(relBuilder.getTypeFactory(),
+              newCondition));
+    } else {
+      newFilterRel =
+          relBuilder.push(project.getInput()).filter(newCondition).build();
+    }
 
     RelNode newProjRel =
         copyProject

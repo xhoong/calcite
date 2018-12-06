@@ -18,6 +18,7 @@ package org.apache.calcite.adapter.druid;
 
 import org.apache.calcite.avatica.AvaticaUtils;
 import org.apache.calcite.avatica.ColumnMetaData;
+import org.apache.calcite.avatica.util.DateTimeUtils;
 import org.apache.calcite.interpreter.Row;
 import org.apache.calcite.interpreter.Sink;
 import org.apache.calcite.linq4j.AbstractEnumerable;
@@ -26,6 +27,7 @@ import org.apache.calcite.linq4j.Enumerator;
 import org.apache.calcite.prepare.CalcitePrepareImpl;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Holder;
+import org.apache.calcite.util.Util;
 
 import static org.apache.calcite.runtime.HttpUtils.post;
 
@@ -35,8 +37,6 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 
@@ -45,13 +45,17 @@ import org.joda.time.Interval;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -66,21 +70,22 @@ class DruidConnectionImpl implements DruidConnection {
   private final String url;
   private final String coordinatorUrl;
 
-  private static final String DEFAULT_RESPONSE_TIMESTAMP_COLUMN = "timestamp";
+  public static final String DEFAULT_RESPONSE_TIMESTAMP_COLUMN = "timestamp";
   private static final SimpleDateFormat UTC_TIMESTAMP_FORMAT;
+  private static final SimpleDateFormat TIMESTAMP_FORMAT;
 
   static {
-    final TimeZone utc = TimeZone.getTimeZone("UTC");
-    UTC_TIMESTAMP_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+    final TimeZone utc = DateTimeUtils.UTC_ZONE;
+    UTC_TIMESTAMP_FORMAT =
+        new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT);
     UTC_TIMESTAMP_FORMAT.setTimeZone(utc);
+    TIMESTAMP_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT);
+    TIMESTAMP_FORMAT.setTimeZone(utc);
   }
 
-  private static final Set<String> SUPPORTED_TYPES =
-      ImmutableSet.of("LONG", "DOUBLE", "STRING", "hyperUnique");
-
   DruidConnectionImpl(String url, String coordinatorUrl) {
-    this.url = Preconditions.checkNotNull(url);
-    this.coordinatorUrl = Preconditions.checkNotNull(coordinatorUrl);
+    this.url = Objects.requireNonNull(url);
+    this.coordinatorUrl = Objects.requireNonNull(coordinatorUrl);
   }
 
   /** Executes a query request.
@@ -120,22 +125,27 @@ class DruidConnectionImpl implements DruidConnection {
     if (CalcitePrepareImpl.DEBUG) {
       try {
         final byte[] bytes = AvaticaUtils.readFullyToBytes(in);
-        System.out.println("Response: " + new String(bytes));
+        System.out.println("Response: "
+            + new String(bytes, StandardCharsets.UTF_8)); // CHECKSTYLE: IGNORE 0
         in = new ByteArrayInputStream(bytes);
       } catch (IOException e) {
-        throw Throwables.propagate(e);
+        throw new RuntimeException(e);
       }
     }
 
     int posTimestampField = -1;
     for (int i = 0; i < fieldTypes.size(); i++) {
+      /*@TODO This need to be revisited. The logic seems implying that only
+      one column of type timestamp is present, this is not necessarily true,
+      see https://issues.apache.org/jira/browse/CALCITE-2175
+      */
       if (fieldTypes.get(i) == ColumnMetaData.Rep.JAVA_SQL_TIMESTAMP) {
         posTimestampField = i;
         break;
       }
     }
 
-    try (final JsonParser parser = factory.createParser(in)) {
+    try (JsonParser parser = factory.createParser(in)) {
       switch (queryType) {
       case TIMESERIES:
         if (parser.nextToken() == JsonToken.START_ARRAY) {
@@ -182,40 +192,46 @@ class DruidConnectionImpl implements DruidConnection {
             && parser.nextToken() == JsonToken.START_OBJECT) {
           page.pagingIdentifier = null;
           page.offset = -1;
+          page.totalRowCount = 0;
           expectScalarField(parser, DEFAULT_RESPONSE_TIMESTAMP_COLUMN);
           if (parser.nextToken() == JsonToken.FIELD_NAME
               && parser.getCurrentName().equals("result")
               && parser.nextToken() == JsonToken.START_OBJECT) {
-            if (parser.nextToken() == JsonToken.FIELD_NAME
-                && parser.getCurrentName().equals("pagingIdentifiers")
-                && parser.nextToken() == JsonToken.START_OBJECT) {
-              switch (parser.nextToken()) {
-              case FIELD_NAME:
-                page.pagingIdentifier = parser.getCurrentName();
-                if (parser.nextToken() == JsonToken.VALUE_NUMBER_INT) {
-                  page.offset = parser.getIntValue();
+            while (parser.nextToken() == JsonToken.FIELD_NAME) {
+              if (parser.getCurrentName().equals("pagingIdentifiers")
+                  && parser.nextToken() == JsonToken.START_OBJECT) {
+                JsonToken token = parser.nextToken();
+                while (parser.getCurrentToken() == JsonToken.FIELD_NAME) {
+                  page.pagingIdentifier = parser.getCurrentName();
+                  if (parser.nextToken() == JsonToken.VALUE_NUMBER_INT) {
+                    page.offset = parser.getIntValue();
+                  }
+                  token = parser.nextToken();
                 }
-                expect(parser, JsonToken.END_OBJECT);
-                break;
-              case END_OBJECT:
-              }
-            }
-            if (parser.nextToken() == JsonToken.FIELD_NAME
-                && parser.getCurrentName().equals("events")
-                && parser.nextToken() == JsonToken.START_ARRAY) {
-              while (parser.nextToken() == JsonToken.START_OBJECT) {
-                expectScalarField(parser, "segmentId");
-                expectScalarField(parser, "offset");
-                if (parser.nextToken() == JsonToken.FIELD_NAME
-                    && parser.getCurrentName().equals("event")
-                    && parser.nextToken() == JsonToken.START_OBJECT) {
-                  parseFields(fieldNames, fieldTypes, posTimestampField, rowBuilder, parser);
-                  sink.send(rowBuilder.build());
-                  rowBuilder.reset();
+                expect(token, JsonToken.END_OBJECT);
+              } else if (parser.getCurrentName().equals("events")
+                  && parser.nextToken() == JsonToken.START_ARRAY) {
+                while (parser.nextToken() == JsonToken.START_OBJECT) {
+                  expectScalarField(parser, "segmentId");
+                  expectScalarField(parser, "offset");
+                  if (parser.nextToken() == JsonToken.FIELD_NAME
+                      && parser.getCurrentName().equals("event")
+                      && parser.nextToken() == JsonToken.START_OBJECT) {
+                    parseFields(fieldNames, fieldTypes, posTimestampField, rowBuilder, parser);
+                    sink.send(rowBuilder.build());
+                    rowBuilder.reset();
+                    page.totalRowCount += 1;
+                  }
+                  expect(parser, JsonToken.END_OBJECT);
                 }
-                expect(parser, JsonToken.END_OBJECT);
+                parser.nextToken();
+              } else if (parser.getCurrentName().equals("dimensions")
+                  || parser.getCurrentName().equals("metrics")) {
+                expect(parser, JsonToken.START_ARRAY);
+                while (parser.nextToken() != JsonToken.END_ARRAY) {
+                  // empty
+                }
               }
-              parser.nextToken();
             }
           }
         }
@@ -232,16 +248,49 @@ class DruidConnectionImpl implements DruidConnection {
               if (posTimestampField != -1) {
                 rowBuilder.set(posTimestampField, timeValue);
               }
-              parseFields(fieldNames, fieldTypes, rowBuilder, parser);
+              parseFields(fieldNames, fieldTypes, posTimestampField, rowBuilder, parser);
               sink.send(rowBuilder.build());
               rowBuilder.reset();
             }
             expect(parser, JsonToken.END_OBJECT);
           }
         }
+        break;
+
+      case SCAN:
+        if (parser.nextToken() == JsonToken.START_ARRAY) {
+          while (parser.nextToken() == JsonToken.START_OBJECT) {
+            expectScalarField(parser, "segmentId");
+
+            expect(parser, JsonToken.FIELD_NAME);
+            if (parser.getCurrentName().equals("columns")) {
+              expect(parser, JsonToken.START_ARRAY);
+              while (parser.nextToken() != JsonToken.END_ARRAY) {
+                // Skip the columns list
+              }
+            }
+            if (parser.nextToken() == JsonToken.FIELD_NAME
+                && parser.getCurrentName().equals("events")
+                && parser.nextToken() == JsonToken.START_ARRAY) {
+              // Events is Array of Arrays where each array is a row
+              while (parser.nextToken() == JsonToken.START_ARRAY) {
+                for (String field : fieldNames) {
+                  parseFieldForName(fieldNames, fieldTypes, posTimestampField, rowBuilder, parser,
+                      field);
+                }
+                expect(parser, JsonToken.END_ARRAY);
+                Row row = rowBuilder.build();
+                sink.send(row);
+                rowBuilder.reset();
+                page.totalRowCount += 1;
+              }
+            }
+            expect(parser, JsonToken.END_OBJECT);
+          }
+        }
       }
     } catch (IOException | InterruptedException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -260,38 +309,69 @@ class DruidConnectionImpl implements DruidConnection {
   private void parseField(List<String> fieldNames, List<ColumnMetaData.Rep> fieldTypes,
       int posTimestampField, Row.RowBuilder rowBuilder, JsonParser parser) throws IOException {
     final String fieldName = parser.getCurrentName();
+    parseFieldForName(fieldNames, fieldTypes, posTimestampField, rowBuilder, parser, fieldName);
+  }
 
+  private void parseFieldForName(List<String> fieldNames, List<ColumnMetaData.Rep> fieldTypes,
+      int posTimestampField, Row.RowBuilder rowBuilder, JsonParser parser, String fieldName)
+      throws IOException {
     // Move to next token, which is name's value
     JsonToken token = parser.nextToken();
-    if (fieldName.equals(DEFAULT_RESPONSE_TIMESTAMP_COLUMN)) {
-      try {
-        final Date parse;
-        // synchronized block to avoid race condition
-        synchronized (UTC_TIMESTAMP_FORMAT) {
-          parse = UTC_TIMESTAMP_FORMAT.parse(parser.getText());
-        }
-        if (posTimestampField != -1) {
-          rowBuilder.set(posTimestampField, parse.getTime());
-        }
-      } catch (ParseException e) {
-        // ignore bad value
-      }
-      return;
-    }
+
+    boolean isTimestampColumn = fieldName.equals(DEFAULT_RESPONSE_TIMESTAMP_COLUMN);
     int i = fieldNames.indexOf(fieldName);
+    ColumnMetaData.Rep type = null;
     if (i < 0) {
-      return;
+      if (!isTimestampColumn) {
+        // Field not present
+        return;
+      }
+    } else {
+      type = fieldTypes.get(i);
     }
-    ColumnMetaData.Rep type = fieldTypes.get(i);
+
+    if (isTimestampColumn || ColumnMetaData.Rep.JAVA_SQL_TIMESTAMP == type) {
+      final int fieldPos = posTimestampField != -1 ? posTimestampField : i;
+      if (token == JsonToken.VALUE_NUMBER_INT) {
+        rowBuilder.set(posTimestampField, parser.getLongValue());
+        return;
+      } else {
+        // We don't have any way to figure out the format of time upfront since we only have
+        // org.apache.calcite.avatica.ColumnMetaData.Rep.JAVA_SQL_TIMESTAMP as type to represent
+        // both timestamp and timestamp with local timezone.
+        // Logic where type is inferred can be found at DruidQuery.DruidQueryNode.getPrimitive()
+        // Thus need to guess via try and catch
+        synchronized (UTC_TIMESTAMP_FORMAT) {
+          // synchronized block to avoid race condition
+          try {
+            // First try to parse as Timestamp with timezone.
+            rowBuilder
+                .set(fieldPos, UTC_TIMESTAMP_FORMAT.parse(parser.getText()).getTime());
+          } catch (ParseException e) {
+            // swallow the exception and try timestamp format
+            try {
+              rowBuilder
+                  .set(fieldPos, TIMESTAMP_FORMAT.parse(parser.getText()).getTime());
+            } catch (ParseException e2) {
+              // unknown format should not happen
+              throw new RuntimeException(e2);
+            }
+          }
+        }
+        return;
+      }
+    }
+
     switch (token) {
     case VALUE_NUMBER_INT:
       if (type == null) {
-        type = ColumnMetaData.Rep.INTEGER;
+        type = ColumnMetaData.Rep.LONG;
       }
       // fall through
     case VALUE_NUMBER_FLOAT:
       if (type == null) {
-        type = ColumnMetaData.Rep.FLOAT;
+        // JSON's "float" is 64-bit floating point
+        type = ColumnMetaData.Rep.DOUBLE;
       }
       switch (type) {
       case BYTE:
@@ -305,9 +385,6 @@ class DruidConnectionImpl implements DruidConnection {
         break;
       case LONG:
         rowBuilder.set(i, parser.getLongValue());
-        break;
-      case FLOAT:
-        rowBuilder.set(i, parser.getFloatValue());
         break;
       case DOUBLE:
         rowBuilder.set(i, parser.getDoubleValue());
@@ -324,15 +401,55 @@ class DruidConnectionImpl implements DruidConnection {
       break;
     case VALUE_STRING:
     default:
-      rowBuilder.set(i, parser.getText());
-      break;
+      final String s = parser.getText();
+      if (type != null) {
+        switch (type) {
+        case LONG:
+        case PRIMITIVE_LONG:
+        case SHORT:
+        case PRIMITIVE_SHORT:
+        case INTEGER:
+        case PRIMITIVE_INT:
+          switch (s) {
+          case "Infinity":
+          case "-Infinity":
+          case "NaN":
+            throw new RuntimeException("/ by zero");
+          }
+          rowBuilder.set(i, Long.valueOf(s));
+          break;
+        case FLOAT:
+        case PRIMITIVE_FLOAT:
+        case PRIMITIVE_DOUBLE:
+        case NUMBER:
+        case DOUBLE:
+          switch (s) {
+          case "Infinity":
+            rowBuilder.set(i, Double.POSITIVE_INFINITY);
+            return;
+          case "-Infinity":
+            rowBuilder.set(i, Double.NEGATIVE_INFINITY);
+            return;
+          case "NaN":
+            rowBuilder.set(i, Double.NaN);
+            return;
+          }
+          rowBuilder.set(i, Double.valueOf(s));
+          break;
+        }
+      } else {
+        rowBuilder.set(i, s);
+      }
     }
   }
 
   private void expect(JsonParser parser, JsonToken token) throws IOException {
-    final JsonToken t = parser.nextToken();
-    if (t != token) {
-      throw new RuntimeException("expected " + token + ", got " + t);
+    expect(parser.nextToken(), token);
+  }
+
+  private void expect(JsonToken token, JsonToken expected) throws IOException {
+    if (token != expected) {
+      throw new RuntimeException("expected " + expected + ", got " + token);
     }
   }
 
@@ -366,7 +483,7 @@ class DruidConnectionImpl implements DruidConnection {
     }
     expect(parser, JsonToken.START_OBJECT);
     while (parser.nextToken() != JsonToken.END_OBJECT) {
-        // empty
+      // empty
     }
   }
 
@@ -411,6 +528,7 @@ class DruidConnectionImpl implements DruidConnection {
             enumerator.done.set(true);
           }
 
+          @SuppressWarnings("deprecation")
           public void setSourceEnumerable(Enumerable<Row> enumerable)
               throws InterruptedException {
             for (Row row : enumerable) {
@@ -438,13 +556,11 @@ class DruidConnectionImpl implements DruidConnection {
     };
   }
 
-  private boolean isSupportedType(String type) {
-    return SUPPORTED_TYPES.contains(type);
-  }
-
   /** Reads segment metadata, and populates a list of columns and metrics. */
-  void metadata(String dataSourceName, String timestampColumnName, List<Interval> intervals,
-      Map<String, SqlTypeName> fieldBuilder, Set<String> metricNameBuilder) {
+  void metadata(String dataSourceName, String timestampColumnName,
+      List<Interval> intervals,
+      Map<String, SqlTypeName> fieldBuilder, Set<String> metricNameBuilder,
+      Map<String, List<ComplexMetric>> complexMetrics) {
     final String url = this.url + "/druid/v2/?pretty";
     final Map<String, String> requestHeaders =
         ImmutableMap.of("Content-Type", "application/json");
@@ -461,17 +577,21 @@ class DruidConnectionImpl implements DruidConnection {
               JsonSegmentMetadata.class);
       final List<JsonSegmentMetadata> list = mapper.readValue(in, listType);
       in.close();
-      fieldBuilder.put(timestampColumnName, SqlTypeName.TIMESTAMP);
+      fieldBuilder.put(timestampColumnName, SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE);
       for (JsonSegmentMetadata o : list) {
         for (Map.Entry<String, JsonColumn> entry : o.columns.entrySet()) {
           if (entry.getKey().equals(DruidTable.DEFAULT_TIMESTAMP_COLUMN)) {
             // timestamp column
             continue;
           }
-          if (!isSupportedType(entry.getValue().type)) {
+          final DruidType druidType;
+          try {
+            druidType = DruidType.getTypeFromMetaData(entry.getValue().type);
+          } catch (AssertionError e) {
+            // ignore exception; not a supported type
             continue;
           }
-          fieldBuilder.put(entry.getKey(), entry.getValue().sqlType());
+          fieldBuilder.put(entry.getKey(), druidType.sqlType);
         }
         if (o.aggregators != null) {
           for (Map.Entry<String, JsonAggregator> entry
@@ -479,12 +599,22 @@ class DruidConnectionImpl implements DruidConnection {
             if (!fieldBuilder.containsKey(entry.getKey())) {
               continue;
             }
-            metricNameBuilder.add(entry.getKey());
+            DruidType type = DruidType.getTypeFromMetaData(entry.getValue().type);
+            if (type.isComplex()) {
+              // Each complex type will get their own alias, equal to their actual name.
+              // Maybe we should have some smart string replacement strategies to make the column
+              // names more natural.
+              List<ComplexMetric> metricList = new ArrayList<>();
+              metricList.add(new ComplexMetric(entry.getKey(), type));
+              complexMetrics.put(entry.getKey(), metricList);
+            } else {
+              metricNameBuilder.add(entry.getKey());
+            }
           }
         }
       }
     } catch (IOException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -506,7 +636,7 @@ class DruidConnectionImpl implements DruidConnection {
       final List<String> list = mapper.readValue(in, listType);
       return ImmutableSet.copyOf(list);
     } catch (IOException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -515,10 +645,11 @@ class DruidConnectionImpl implements DruidConnection {
       try {
         final byte[] bytes = AvaticaUtils.readFullyToBytes(in);
         in.close();
-        System.out.println("Response: " + new String(bytes));
+        System.out.println("Response: "
+            + new String(bytes, StandardCharsets.UTF_8)); // CHECKSTYLE: IGNORE 0
         in = new ByteArrayInputStream(bytes);
       } catch (IOException e) {
-        throw Throwables.propagate(e);
+        throw new RuntimeException(e);
       }
     }
     return in;
@@ -529,7 +660,9 @@ class DruidConnectionImpl implements DruidConnection {
   }
 
   /** An {@link Enumerator} that gets its rows from a {@link BlockingQueue}.
-   * There are other fields to signal errors and end-of-data. */
+   * There are other fields to signal errors and end-of-data.
+   *
+   * @param <E> element type */
   private static class BlockingQueueEnumerator<E> implements Enumerator<E> {
     final BlockingQueue<E> queue = new ArrayBlockingQueue<>(1000);
     final AtomicBoolean done = new AtomicBoolean(false);
@@ -560,10 +693,11 @@ class DruidConnectionImpl implements DruidConnection {
     public void reset() {}
 
     public void close() {
-      final Throwable throwable = throwableHolder.get();
-      if (throwable != null) {
+      final Throwable e = throwableHolder.get();
+      if (e != null) {
         throwableHolder.set(null);
-        throw Throwables.propagate(throwable);
+        Util.throwIfUnchecked(e);
+        throw new RuntimeException(e);
       }
     }
   }
@@ -572,12 +706,12 @@ class DruidConnectionImpl implements DruidConnection {
   static class Page {
     String pagingIdentifier = null;
     int offset = -1;
+    int totalRowCount = 0;
 
     @Override public String toString() {
       return "{" + pagingIdentifier + ": " + offset + "}";
     }
   }
-
 
   /** Result of a "segmentMetadata" call, populated by Jackson. */
   @SuppressWarnings({ "WeakerAccess", "unused" })
@@ -585,8 +719,8 @@ class DruidConnectionImpl implements DruidConnection {
     public String id;
     public List<String> intervals;
     public Map<String, JsonColumn> columns;
-    public int size;
-    public int numRows;
+    public long size;
+    public long numRows;
     public Map<String, JsonAggregator> aggregators;
   }
 
@@ -599,27 +733,6 @@ class DruidConnectionImpl implements DruidConnection {
     public int size;
     public Integer cardinality;
     public String errorMessage;
-
-    SqlTypeName sqlType() {
-      return sqlType(type);
-    }
-
-    static SqlTypeName sqlType(String type) {
-      switch (type) {
-      case "LONG":
-        return SqlTypeName.BIGINT;
-      case "DOUBLE":
-        return SqlTypeName.DOUBLE;
-      case "FLOAT":
-        return SqlTypeName.REAL;
-      case "STRING":
-        return SqlTypeName.VARCHAR;
-      case "hyperUnique":
-        return SqlTypeName.VARBINARY;
-      default:
-        throw new AssertionError("unknown type " + type);
-      }
-    }
   }
 
   /** Element of the "aggregators" collection in the result of a
@@ -630,17 +743,8 @@ class DruidConnectionImpl implements DruidConnection {
     public String name;
     public String fieldName;
 
-    SqlTypeName sqlType() {
-      if (type.startsWith("long")) {
-        return SqlTypeName.BIGINT;
-      }
-      if (type.startsWith("double")) {
-        return SqlTypeName.DOUBLE;
-      }
-      if (type.equals("hyperUnique")) {
-        return SqlTypeName.VARBINARY;
-      }
-      throw new AssertionError("unknown type " + type);
+    DruidType druidType() {
+      return DruidType.getTypeFromMetric(type);
     }
   }
 }

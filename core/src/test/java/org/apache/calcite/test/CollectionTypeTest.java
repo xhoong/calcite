@@ -17,6 +17,7 @@
 package org.apache.calcite.test;
 
 import org.apache.calcite.DataContext;
+import org.apache.calcite.config.CalciteConnectionConfig;
 import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.linq4j.AbstractEnumerable;
 import org.apache.calcite.linq4j.Enumerable;
@@ -30,6 +31,8 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Statistic;
 import org.apache.calcite.schema.Statistics;
 import org.apache.calcite.schema.impl.AbstractSchema;
+import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.type.SqlTypeName;
 
 import org.junit.Test;
@@ -168,24 +171,52 @@ public class CollectionTypeTest {
 
     final Statement statement = connection.createStatement();
 
-    // Since the value type is ANY, we need to wrap the value to CAST in order to
-    // compare with literal. if it doesn't, Exception is thrown at Runtime.
-    // This is only occurred with primitive type because of providing overloaded methods
-    try {
-      final String sql = "select \"ID\", \"MAPFIELD\"['c'] AS \"MAPFIELD_C\","
-          + " \"NESTEDMAPFIELD\", \"ARRAYFIELD\" "
-          + "from \"s\".\"nested\" "
-          + "where \"NESTEDMAPFIELD\"['a']['b'] = 2 AND \"ARRAYFIELD\"[2] = 200";
-      statement.executeQuery(sql);
+    // placing literal earlier than ANY type is intended: do not modify
+    final String sql = "select \"ID\", \"MAPFIELD\"['c'] AS \"MAPFIELD_C\","
+        + " \"NESTEDMAPFIELD\", \"ARRAYFIELD\" "
+        + "from \"s\".\"nested\" "
+        + "where \"NESTEDMAPFIELD\"['a']['b'] = 2 AND 200.0 = \"ARRAYFIELD\"[2]";
 
-      fail("Without CAST, comparing result of ITEM() and primitive type should throw Exception "
-          + "in Runtime");
-    } catch (SQLException e) {
-      Throwable e2 = e.getCause();
-      assertThat(e2, is(instanceOf(RuntimeException.class)));
-      Throwable e3 = e2.getCause();
-      assertThat(e3, is(instanceOf(NoSuchMethodException.class)));
-    }
+    final ResultSet resultSet = statement.executeQuery(sql);
+    final List<String> resultStrings = CalciteAssert.toList(resultSet);
+    assertThat(resultStrings.size(), is(1));
+
+    // JDBC doesn't support Map / Nested Map so just relying on string representation
+    String expectedRow = "ID=2; MAPFIELD_C=4; NESTEDMAPFIELD={a={b=2, c=4}}; "
+        + "ARRAYFIELD=[100, 200, 300]";
+    assertThat(resultStrings.get(0), is(expectedRow));
+  }
+
+
+  @Test public void testArithmeticToAnyTypeWithoutCast() throws Exception {
+    Connection connection = setupConnectionWithNestedAnyTypeTable();
+
+    final Statement statement = connection.createStatement();
+
+    // placing literal earlier than ANY type is intended: do not modify
+    final String sql = "select \"ID\", \"MAPFIELD\"['c'] AS \"MAPFIELD_C\","
+        + " \"NESTEDMAPFIELD\", \"ARRAYFIELD\" "
+        + "from \"s\".\"nested\" "
+        + "where \"NESTEDMAPFIELD\"['a']['b'] + 1.0 = 3 "
+        + "AND \"NESTEDMAPFIELD\"['a']['b'] * 2.0 = 4 "
+        + "AND \"NESTEDMAPFIELD\"['a']['b'] > 1"
+        + "AND \"NESTEDMAPFIELD\"['a']['b'] >= 2"
+        + "AND 100.1 <> \"ARRAYFIELD\"[2] - 100.0"
+        + "AND 100.0 = \"ARRAYFIELD\"[2] / 2"
+        + "AND 99.9 < \"ARRAYFIELD\"[2] / 2"
+        + "AND 100.0 <= \"ARRAYFIELD\"[2] / 2"
+        + "AND '200' <> \"STRINGARRAYFIELD\"[1]"
+        + "AND '200' = \"STRINGARRAYFIELD\"[2]"
+        + "AND '100' < \"STRINGARRAYFIELD\"[2]";
+
+    final ResultSet resultSet = statement.executeQuery(sql);
+    final List<String> resultStrings = CalciteAssert.toList(resultSet);
+    assertThat(resultStrings.size(), is(1));
+
+    // JDBC doesn't support Map / Nested Map so just relying on string representation
+    String expectedRow = "ID=2; MAPFIELD_C=4; NESTEDMAPFIELD={a={b=2, c=4}}; "
+        + "ARRAYFIELD=[100, 200, 300]";
+    assertThat(resultStrings.get(0), is(expectedRow));
   }
 
   @Test public void testAccessNonExistKeyFromMapWithAnyType() throws Exception {
@@ -313,6 +344,7 @@ public class CollectionTypeTest {
 
   private static Object[][] setupNestedRecords() {
     List<Integer> ints = Arrays.asList(100, 200, 300);
+    List<String> strings = Arrays.asList("100", "200", "300");
 
     Object[][] records = new Object[5][];
 
@@ -322,7 +354,7 @@ public class CollectionTypeTest {
       map.put("c", i * i);
       Map<String, Map<String, Integer>> mm = new HashMap<>();
       mm.put("a", map);
-      records[i] = new Object[] {i, map, mm, ints};
+      records[i] = new Object[] {i, map, mm, ints, strings};
     }
 
     return records;
@@ -333,26 +365,31 @@ public class CollectionTypeTest {
   public static class NestedCollectionTable implements ScannableTable {
     public RelDataType getRowType(RelDataTypeFactory typeFactory) {
 
-      RelDataType nullableKeyType = typeFactory
+      RelDataType nullableVarcharType = typeFactory
           .createTypeWithNullability(typeFactory.createSqlType(SqlTypeName.VARCHAR), true);
-      RelDataType nullableValueType = typeFactory
+      RelDataType nullableIntegerType = typeFactory
           .createTypeWithNullability(typeFactory.createSqlType(SqlTypeName.INTEGER), true);
       RelDataType nullableMapType = typeFactory
-          .createTypeWithNullability(typeFactory.createMapType(nullableKeyType, nullableValueType),
+          .createTypeWithNullability(
+              typeFactory.createMapType(nullableVarcharType, nullableIntegerType),
               true);
       return typeFactory.builder()
           .add("ID", SqlTypeName.INTEGER)
           .add("MAPFIELD",
               typeFactory.createTypeWithNullability(
-                typeFactory.createMapType(nullableKeyType, nullableValueType), true))
+                typeFactory.createMapType(nullableVarcharType, nullableIntegerType), true))
           .add("NESTEDMAPFIELD", typeFactory
               .createTypeWithNullability(
-                  typeFactory.createMapType(nullableKeyType, nullableMapType), true))
+                  typeFactory.createMapType(nullableVarcharType, nullableMapType), true))
           .add("ARRAYFIELD", typeFactory
               .createTypeWithNullability(
-                  typeFactory.createArrayType(nullableValueType, -1L), true))
+                  typeFactory.createArrayType(nullableIntegerType, -1L), true))
+          .add("STRINGARRAYFIELD", typeFactory
+              .createTypeWithNullability(
+                  typeFactory.createArrayType(nullableVarcharType, -1L), true))
           .build();
     }
+
 
     public Statistic getStatistic() {
       return Statistics.UNKNOWN;
@@ -368,6 +405,16 @@ public class CollectionTypeTest {
           return nestedRecordsEnumerator();
         }
       };
+    }
+
+    @Override public boolean isRolledUp(String column) {
+      return false;
+    }
+
+    @Override public boolean rolledUpColumnValidInsideAgg(String column,
+                                                          SqlCall call, SqlNode parent,
+                                                          CalciteConnectionConfig config) {
+      return false;
     }
   }
 
@@ -380,6 +427,7 @@ public class CollectionTypeTest {
           .add("MAPFIELD", SqlTypeName.ANY)
           .add("NESTEDMAPFIELD", SqlTypeName.ANY)
           .add("ARRAYFIELD", SqlTypeName.ANY)
+          .add("STRINGARRAYFIELD", SqlTypeName.ANY)
           .build();
     }
 
@@ -397,6 +445,15 @@ public class CollectionTypeTest {
           return nestedRecordsEnumerator();
         }
       };
+    }
+
+    @Override public boolean isRolledUp(String column) {
+      return false;
+    }
+
+    @Override public boolean rolledUpColumnValidInsideAgg(String column,
+        SqlCall call, SqlNode parent, CalciteConnectionConfig config) {
+      return false;
     }
   }
 }

@@ -34,6 +34,7 @@ import org.apache.calcite.rel.logical.LogicalExchange;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalIntersect;
 import org.apache.calcite.rel.logical.LogicalJoin;
+import org.apache.calcite.rel.logical.LogicalMatch;
 import org.apache.calcite.rel.logical.LogicalMinus;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalSort;
@@ -45,24 +46,25 @@ import org.apache.calcite.schema.impl.StarTable;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.sql2rel.SqlRexConvertletTable;
 import org.apache.calcite.sql2rel.SqlToRelConverter;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Context for populating a {@link Prepare.Materialization}.
  */
 class CalciteMaterializer extends CalcitePrepareImpl.CalcitePreparingStmt {
-  public CalciteMaterializer(CalcitePrepareImpl prepare,
+  CalciteMaterializer(CalcitePrepareImpl prepare,
       CalcitePrepare.Context context,
       CatalogReader catalogReader, CalciteSchema schema,
-      RelOptPlanner planner) {
+      RelOptPlanner planner, SqlRexConvertletTable convertletTable) {
     super(prepare, context, catalogReader, catalogReader.getTypeFactory(),
-        schema,
-        EnumerableRel.Prefer.ANY, planner, BindableConvention.INSTANCE);
+        schema, EnumerableRel.Prefer.ANY, planner, BindableConvention.INSTANCE,
+        convertletTable);
   }
 
   /** Populates a materialization record, converting a table path
@@ -124,7 +126,7 @@ class CalciteMaterializer extends CalcitePrepareImpl.CalcitePreparingStmt {
       // Don't waste effort converting to leaf-join form.
       return ImmutableList.of();
     }
-    final List<Callback> list = Lists.newArrayList();
+    final List<Callback> list = new ArrayList<>();
     final RelNode rel2 =
         RelOptMaterialization.toLeafJoinForm(queryRel);
     for (CalciteSchema.TableEntry starTable : starTables) {
@@ -143,7 +145,7 @@ class CalciteMaterializer extends CalcitePrepareImpl.CalcitePreparingStmt {
   }
 
   /** Implementation of {@link RelShuttle} that returns each relational
-   * expression unchanged. It does not visit children. */
+   * expression unchanged. It does not visit inputs. */
   static class RelNullShuttle implements RelShuttle {
     public RelNode visit(TableScan scan) {
       return scan;
@@ -177,6 +179,9 @@ class CalciteMaterializer extends CalcitePrepareImpl.CalcitePreparingStmt {
     }
     public RelNode visit(LogicalAggregate aggregate) {
       return aggregate;
+    }
+    public RelNode visit(LogicalMatch match) {
+      return match;
     }
     public RelNode visit(LogicalSort sort) {
       return sort;

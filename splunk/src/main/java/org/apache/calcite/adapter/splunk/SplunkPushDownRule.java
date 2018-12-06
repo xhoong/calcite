@@ -22,6 +22,7 @@ import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
 import org.apache.calcite.plan.RelOptRuleOperand;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.type.RelDataType;
@@ -36,6 +37,7 @@ import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.tools.RelBuilderFactory;
 import org.apache.calcite.util.NlsString;
 import org.apache.calcite.util.Pair;
 
@@ -72,45 +74,44 @@ public class SplunkPushDownRule
 
   public static final SplunkPushDownRule PROJECT_ON_FILTER =
       new SplunkPushDownRule(
-          operand(
-              LogicalProject.class,
-              operand(
-                  LogicalFilter.class,
-                  operand(
-                      LogicalProject.class,
+          operand(LogicalProject.class,
+              operand(LogicalFilter.class,
+                  operand(LogicalProject.class,
                       operand(SplunkTableScan.class, none())))),
-          "proj on filter on proj");
+          RelFactories.LOGICAL_BUILDER, "proj on filter on proj");
 
   public static final SplunkPushDownRule FILTER_ON_PROJECT =
       new SplunkPushDownRule(
-          operand(
-              LogicalFilter.class,
-              operand(
-                  LogicalProject.class,
+          operand(LogicalFilter.class,
+              operand(LogicalProject.class,
                   operand(SplunkTableScan.class, none()))),
-          "filter on proj");
+          RelFactories.LOGICAL_BUILDER, "filter on proj");
 
   public static final SplunkPushDownRule FILTER =
       new SplunkPushDownRule(
-          operand(
-              LogicalFilter.class, operand(SplunkTableScan.class, none())),
-          "filter");
+          operand(LogicalFilter.class,
+              operand(SplunkTableScan.class, none())),
+          RelFactories.LOGICAL_BUILDER, "filter");
 
   public static final SplunkPushDownRule PROJECT =
       new SplunkPushDownRule(
-          operand(
-              LogicalProject.class,
+          operand(LogicalProject.class,
               operand(SplunkTableScan.class, none())),
-          "proj");
+          RelFactories.LOGICAL_BUILDER, "proj");
+
+  @Deprecated // to be removed before 2.0
+  protected SplunkPushDownRule(RelOptRuleOperand rule, String id) {
+    this(rule, RelFactories.LOGICAL_BUILDER, id);
+  }
 
   /** Creates a SplunkPushDownRule. */
-  protected SplunkPushDownRule(RelOptRuleOperand rule, String id) {
-    super(rule, "SplunkPushDownRule: " + id);
+  protected SplunkPushDownRule(RelOptRuleOperand rule,
+      RelBuilderFactory relBuilderFactory, String id) {
+    super(rule, relBuilderFactory, "SplunkPushDownRule: " + id);
   }
 
   // ~ Methods --------------------------------------------------------------
 
-  // implement RelOptRule
   public void onMatch(RelOptRuleCall call) {
     LOGGER.debug(description);
 
@@ -206,8 +207,7 @@ public class SplunkPushDownRule
 
     // handle bottom projection (ie choose a subset of the table fields)
     if (bottomProj != null) {
-      List<RelDataTypeField> tmp  =
-          new ArrayList<RelDataTypeField>();
+      List<RelDataTypeField> tmp  = new ArrayList<>();
       List<RelDataTypeField> dRow = bottomProj.getRowType().getFieldList();
       for (RexNode rn : bottomProj.getProjects()) {
         RelDataTypeField rdtf;
@@ -223,14 +223,13 @@ public class SplunkPushDownRule
     }
 
     // field renaming: to -> from
-    List<Pair<String, String>> renames =
-        new LinkedList<Pair<String, String>>();
+    List<Pair<String, String>> renames = new LinkedList<>();
 
     // handle top projection (ie reordering and renaming)
     List<RelDataTypeField> newFields = bottomFields;
     if (topProj != null) {
       LOGGER.debug("topProj: {}", String.valueOf(topProj.getPermutation()));
-      newFields = new ArrayList<RelDataTypeField>();
+      newFields = new ArrayList<>();
       int i = 0;
       for (RexNode rn : topProj.getProjects()) {
         RexInputRef rif = (RexInputRef) rn;
@@ -395,7 +394,7 @@ public class SplunkPushDownRule
     SqlTypeName litSqlType = literal.getTypeName();
     if (SqlTypeName.NUMERIC_TYPES.contains(litSqlType)) {
       value = literal.getValue().toString();
-    } else if (litSqlType.equals(SqlTypeName.CHAR)) {
+    } else if (litSqlType == SqlTypeName.CHAR) {
       value = ((NlsString) literal.getValue()).getValue();
       if (like) {
         value = value.replaceAll("%", "*");

@@ -20,11 +20,11 @@ import org.apache.calcite.adapter.java.ReflectiveSchema;
 import org.apache.calcite.avatica.util.DateTimeUtils;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.jdbc.CalciteConnection;
+import org.apache.calcite.jdbc.Driver;
 import org.apache.calcite.linq4j.Enumerable;
 import org.apache.calcite.linq4j.Linq4j;
 import org.apache.calcite.linq4j.QueryProvider;
 import org.apache.calcite.linq4j.function.Function1;
-import org.apache.calcite.linq4j.function.Predicate1;
 import org.apache.calcite.linq4j.tree.Expressions;
 import org.apache.calcite.linq4j.tree.ParameterExpression;
 import org.apache.calcite.linq4j.tree.Primitive;
@@ -36,8 +36,6 @@ import org.apache.calcite.schema.impl.ViewTable;
 import org.apache.calcite.util.Smalls;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Function;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 
 import org.junit.Assert;
@@ -58,10 +56,12 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Date;
 import java.util.List;
+import java.util.Properties;
 
 import static org.apache.calcite.test.JdbcTest.Employee;
 
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
@@ -102,14 +102,14 @@ public class ReflectiveSchemaTest {
                 "asQueryable"),
             Employee.class)
             .where(
-                Expressions.<Predicate1<Employee>>lambda(
+                Expressions.lambda(
                     Expressions.lessThan(
                         Expressions.field(
                             e, "empid"),
                         Expressions.constant(160)),
                     e))
             .where(
-                Expressions.<Predicate1<Employee>>lambda(
+                Expressions.lambda(
                     Expressions.greaterThan(
                         Expressions.field(
                             e, "empid"),
@@ -318,6 +318,92 @@ public class ReflectiveSchemaTest {
             "value=true");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testSelectWithFieldAccessOnFirstLevelRecordType() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"birthPlace\".\"city\" as city from \"bookstore\".\"authors\" au\n")
+        .returnsUnordered("CITY=Heraklion", "CITY=Besançon", "CITY=Ionia");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testSelectWithFieldAccessOnSecondLevelRecordType() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"birthPlace\".\"coords\".\"latitude\" as lat\n"
+            + "from \"bookstore\".\"authors\" au\n")
+        .returnsUnordered("LAT=47.24", "LAT=35.3387", "LAT=null");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testWhereWithFieldAccessOnFirstLevelRecordType() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"aid\" as aid from \"bookstore\".\"authors\" au\n"
+            + "where au.\"birthPlace\".\"city\"='Heraklion'")
+        .returnsUnordered("AID=2");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testWhereWithFieldAccessOnSecondLevelRecordType() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"aid\" as aid from \"bookstore\".\"authors\" au\n"
+            + "where au.\"birthPlace\".\"coords\".\"latitude\"=35.3387")
+        .returnsUnordered("AID=2");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testSelectWithFieldAccessOnFirstLevelRecordTypeArray() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"books\"[1].\"title\" as title from \"bookstore\".\"authors\" au\n")
+        .returnsUnordered("TITLE=Les Misérables", "TITLE=Zorba the Greek", "TITLE=null");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testSelectWithFieldAccessOnSecondLevelRecordTypeArray() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"books\"[1].\"pages\"[1].\"pageNo\" as pno\n"
+            + "from \"bookstore\".\"authors\" au\n")
+        .returnsUnordered("PNO=1", "PNO=1", "PNO=null");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testWhereWithFieldAccessOnFirstLevelRecordTypeArray() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"aid\" as aid from \"bookstore\".\"authors\" au\n"
+            + "where au.\"books\"[1].\"title\"='Les Misérables'")
+        .returnsUnordered("AID=1");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2404">[CALCITE-2404]
+   * Accessing structured-types is not implemented by the runtime</a>. */
+  @Test public void testWhereWithFieldAccessOnSecondLevelRecordTypeArray() {
+    CalciteAssert.that()
+        .with(CalciteAssert.SchemaSpec.BOOKSTORE)
+        .query("select au.\"aid\" as aid from \"bookstore\".\"authors\" au\n"
+            + "where au.\"books\"[1].\"pages\"[2].\"contentType\"='Acknowledgements'")
+        .returnsUnordered("AID=2");
+  }
+
   /** Tests columns based on types such as java.sql.Date and java.util.Date.
    *
    * @see CatchallSchema#everyTypes */
@@ -337,53 +423,50 @@ public class ReflectiveSchemaTest {
           "select " + fn + "(\"" + field.getName() + "\") as c\n"
               + "from \"s\".\"everyTypes\"")
           .returns(
-              new Function<ResultSet, Void>() {
-                public Void apply(ResultSet input) {
-                  int n = 0;
-                  try {
-                    while (input.next()) {
-                      final Object o = get(input);
-                      Util.discard(o);
-                      ++n;
-                    }
-                  } catch (SQLException e) {
-                    throw Throwables.propagate(e);
+              input -> {
+                int n = 0;
+                try {
+                  while (input.next()) {
+                    final Object o = get(input);
+                    Util.discard(o);
+                    ++n;
                   }
-                  assertThat(n, equalTo(1));
-                  return null;
+                } catch (SQLException e) {
+                  throw new RuntimeException(e);
                 }
-
-                private Object get(ResultSet input) throws SQLException {
-                  final int type = input.getMetaData().getColumnType(1);
-                  switch (type) {
-                  case java.sql.Types.BOOLEAN:
-                    return input.getBoolean(1);
-                  case java.sql.Types.TINYINT:
-                    return input.getByte(1);
-                  case java.sql.Types.SMALLINT:
-                    return input.getShort(1);
-                  case java.sql.Types.INTEGER:
-                    return input.getInt(1);
-                  case java.sql.Types.BIGINT:
-                    return input.getLong(1);
-                  case java.sql.Types.REAL:
-                    return input.getFloat(1);
-                  case java.sql.Types.DOUBLE:
-                    return input.getDouble(1);
-                  case java.sql.Types.CHAR:
-                  case java.sql.Types.VARCHAR:
-                    return input.getString(1);
-                  case java.sql.Types.DATE:
-                    return input.getDate(1);
-                  case java.sql.Types.TIME:
-                    return input.getTime(1);
-                  case java.sql.Types.TIMESTAMP:
-                    return input.getTimestamp(1);
-                  default:
-                    throw new AssertionError(type);
-                  }
-                }
+                assertThat(n, equalTo(1));
               });
+    }
+  }
+
+  private Object get(ResultSet input) throws SQLException {
+    final int type = input.getMetaData().getColumnType(1);
+    switch (type) {
+    case java.sql.Types.BOOLEAN:
+      return input.getBoolean(1);
+    case java.sql.Types.TINYINT:
+      return input.getByte(1);
+    case java.sql.Types.SMALLINT:
+      return input.getShort(1);
+    case java.sql.Types.INTEGER:
+      return input.getInt(1);
+    case java.sql.Types.BIGINT:
+      return input.getLong(1);
+    case java.sql.Types.REAL:
+      return input.getFloat(1);
+    case java.sql.Types.DOUBLE:
+      return input.getDouble(1);
+    case java.sql.Types.CHAR:
+    case java.sql.Types.VARCHAR:
+      return input.getString(1);
+    case java.sql.Types.DATE:
+      return input.getDate(1);
+    case java.sql.Types.TIME:
+      return input.getTime(1);
+    case java.sql.Types.TIMESTAMP:
+      return input.getTimestamp(1);
+    default:
+      throw new AssertionError(type);
     }
   }
 
@@ -391,49 +474,46 @@ public class ReflectiveSchemaTest {
     CalciteAssert.that()
         .withSchema("s", CATCHALL).query("select * from \"s\".\"everyTypes\"")
         .returns(
-            new Function<ResultSet, Void>() {
-              public Void apply(ResultSet input) {
-                try {
-                  final ResultSetMetaData metaData = input.getMetaData();
-                  check(metaData, "primitiveBoolean", Boolean.class);
-                  check(metaData, "primitiveByte", Byte.class);
-                  check(metaData, "primitiveChar", String.class);
-                  check(metaData, "primitiveShort", Short.class);
-                  check(metaData, "primitiveInt", Integer.class);
-                  check(metaData, "primitiveLong", Long.class);
-                  check(metaData, "primitiveFloat", Float.class);
-                  check(metaData, "primitiveDouble", Double.class);
-                  check(metaData, "wrapperBoolean", Boolean.class);
-                  check(metaData, "wrapperByte", Byte.class);
-                  check(metaData, "wrapperCharacter", String.class);
-                  check(metaData, "wrapperShort", Short.class);
-                  check(metaData, "wrapperInteger", Integer.class);
-                  check(metaData, "wrapperLong", Long.class);
-                  check(metaData, "wrapperFloat", Float.class);
-                  check(metaData, "wrapperDouble", Double.class);
-                  check(metaData, "sqlDate", java.sql.Date.class);
-                  check(metaData, "sqlTime", Time.class);
-                  check(metaData, "sqlTimestamp", Timestamp.class);
-                  check(metaData, "utilDate", Timestamp.class);
-                  check(metaData, "string", String.class);
-                  return null;
-                } catch (SQLException e) {
-                  throw new RuntimeException(e);
-                }
-              }
-
-              private void check(ResultSetMetaData metaData, String columnName,
-                  Class expectedType) throws SQLException {
-                for (int i = 1; i <= metaData.getColumnCount(); i++) {
-                  if (metaData.getColumnName(i).equals(columnName)) {
-                    assertThat(metaData.getColumnClassName(i),
-                        equalTo(expectedType.getName()));
-                    return;
-                  }
-                }
-                Assert.fail("column not found: " + columnName);
+            resultSet -> {
+              try {
+                final ResultSetMetaData metaData = resultSet.getMetaData();
+                check(metaData, "primitiveBoolean", Boolean.class);
+                check(metaData, "primitiveByte", Byte.class);
+                check(metaData, "primitiveChar", String.class);
+                check(metaData, "primitiveShort", Short.class);
+                check(metaData, "primitiveInt", Integer.class);
+                check(metaData, "primitiveLong", Long.class);
+                check(metaData, "primitiveFloat", Float.class);
+                check(metaData, "primitiveDouble", Double.class);
+                check(metaData, "wrapperBoolean", Boolean.class);
+                check(metaData, "wrapperByte", Byte.class);
+                check(metaData, "wrapperCharacter", String.class);
+                check(metaData, "wrapperShort", Short.class);
+                check(metaData, "wrapperInteger", Integer.class);
+                check(metaData, "wrapperLong", Long.class);
+                check(metaData, "wrapperFloat", Float.class);
+                check(metaData, "wrapperDouble", Double.class);
+                check(metaData, "sqlDate", java.sql.Date.class);
+                check(metaData, "sqlTime", Time.class);
+                check(metaData, "sqlTimestamp", Timestamp.class);
+                check(metaData, "utilDate", Timestamp.class);
+                check(metaData, "string", String.class);
+              } catch (SQLException e) {
+                throw new RuntimeException(e);
               }
             });
+  }
+
+  private void check(ResultSetMetaData metaData, String columnName,
+      Class expectedType) throws SQLException {
+    for (int i = 1; i <= metaData.getColumnCount(); i++) {
+      if (metaData.getColumnName(i).equals(columnName)) {
+        assertThat(metaData.getColumnClassName(i),
+            equalTo(expectedType.getName()));
+        return;
+      }
+    }
+    Assert.fail("column not found: " + columnName);
   }
 
   @Test public void testJavaBoolean() throws Exception {
@@ -551,7 +631,7 @@ public class ReflectiveSchemaTest {
             + " " + fn + " " + name2 + " as c\n"
             + "from \"s\".\"everyTypes\"\n"
             + "where " + name + " <> 0")
-            .returns(CalciteAssert.<ResultSet, Void>constantNull());
+            .returns(resultSet -> { });
       }
     }
   }
@@ -569,23 +649,19 @@ public class ReflectiveSchemaTest {
   @Test public void testAvgInt() throws Exception {
     CalciteAssert.that().withSchema("s", CATCHALL).with(Lex.JAVA)
         .query("select primitiveLong, avg(primitiveInt)\n"
-                + "from s.everyTypes\n"
-                + "group by primitiveLong order by primitiveLong")
-        .returns(
-            new Function<ResultSet, Void>() {
-              public Void apply(ResultSet input) {
-                StringBuilder buf = new StringBuilder();
-                try {
-                  while (input.next()) {
-                    buf.append(input.getInt(2)).append("\n");
-                  }
-                } catch (SQLException e) {
-                  throw Throwables.propagate(e);
-                }
-                assertThat(buf.toString(), equalTo("0\n2147483647\n"));
-                return null;
-              }
-            });
+            + "from s.everyTypes\n"
+            + "group by primitiveLong order by primitiveLong")
+        .returns(input -> {
+          StringBuilder buf = new StringBuilder();
+          try {
+            while (input.next()) {
+              buf.append(input.getInt(2)).append("\n");
+            }
+          } catch (SQLException e) {
+            throw new RuntimeException(e);
+          }
+          assertThat(buf.toString(), equalTo("0\n2147483647\n"));
+        });
   }
 
   private static boolean isNumeric(Class type) {
@@ -621,7 +697,7 @@ public class ReflectiveSchemaTest {
     // BitSet is not a valid relation type. It's as if "bitSet" field does
     // not exist.
     with.query("select * from \"s\".\"bitSet\"")
-        .throws_("Table 's.bitSet' not found");
+        .throws_("Object 'bitSet' not found within 's'");
     // Enumerable field returns 3 records with 0 fields
     with.query("select * from \"s\".\"enumerable\"")
         .returns("\n"
@@ -703,6 +779,48 @@ public class ReflectiveSchemaTest {
         .withSchema("s", CATCHALL)
         .query("select \"value\"*2 \"value\" from \"s\".\"primesCustomBoxed\"")
         .returnsUnordered("value=2", "value=6", "value=10");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-1569">[CALCITE-1569]
+   * Date condition can generates Integer == Integer, which is always
+   * false</a>. */
+  @Test public void testDateCanCompare() {
+    final String sql = "select a.v\n"
+        + "from (select \"sqlDate\" v\n"
+        + "  from \"s\".\"everyTypes\" "
+        + "  group by \"sqlDate\") a,"
+        + "    (select \"sqlDate\" v\n"
+        + "  from \"s\".\"everyTypes\"\n"
+        + "  group by \"sqlDate\") b\n"
+        + "where a.v >= b.v\n"
+        + "group by a.v";
+    CalciteAssert.that()
+        .withSchema("s", CATCHALL)
+        .query(sql)
+        .returnsUnordered("V=1970-01-01");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-281">[CALCITE-1919]
+   * NPE when target in ReflectiveSchema belongs to the unnamed package</a>. */
+  @Test public void testReflectiveSchemaInUnnamedPackage() throws Exception {
+    final Driver driver = new Driver();
+    try (CalciteConnection connection = (CalciteConnection)
+        driver.connect("jdbc:calcite:", new Properties())) {
+      SchemaPlus rootSchema = connection.getRootSchema();
+      final Class<?> c = Class.forName("RootHr");
+      final Object o = c.getDeclaredConstructor().newInstance();
+      rootSchema.add("hr", new ReflectiveSchema(o));
+      connection.setSchema("hr");
+      final Statement statement = connection.createStatement();
+      final String sql = "select * from \"emps\"";
+      final ResultSet resultSet = statement.executeQuery(sql);
+      final String expected = "empid=100; name=Bill\n"
+          + "empid=200; name=Eric\n"
+          + "empid=150; name=Sebastian\n";
+      assertThat(CalciteAssert.toString(resultSet), is(expected));
+    }
   }
 
   /** Extension to {@link Employee} with a {@code hireDate} column. */
@@ -792,12 +910,7 @@ public class ReflectiveSchemaTest {
 
     static Enumerable<Field> numericFields() {
       return fields()
-          .where(
-              new Predicate1<Field>() {
-                public boolean apply(Field v1) {
-                  return isNumeric(v1.getType());
-                }
-              });
+          .where(v1 -> isNumeric(v1.getType()));
     }
   }
 
@@ -836,17 +949,17 @@ public class ReflectiveSchemaTest {
     public final BitSet bitSet = new BitSet(1);
 
     public final EveryType[] everyTypes = {
-      new EveryType(
-          false, (byte) 0, (char) 0, (short) 0, 0, 0L, 0F, 0D,
-          false, (byte) 0, (char) 0, (short) 0, 0, 0L, 0F, 0D,
-          new java.sql.Date(0), new Time(0), new Timestamp(0),
-          new Date(0), "1"),
-      new EveryType(
-          true, Byte.MAX_VALUE, Character.MAX_VALUE, Short.MAX_VALUE,
-          Integer.MAX_VALUE, Long.MAX_VALUE, Float.MAX_VALUE,
-          Double.MAX_VALUE,
-          null, null, null, null, null, null, null, null,
-          null, null, null, null, null),
+        new EveryType(
+            false, (byte) 0, (char) 0, (short) 0, 0, 0L, 0F, 0D,
+            false, (byte) 0, (char) 0, (short) 0, 0, 0L, 0F, 0D,
+            new java.sql.Date(0), new Time(0), new Timestamp(0),
+            new Date(0), "1"),
+        new EveryType(
+            true, Byte.MAX_VALUE, Character.MAX_VALUE, Short.MAX_VALUE,
+            Integer.MAX_VALUE, Long.MAX_VALUE, Float.MAX_VALUE,
+            Double.MAX_VALUE,
+            null, null, null, null, null, null, null, null,
+            null, null, null, null, null),
     };
 
     public final AllPrivate[] allPrivates = { new AllPrivate() };
@@ -854,25 +967,25 @@ public class ReflectiveSchemaTest {
     public final BadType[] badTypes = { new BadType() };
 
     public final Employee[] prefixEmps = {
-      new Employee(1, 10, "A", 0f, null),
-      new Employee(2, 10, "Ab", 0f, null),
-      new Employee(3, 10, "Abc", 0f, null),
-      new Employee(4, 10, "Abd", 0f, null),
+        new Employee(1, 10, "A", 0f, null),
+        new Employee(2, 10, "Ab", 0f, null),
+        new Employee(3, 10, "Abc", 0f, null),
+        new Employee(4, 10, "Abd", 0f, null),
     };
 
-    public final Integer[] primesBoxed = new Integer[]{1, 3, 5};
+    public final Integer[] primesBoxed = {1, 3, 5};
 
-    public final int[] primes = new int[]{1, 3, 5};
+    public final int[] primes = {1, 3, 5};
 
     public final IntHolder[] primesCustomBoxed =
-        new IntHolder[]{new IntHolder(1), new IntHolder(3), new IntHolder(5)};
+        {new IntHolder(1), new IntHolder(3), new IntHolder(5)};
 
-    public final IntAndString[] nullables = new IntAndString[] {
-      new IntAndString(1, "A"), new IntAndString(2, "B"), new IntAndString(2, "C"),
-      new IntAndString(3, null)};
+    public final IntAndString[] nullables = {
+        new IntAndString(1, "A"), new IntAndString(2, "B"), new IntAndString(2, "C"),
+        new IntAndString(3, null)};
 
-    public final IntAndString[] bools = new IntAndString[] {
-      new IntAndString(1, "T"), new IntAndString(2, "F"), new IntAndString(3, null)};
+    public final IntAndString[] bools = {
+        new IntAndString(1, "T"), new IntAndString(2, "F"), new IntAndString(3, null)};
   }
 
   /**
@@ -889,12 +1002,22 @@ public class ReflectiveSchemaTest {
   /** Schema that contains a table with a date column. */
   public static class DateColumnSchema {
     public final EmployeeWithHireDate[] emps = {
-      new EmployeeWithHireDate(
-          10, 20, "fred", 0f, null, new java.sql.Date(0)), // 1970-1-1
-      new EmployeeWithHireDate(
+        new EmployeeWithHireDate(
+            10, 20, "fred", 0f, null, new java.sql.Date(0)), // 1970-1-1
+        new EmployeeWithHireDate(
             10, 20, "bill", 0f, null,
             new java.sql.Date(100 * DateTimeUtils.MILLIS_PER_DAY)) // 1970-04-11
     };
+  }
+
+  /** CALCITE-2611 unknown on one side of an or may lead to uncompilable code */
+  @Test
+  public void testUnknownInOr() {
+    CalciteAssert.that()
+        .withSchema("s", CATCHALL)
+        .query("select (\"value\" = 3 and unknown) or ( \"value\"  = 3 ) "
+            + "from \"s\".\"primesCustomBoxed\"")
+        .returnsUnordered("EXPR$0=false\nEXPR$0=false\nEXPR$0=true");
   }
 }
 

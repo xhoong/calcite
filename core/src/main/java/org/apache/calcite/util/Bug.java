@@ -40,13 +40,6 @@ package org.apache.calcite.util;
  * the fix is integrated into other branches, the constant will be removed from
  * those branches.</p>
  *
- * <p><b>To do</b></p>
- *
- * <p>The following is a list of tasks to be completed before committing to
- * master branch.</p>
- *
- * <ul>
- * </ul>
  */
 public abstract class Bug {
   //~ Static fields/initializers ---------------------------------------------
@@ -108,13 +101,6 @@ public abstract class Bug {
   public static final boolean FRG78_FIXED = false;
 
   /**
-   * Whether <a href="http://issues.eigenbase.org/browse/FRG-187">issue
-   * FRG-187: FarragoAutoVmOperatorTest.testOverlapsOperator fails</a> is
-   * fixed.
-   */
-  public static final boolean FRG187_FIXED = false;
-
-  /**
    * Whether <a href="http://issues.eigenbase.org/browse/FRG-189">issue
    * FRG-189: FarragoAutoVmOperatorTest.testSelect fails</a> is fixed.
    */
@@ -174,6 +160,23 @@ public abstract class Bug {
    * <a href="https://issues.apache.org/jira/browse/CALCITE-1045">[CALCITE-1045]
    * Decorrelate sub-queries in Project and Join</a> is fixed. */
   public static final boolean CALCITE_1045_FIXED = false;
+
+  /** Whether
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2400">[CALCITE-2400]
+   * Allow standards-compliant column ordering for NATURAL JOIN and JOIN USING
+   * when dynamic tables are used</a> is fixed. */
+  public static final boolean CALCITE_2400_FIXED = false;
+
+  /** Whether
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2401">[CALCITE-2401]
+   * Improve RelMdPredicates performance</a>
+   */
+  public static final boolean CALCITE_2401_FIXED = false;
+
+  /** Whether
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2539">[CALCITE-2539]
+   * Several test case not passed in CalciteSqlOperatorTest.java</a> is fixed. */
+  public static final boolean CALCITE_2539_FIXED = false;
 
   /**
    * Use this to flag temporary code.

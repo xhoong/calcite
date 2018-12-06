@@ -18,17 +18,17 @@ package org.apache.calcite.sql.type;
 
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypePrecedenceList;
+import org.apache.calcite.util.Glossary;
 import org.apache.calcite.util.ImmutableNullableList;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * SqlTypeExplicitPrecedenceList implements the
@@ -59,16 +59,15 @@ public class SqlTypeExplicitPrecedenceList
           SqlTypeName.DOUBLE);
 
   private static final List<SqlTypeName> COMPACT_NUMERIC_TYPES =
-      ImmutableList.copyOf(
-          Iterables.filter(NUMERIC_TYPES, Predicates.notNull()));
+      ImmutableList.copyOf(Util.filter(NUMERIC_TYPES, Objects::nonNull));
 
   /**
    * Map from SqlTypeName to corresponding precedence list.
    *
-   * @sql.2003 Part 2 Section 9.5
+   * @see Glossary#SQL2003 SQL:2003 Part 2 Section 9.5
    */
   private static final Map<SqlTypeName, SqlTypeExplicitPrecedenceList>
-  TYPE_NAME_TO_PRECEDENCE_LIST =
+      TYPE_NAME_TO_PRECEDENCE_LIST =
       ImmutableMap.<SqlTypeName, SqlTypeExplicitPrecedenceList>builder()
           .put(SqlTypeName.BOOLEAN, list(SqlTypeName.BOOLEAN))
           .put(SqlTypeName.TINYINT, numeric(SqlTypeName.TINYINT))
@@ -77,8 +76,8 @@ public class SqlTypeExplicitPrecedenceList
           .put(SqlTypeName.BIGINT, numeric(SqlTypeName.BIGINT))
           .put(SqlTypeName.DECIMAL, numeric(SqlTypeName.DECIMAL))
           .put(SqlTypeName.REAL, numeric(SqlTypeName.REAL))
-          .put(SqlTypeName.FLOAT, numeric(SqlTypeName.FLOAT))
-          .put(SqlTypeName.DOUBLE, numeric(SqlTypeName.DOUBLE))
+          .put(SqlTypeName.FLOAT, list(SqlTypeName.FLOAT, SqlTypeName.REAL, SqlTypeName.DOUBLE))
+          .put(SqlTypeName.DOUBLE, list(SqlTypeName.DOUBLE, SqlTypeName.DECIMAL))
           .put(SqlTypeName.CHAR, list(SqlTypeName.CHAR, SqlTypeName.VARCHAR))
           .put(SqlTypeName.VARCHAR, list(SqlTypeName.VARCHAR))
           .put(SqlTypeName.BINARY,
@@ -86,7 +85,8 @@ public class SqlTypeExplicitPrecedenceList
           .put(SqlTypeName.VARBINARY, list(SqlTypeName.VARBINARY))
           .put(SqlTypeName.DATE, list(SqlTypeName.DATE))
           .put(SqlTypeName.TIME, list(SqlTypeName.TIME))
-          .put(SqlTypeName.TIMESTAMP, list(SqlTypeName.TIMESTAMP))
+          .put(SqlTypeName.TIMESTAMP,
+              list(SqlTypeName.TIMESTAMP, SqlTypeName.DATE, SqlTypeName.TIME))
           .put(SqlTypeName.INTERVAL_YEAR,
               list(SqlTypeName.YEAR_INTERVAL_TYPES))
           .put(SqlTypeName.INTERVAL_YEAR_MONTH,
@@ -149,8 +149,8 @@ public class SqlTypeExplicitPrecedenceList
 
   // implement RelDataTypePrecedenceList
   public int compareTypePrecedence(RelDataType type1, RelDataType type2) {
-    assert containsType(type1);
-    assert containsType(type2);
+    assert containsType(type1) : type1;
+    assert containsType(type2) : type2;
 
     int p1 =
         getListPosition(

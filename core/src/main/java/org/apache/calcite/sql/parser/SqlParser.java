@@ -22,33 +22,36 @@ import org.apache.calcite.config.Lex;
 import org.apache.calcite.runtime.CalciteContextException;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.parser.impl.SqlParserImpl;
+import org.apache.calcite.sql.validate.SqlConformance;
+import org.apache.calcite.sql.validate.SqlConformanceEnum;
+import org.apache.calcite.sql.validate.SqlDelegatingConformance;
+import org.apache.calcite.util.SourceStringReader;
 
-import com.google.common.base.Preconditions;
-
+import java.io.Reader;
 import java.io.StringReader;
+import java.util.Objects;
 
 /**
  * A <code>SqlParser</code> parses a SQL statement.
  */
 public class SqlParser {
   public static final int DEFAULT_IDENTIFIER_MAX_LENGTH = 128;
-  public static final boolean DEFAULT_ALLOW_BANG_EQUAL = false;
+  @Deprecated // to be removed before 2.0
+  public static final boolean DEFAULT_ALLOW_BANG_EQUAL =
+      SqlConformanceEnum.DEFAULT.isBangEqualAllowed();
 
   //~ Instance fields --------------------------------------------------------
   private final SqlAbstractParserImpl parser;
-  private final String originalInput;
 
   //~ Constructors -----------------------------------------------------------
-  private SqlParser(String s, SqlAbstractParserImpl parser,
+  private SqlParser(SqlAbstractParserImpl parser,
       Config config) {
-    this.originalInput = s;
     this.parser = parser;
-    parser.setOriginalSql(s);
     parser.setTabSize(1);
     parser.setQuotedCasing(config.quotedCasing());
     parser.setUnquotedCasing(config.unquotedCasing());
     parser.setIdentifierMaxLength(config.identifierMaxLength());
-    parser.setAllowBangEqual(config.allowBangEqual());
+    parser.setConformance(config.conformance());
     switch (config.quoting()) {
     case DOUBLE_QUOTE:
       parser.switchTo("DQID");
@@ -84,15 +87,33 @@ public class SqlParser {
    * parser implementation created from given {@link SqlParserImplFactory}
    * with given quoting syntax and casing policies for identifiers.
    *
-   * @param sql A SQL statement or expression to parse.
+   * @param sql A SQL statement or expression to parse
    * @param config The parser configuration (identifier max length, etc.)
    * @return A parser
    */
   public static SqlParser create(String sql, Config config) {
-    SqlAbstractParserImpl parser =
-        config.parserFactory().getParser(new StringReader(sql));
+    return create(new SourceStringReader(sql), config);
+  }
 
-    return new SqlParser(sql, parser, config);
+  /**
+   * Creates a <code>SqlParser</code> to parse the given string using the
+   * parser implementation created from given {@link SqlParserImplFactory}
+   * with given quoting syntax and casing policies for identifiers.
+   *
+   * <p>Unlike
+   * {@link #create(java.lang.String, org.apache.calcite.sql.parser.SqlParser.Config)},
+   * the parser is not able to return the original query string, but will
+   * instead return "?".
+   *
+   * @param reader The source for the SQL statement or expression to parse
+   * @param config The parser configuration (identifier max length, etc.)
+   * @return A parser
+   */
+  public static SqlParser create(Reader reader, Config config) {
+    SqlAbstractParserImpl parser =
+        config.parserFactory().getParser(reader);
+
+    return new SqlParser(parser, config);
   }
 
   /**
@@ -104,10 +125,11 @@ public class SqlParser {
     try {
       return parser.parseSqlExpressionEof();
     } catch (Throwable ex) {
-      if ((ex instanceof CalciteContextException)
-          && (originalInput != null)) {
-        ((CalciteContextException) ex).setOriginalStatement(
-            originalInput);
+      if (ex instanceof CalciteContextException) {
+        final String originalSql = parser.getOriginalSql();
+        if (originalSql != null) {
+          ((CalciteContextException) ex).setOriginalStatement(originalSql);
+        }
       }
       throw parser.normalizeException(ex);
     }
@@ -125,10 +147,11 @@ public class SqlParser {
     try {
       return parser.parseSqlStmtEof();
     } catch (Throwable ex) {
-      if ((ex instanceof CalciteContextException)
-          && (originalInput != null)) {
-        ((CalciteContextException) ex).setOriginalStatement(
-            originalInput);
+      if (ex instanceof CalciteContextException) {
+        final String originalSql = parser.getOriginalSql();
+        if (originalSql != null) {
+          ((CalciteContextException) ex).setOriginalStatement(originalSql);
+        }
       }
       throw parser.normalizeException(ex);
     }
@@ -196,6 +219,8 @@ public class SqlParser {
     Casing unquotedCasing();
     Quoting quoting();
     boolean caseSensitive();
+    SqlConformance conformance();
+    @Deprecated // to be removed before 2.0
     boolean allowBangEqual();
     SqlParserImplFactory parserFactory();
   }
@@ -207,7 +232,7 @@ public class SqlParser {
     private Quoting quoting = Lex.ORACLE.quoting;
     private int identifierMaxLength = DEFAULT_IDENTIFIER_MAX_LENGTH;
     private boolean caseSensitive = Lex.ORACLE.caseSensitive;
-    private boolean allowBangEqual = DEFAULT_ALLOW_BANG_EQUAL;
+    private SqlConformance conformance = SqlConformanceEnum.DEFAULT;
     private SqlParserImplFactory parserFactory = SqlParserImpl.FACTORY;
 
     private ConfigBuilder() {}
@@ -218,23 +243,23 @@ public class SqlParser {
       this.unquotedCasing = config.unquotedCasing();
       this.quoting = config.quoting();
       this.identifierMaxLength = config.identifierMaxLength();
-      this.allowBangEqual = config.allowBangEqual();
+      this.conformance = config.conformance();
       this.parserFactory = config.parserFactory();
       return this;
     }
 
     public ConfigBuilder setQuotedCasing(Casing quotedCasing) {
-      this.quotedCasing = Preconditions.checkNotNull(quotedCasing);
+      this.quotedCasing = Objects.requireNonNull(quotedCasing);
       return this;
     }
 
     public ConfigBuilder setUnquotedCasing(Casing unquotedCasing) {
-      this.unquotedCasing = Preconditions.checkNotNull(unquotedCasing);
+      this.unquotedCasing = Objects.requireNonNull(unquotedCasing);
       return this;
     }
 
     public ConfigBuilder setQuoting(Quoting quoting) {
-      this.quoting = Preconditions.checkNotNull(quoting);
+      this.quoting = Objects.requireNonNull(quoting);
       return this;
     }
 
@@ -248,13 +273,27 @@ public class SqlParser {
       return this;
     }
 
-    public ConfigBuilder setAllowBangEqual(boolean allowBangEqual) {
-      this.allowBangEqual = allowBangEqual;
+    @SuppressWarnings("unused")
+    @Deprecated // to be removed before 2.0
+    public ConfigBuilder setAllowBangEqual(final boolean allowBangEqual) {
+      if (allowBangEqual != conformance.isBangEqualAllowed()) {
+        setConformance(
+            new SqlDelegatingConformance(conformance) {
+              @Override public boolean isBangEqualAllowed() {
+                return allowBangEqual;
+              }
+            });
+      }
+      return this;
+    }
+
+    public ConfigBuilder setConformance(SqlConformance conformance) {
+      this.conformance = conformance;
       return this;
     }
 
     public ConfigBuilder setParserFactory(SqlParserImplFactory factory) {
-      this.parserFactory = Preconditions.checkNotNull(factory);
+      this.parserFactory = Objects.requireNonNull(factory);
       return this;
     }
 
@@ -270,8 +309,9 @@ public class SqlParser {
      * {@link Config}. */
     public Config build() {
       return new ConfigImpl(identifierMaxLength, quotedCasing, unquotedCasing,
-          quoting, caseSensitive, allowBangEqual, parserFactory);
+          quoting, caseSensitive, conformance, parserFactory);
     }
+
   }
 
   /** Implementation of
@@ -280,7 +320,7 @@ public class SqlParser {
   private static class ConfigImpl implements Config {
     private final int identifierMaxLength;
     private final boolean caseSensitive;
-    private final boolean allowBangEqual;
+    private final SqlConformance conformance;
     private final Casing quotedCasing;
     private final Casing unquotedCasing;
     private final Quoting quoting;
@@ -288,14 +328,14 @@ public class SqlParser {
 
     private ConfigImpl(int identifierMaxLength, Casing quotedCasing,
         Casing unquotedCasing, Quoting quoting, boolean caseSensitive,
-        boolean allowBangEqual, SqlParserImplFactory parserFactory) {
+        SqlConformance conformance, SqlParserImplFactory parserFactory) {
       this.identifierMaxLength = identifierMaxLength;
       this.caseSensitive = caseSensitive;
-      this.allowBangEqual = allowBangEqual;
-      this.quotedCasing = Preconditions.checkNotNull(quotedCasing);
-      this.unquotedCasing = Preconditions.checkNotNull(unquotedCasing);
-      this.quoting = Preconditions.checkNotNull(quoting);
-      this.parserFactory = Preconditions.checkNotNull(parserFactory);
+      this.conformance = Objects.requireNonNull(conformance);
+      this.quotedCasing = Objects.requireNonNull(quotedCasing);
+      this.unquotedCasing = Objects.requireNonNull(unquotedCasing);
+      this.quoting = Objects.requireNonNull(quoting);
+      this.parserFactory = Objects.requireNonNull(parserFactory);
     }
 
     public int identifierMaxLength() {
@@ -318,8 +358,12 @@ public class SqlParser {
       return caseSensitive;
     }
 
+    public SqlConformance conformance() {
+      return conformance;
+    }
+
     public boolean allowBangEqual() {
-      return allowBangEqual;
+      return conformance.isBangEqualAllowed();
     }
 
     public SqlParserImplFactory parserFactory() {

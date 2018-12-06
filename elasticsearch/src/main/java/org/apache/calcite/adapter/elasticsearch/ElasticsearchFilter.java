@@ -31,23 +31,28 @@ import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.JsonBuilder;
 import org.apache.calcite.util.Pair;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Objects;
 
 /**
  * Implementation of a {@link org.apache.calcite.rel.core.Filter}
  * relational expression in Elasticsearch.
  */
 public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
-  public ElasticsearchFilter(RelOptCluster cluster, RelTraitSet traitSet, RelNode child,
+  ElasticsearchFilter(RelOptCluster cluster, RelTraitSet traitSet, RelNode child,
       RexNode condition) {
     super(cluster, traitSet, child, condition);
     assert getConvention() == ElasticsearchRel.CONVENTION;
@@ -64,10 +69,38 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
 
   @Override public void implement(Implementor implementor) {
     implementor.visitChild(0, getInput());
-    Translator translator = new Translator(ElasticsearchRules
-      .elasticsearchFieldNames(getRowType()));
-    String match = translator.translateMatch(condition);
-    implementor.add(match);
+    ObjectMapper mapper = implementor.elasticsearchTable.mapper;
+    PredicateAnalyzerTranslator translator = new PredicateAnalyzerTranslator(mapper);
+    try {
+      implementor.add(translator.translateMatch(condition));
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    } catch (PredicateAnalyzer.ExpressionNotAnalyzableException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  /**
+   * New version of translator which uses visitor pattern
+   * and allow to process more complex (boolean) predicates.
+   */
+  static class PredicateAnalyzerTranslator {
+    private final ObjectMapper mapper;
+
+    PredicateAnalyzerTranslator(final ObjectMapper mapper) {
+      this.mapper = Objects.requireNonNull(mapper, "mapper");
+    }
+
+    String translateMatch(RexNode condition) throws IOException,
+        PredicateAnalyzer.ExpressionNotAnalyzableException {
+
+      StringWriter writer = new StringWriter();
+      JsonGenerator generator = mapper.getFactory().createGenerator(writer);
+      QueryBuilders.constantScoreQuery(PredicateAnalyzer.analyze(condition)).writeJson(generator);
+      generator.flush();
+      generator.close();
+      return "{\"query\" : " + writer.toString() + "}";
+    }
   }
 
   /**
@@ -76,7 +109,7 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
   static class Translator {
     final JsonBuilder builder = new JsonBuilder();
     final Multimap<String, Pair<String, RexLiteral>> multimap =
-      HashMultimap.create();
+        HashMultimap.create();
     final Map<String, RexLiteral> eqMap = new LinkedHashMap<>();
     private final List<String> fieldNames;
 
@@ -93,7 +126,7 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
       final Map<String, Object> map = builder.map();
       map.put("constant_score", filterMap);
 
-      return "\"query\" : " + builder.toJsonString(map).replaceAll("\\s+", "").toLowerCase();
+      return "\"query\" : " + builder.toJsonString(map).replaceAll("\\s+", "");
     }
 
     private Object translateOr(RexNode condition) {
@@ -139,6 +172,9 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
     /**
      * Translates a condition that may be an AND of other conditions. Gathers
      * together conditions that apply to the same field.
+     *
+     * @param node0 expression node
+     * @return list of elastic search term filters
      */
     private List<Map<String, Object>> translateAnd(RexNode node0) {
       eqMap.clear();
@@ -158,7 +194,7 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
         filters.add(map);
       }
       for (Map.Entry<String, Collection<Pair<String, RexLiteral>>> entry
-        : multimap.asMap().entrySet()) {
+          : multimap.asMap().entrySet()) {
         Map<String, Object> map2 = builder.map();
 
         Map<String, Object> map = new HashMap<>();
@@ -225,6 +261,10 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
     /**
      * Translates a call to a binary operator, reversing arguments if
      * necessary.
+     * @param op operation
+     * @param rop opposite operation of {@code op}
+     * @param call current relational call
+     * @return result can be ignored
      */
     private Void translateBinary(String op, String rop, RexCall call) {
       final RexNode left = call.operands.get(0);
@@ -242,6 +282,10 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
 
     /**
      * Translates a call to a binary operator. Returns whether successful.
+     * @param op operation
+     * @param left left node of the expression
+     * @param right right node of the expression
+     * @return {@code true} if translation happened, {@code false} otherwise
      */
     private boolean translateBinary2(String op, RexNode left, RexNode right) {
       switch (right.getKind()) {

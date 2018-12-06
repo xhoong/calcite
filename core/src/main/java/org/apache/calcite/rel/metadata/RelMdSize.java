@@ -43,8 +43,8 @@ import org.apache.calcite.util.NlsString;
 import org.apache.calcite.util.Pair;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -88,7 +88,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     if (averageColumnSizes == null) {
       return null;
     }
-    Double d = 0d;
+    double d = 0d;
     final List<RelDataTypeField> fields = rel.getRowType().getFieldList();
     for (Pair<Double, RelDataTypeField> p
         : Pair.zip(averageColumnSizes, fields)) {
@@ -145,7 +145,8 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
       } else {
         d = 0;
         for (ImmutableList<RexLiteral> literals : rel.getTuples()) {
-          d += typeValueSize(field.getType(), literals.get(i).getValue());
+          d += typeValueSize(field.getType(),
+              literals.get(i).getValueAs(Comparable.class));
         }
         d /= rel.getTuples().size();
       }
@@ -218,7 +219,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
 
   public List<Double> averageColumnSizes(Union rel, RelMetadataQuery mq) {
     final int fieldCount = rel.getRowType().getFieldCount();
-    List<List<Double>> inputColumnSizeList = Lists.newArrayList();
+    List<List<Double>> inputColumnSizeList = new ArrayList<>();
     for (RelNode input : rel.getInputs()) {
       final List<Double> inputSizes = mq.getAverageColumnSizes(input);
       if (inputSizes != null) {
@@ -280,6 +281,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     case DECIMAL:
     case DATE:
     case TIME:
+    case TIME_WITH_LOCAL_TIME_ZONE:
     case INTERVAL_YEAR:
     case INTERVAL_YEAR_MONTH:
     case INTERVAL_MONTH:
@@ -288,6 +290,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     case DOUBLE:
     case FLOAT: // sic
     case TIMESTAMP:
+    case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
     case INTERVAL_DAY:
     case INTERVAL_DAY_HOUR:
     case INTERVAL_DAY_MINUTE:
@@ -309,7 +312,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
       // Even in large (say VARCHAR(2000)) columns most strings are small
       return Math.min((double) type.getPrecision() * BYTES_PER_CHARACTER, 100d);
     case ROW:
-      Double average = 0.0;
+      double average = 0.0;
       for (RelDataTypeField field : type.getFieldList()) {
         average += averageTypeValueSize(field.getType());
       }
@@ -338,6 +341,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     case REAL:
     case DATE:
     case TIME:
+    case TIME_WITH_LOCAL_TIME_ZONE:
     case INTERVAL_YEAR:
     case INTERVAL_YEAR_MONTH:
     case INTERVAL_MONTH:
@@ -345,6 +349,7 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     case BIGINT:
     case DOUBLE:
     case TIMESTAMP:
+    case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
     case INTERVAL_DAY:
     case INTERVAL_DAY_HOUR:
     case INTERVAL_DAY_MINUTE:
@@ -372,7 +377,8 @@ public class RelMdSize implements MetadataHandler<BuiltInMetadata.Size> {
     case INPUT_REF:
       return inputColumnSizes.get(((RexInputRef) node).getIndex());
     case LITERAL:
-      return typeValueSize(node.getType(), ((RexLiteral) node).getValue());
+      return typeValueSize(node.getType(),
+          ((RexLiteral) node).getValueAs(Comparable.class));
     default:
       if (node instanceof RexCall) {
         RexCall call = (RexCall) node;

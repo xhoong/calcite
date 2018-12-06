@@ -26,6 +26,7 @@ import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexBuilder;
+import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.tools.RelBuilder;
@@ -50,7 +51,7 @@ public class UnionPullUpConstantsRule extends RelOptRule {
       new UnionPullUpConstantsRule(Union.class, RelFactories.LOGICAL_BUILDER);
 
   /** Creates a UnionPullUpConstantsRule. */
-  protected UnionPullUpConstantsRule(Class<? extends Union> unionClass,
+  public UnionPullUpConstantsRule(Class<? extends Union> unionClass,
       RelBuilderFactory relBuilderFactory) {
     super(operand(unionClass, any()), relBuilderFactory, null);
   }
@@ -67,20 +68,16 @@ public class UnionPullUpConstantsRule extends RelOptRule {
     }
 
     final RexBuilder rexBuilder = union.getCluster().getRexBuilder();
-    final RelMetadataQuery mq = RelMetadataQuery.instance();
+    final RelMetadataQuery mq = call.getMetadataQuery();
     final RelOptPredicateList predicates = mq.getPulledUpPredicates(union);
     if (predicates == null) {
       return;
     }
 
-    Map<RexNode, RexNode> conditionsExtracted =
-        ReduceExpressionsRule.predicateConstants(RexNode.class, rexBuilder,
-            predicates);
-    Map<RexNode, RexNode> constants = new HashMap<>();
-    for (int i = 0; i < count; i++) {
-      RexNode expr = rexBuilder.makeInputRef(union, i);
-      if (conditionsExtracted.containsKey(expr)) {
-        constants.put(expr, conditionsExtracted.get(expr));
+    final Map<Integer, RexNode> constants = new HashMap<>();
+    for (Map.Entry<RexNode, RexNode> e : predicates.constantMap.entrySet()) {
+      if (e.getKey() instanceof RexInputRef) {
+        constants.put(((RexInputRef) e.getKey()).getIndex(), e.getValue());
       }
     }
 
@@ -95,17 +92,17 @@ public class UnionPullUpConstantsRule extends RelOptRule {
     List<String> topChildExprsFields = new ArrayList<>();
     List<RexNode> refs = new ArrayList<>();
     ImmutableBitSet.Builder refsIndexBuilder = ImmutableBitSet.builder();
-    for (int i = 0; i < count; i++) {
-      RexNode expr = rexBuilder.makeInputRef(union, i);
-      RelDataTypeField field = fields.get(i);
-      if (constants.containsKey(expr)) {
-        topChildExprs.add(constants.get(expr));
+    for (RelDataTypeField field : fields) {
+      final RexNode constant = constants.get(field.getIndex());
+      if (constant != null) {
+        topChildExprs.add(constant);
         topChildExprsFields.add(field.getName());
       } else {
+        final RexNode expr = rexBuilder.makeInputRef(union, field.getIndex());
         topChildExprs.add(expr);
         topChildExprsFields.add(field.getName());
         refs.add(expr);
-        refsIndexBuilder.set(i);
+        refsIndexBuilder.set(field.getIndex());
       }
     }
     ImmutableBitSet refsIndex = refsIndexBuilder.build();
@@ -121,7 +118,7 @@ public class UnionPullUpConstantsRule extends RelOptRule {
       List<Pair<RexNode, String>> newChildExprs = new ArrayList<>();
       for (int j : refsIndex) {
         newChildExprs.add(
-            Pair.<RexNode, String>of(rexBuilder.makeInputRef(input, j),
+            Pair.of(rexBuilder.makeInputRef(input, j),
                 input.getRowType().getFieldList().get(j).getName()));
       }
       if (newChildExprs.isEmpty()) {

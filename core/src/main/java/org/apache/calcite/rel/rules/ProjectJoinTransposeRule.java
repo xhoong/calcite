@@ -38,8 +38,7 @@ import java.util.List;
  */
 public class ProjectJoinTransposeRule extends RelOptRule {
   public static final ProjectJoinTransposeRule INSTANCE =
-      new ProjectJoinTransposeRule(
-          PushProjector.ExprCondition.FALSE,
+      new ProjectJoinTransposeRule(expr -> true,
           RelFactories.LOGICAL_BUILDER);
 
   //~ Instance fields --------------------------------------------------------
@@ -87,7 +86,7 @@ public class ProjectJoinTransposeRule extends RelOptRule {
             join.getCondition(),
             join,
             preserveExprCondition,
-            relBuilderFactory.create(origProj.getCluster(), null));
+            call.builder());
     if (pushProject.locateAllRefs()) {
       return;
     }
@@ -109,8 +108,7 @@ public class ProjectJoinTransposeRule extends RelOptRule {
     RexNode newJoinFilter = null;
     int[] adjustments = pushProject.getAdjustments();
     if (join.getCondition() != null) {
-      List<RelDataTypeField> projJoinFieldList =
-          new ArrayList<RelDataTypeField>();
+      List<RelDataTypeField> projJoinFieldList = new ArrayList<>();
       projJoinFieldList.addAll(
           join.getSystemFieldList());
       projJoinFieldList.addAll(

@@ -82,7 +82,7 @@ public class JdbcToSparkConverter
     }
     final Expression sqlLiteral =
         list.append("sql", Expressions.constant(sql));
-    final List<Primitive> primitives = new ArrayList<Primitive>();
+    final List<Primitive> primitives = new ArrayList<>();
     for (int i = 0; i < getRowType().getFieldCount(); i++) {
       final Primitive primitive = Primitive.ofBoxOr(physType.fieldClass(i));
       primitives.add(primitive != null ? primitive : Primitive.OTHER);
@@ -90,7 +90,7 @@ public class JdbcToSparkConverter
     final Expression primitivesLiteral =
         list.append("primitives",
             Expressions.constant(
-                primitives.toArray(new Primitive[primitives.size()])));
+                primitives.toArray(new Primitive[0])));
     final Expression enumerable =
         list.append(
             "enumerable",
@@ -114,7 +114,7 @@ public class JdbcToSparkConverter
             (JavaTypeFactory) getCluster().getTypeFactory());
     final JdbcImplementor.Result result =
         jdbcImplementor.visitChild(0, getInput());
-    return result.asQuery().toSqlString(dialect).getSql();
+    return result.asStatement().toSqlString(dialect).getSql();
   }
 }
 

@@ -20,7 +20,7 @@ limitations under the License.
   <parent>
     <groupId>org.apache.calcite</groupId>
     <artifactId>calcite</artifactId>
-    <version>1.10.0-SNAPSHOT</version>
+    <version>1.18.0-SNAPSHOT</version>
   </parent>
 
   <properties>
@@ -30,13 +30,6 @@ limitations under the License.
   <artifactId>calcite-ubenchmark</artifactId>
   <name>Calcite Ubenchmark</name>
   <description>Microbenchmarks for Calcite</description>
-
-  <repositories>
-    <repository>
-      <id>maven-central</id>
-      <url>http://repo1.maven.org/maven2</url>
-    </repository>
-  </repositories>
 
   <dependencies>
     <!-- Sorted by groupId, artifactId; calcite dependencies first. Put versions
@@ -78,13 +71,6 @@ limitations under the License.
             <phase>validate</phase>
           </execution>
         </executions>
-      </plugin>
-      <plugin>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <configuration>
-          <source>1.6</source>
-          <target>1.6</target>
-        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -142,6 +128,15 @@ limitations under the License.
                 <ignoredUnusedDeclaredDependency>org.openjdk.jmh:jmh-generator-annprocess</ignoredUnusedDeclaredDependency>
               </ignoredUnusedDeclaredDependencies>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.owasp</groupId>
+        <artifactId>dependency-check-maven</artifactId>
+        <executions>
+          <execution>
+            <phase>none</phase>
           </execution>
         </executions>
       </plugin>
