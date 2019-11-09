@@ -39,6 +39,13 @@ on your site.
 
 ![Powered By]({{ site.baseurl }}/img/pb-calcite-240.png)
 
+### Alibaba MaxCompute
+
+<a href="https://www.alibabacloud.com">Alibaba</a>'s
+<a href="https://www.alibabacloud.com/product/maxcompute">MaxCompute</a>
+big data computing and storage platform
+uses Calcite for cost-based query optimization.
+
 ### Apache Apex
 
 <a href="https://apex.apache.org">Apache Apex</a>
@@ -112,9 +119,9 @@ is a distributed JVM-Embeddable Database built on top of
 <a href="https://bookkeeper.apache.org/">Apache BookKeeper</a>.
 It uses Calcite as its SQL Planner.
 
-### MapD
+### OmniSci
 
-<a href="https://www.mapd.com">MapD</a>
+<a href="https://www.omnisci.com">OmniSci</a>
 is a GPU-powered database and visual analytics platform for
 interactive exploration of large datasets.
 

@@ -48,7 +48,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-import static org.apache.calcite.adapter.enumerable.EnumUtils.javaRowClass;
 import static org.apache.calcite.adapter.enumerable.EnumUtils.overridingMethodDecl;
 
 /** Implementation of {@link PhysType}. */
@@ -70,7 +69,8 @@ public class PhysTypeImpl implements PhysType {
     this.javaRowClass = javaRowClass;
     this.format = format;
     for (RelDataTypeField field : rowType.getFieldList()) {
-      fieldClasses.add(javaRowClass(typeFactory, field.getType()));
+      Type fieldType = typeFactory.getJavaClass(field.getType());
+      fieldClasses.add(fieldType instanceof Class ? (Class) fieldType : Object[].class);
     }
   }
 
@@ -219,9 +219,9 @@ public class PhysTypeImpl implements PhysType {
     final List<Expression> expressions = new ArrayList<>();
     for (int field : argList) {
       expressions.add(
-          Types.castIfNecessary(
-              fieldClass(field),
-              fieldReference(v1, field)));
+          RexToLixTranslator.convert(
+              fieldReference(v1, field),
+              fieldClass(field)));
     }
     return expressions;
   }
@@ -235,16 +235,32 @@ public class PhysTypeImpl implements PhysType {
         Primitive.box(javaRowClass), format);
   }
 
+  @SuppressWarnings("deprecation")
   public Expression convertTo(Expression exp, PhysType targetPhysType) {
-    final JavaRowFormat targetFormat = targetPhysType.getFormat();
+    return convertTo(exp, targetPhysType.getFormat());
+  }
+
+  public Expression convertTo(Expression exp, JavaRowFormat targetFormat) {
     if (format == targetFormat) {
       return exp;
     }
     final ParameterExpression o_ =
         Expressions.parameter(javaRowClass, "o");
     final int fieldCount = rowType.getFieldCount();
-    return Expressions.call(exp, BuiltInMethod.SELECT.method,
-        generateSelector(o_, Util.range(fieldCount), targetFormat));
+    // The conversion must be strict so optimizations of the targetFormat should not be performed
+    // by the code that follows. If necessary the target format can be optimized before calling
+    // this method.
+    PhysType targetPhysType = PhysTypeImpl.of(typeFactory, rowType, targetFormat, false);
+    final Expression selector;
+    switch (targetPhysType.getFormat()) {
+    case SCALAR:
+      selector = Expressions.call(BuiltInMethod.IDENTITY_SELECTOR.method);
+      break;
+    default:
+      selector = Expressions.lambda(Function1.class,
+          targetPhysType.record(fieldReferences(o_, Util.range(fieldCount))), o_);
+    }
+    return Expressions.call(exp, BuiltInMethod.SELECT.method, selector);
   }
 
   public Pair<Expression, Expression> generateCollationKey(
@@ -292,8 +308,8 @@ public class PhysTypeImpl implements PhysType {
       Expression arg1 = fieldReference(parameterV1, index);
       switch (Primitive.flavor(fieldClass(index))) {
       case OBJECT:
-        arg0 = Types.castIfNecessary(Comparable.class, arg0);
-        arg1 = Types.castIfNecessary(Comparable.class, arg1);
+        arg0 = RexToLixTranslator.convert(arg0, Comparable.class);
+        arg1 = RexToLixTranslator.convert(arg1, Comparable.class);
       }
       final boolean nullsFirst =
           collation.nullDirection
@@ -391,8 +407,8 @@ public class PhysTypeImpl implements PhysType {
       Expression arg1 = fieldReference(parameterV1, index);
       switch (Primitive.flavor(fieldClass(index))) {
       case OBJECT:
-        arg0 = Types.castIfNecessary(Comparable.class, arg0);
-        arg1 = Types.castIfNecessary(Comparable.class, arg1);
+        arg0 = RexToLixTranslator.convert(arg0, Comparable.class);
+        arg1 = RexToLixTranslator.convert(arg1, Comparable.class);
       }
       final boolean nullsFirst =
           fieldCollation.nullDirection
@@ -550,9 +566,9 @@ public class PhysTypeImpl implements PhysType {
       // }
       Class returnType = fieldClasses.get(field0);
       Expression fieldReference =
-          Types.castIfNecessary(
-              returnType,
-              fieldReference(v1, field0));
+          RexToLixTranslator.convert(
+              fieldReference(v1, field0),
+              returnType);
       return Expressions.lambda(
           Function1.class,
           fieldReference,

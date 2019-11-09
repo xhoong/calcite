@@ -23,6 +23,7 @@ import org.apache.calcite.linq4j.tree.Primitive;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Util functions which convert
@@ -39,8 +40,26 @@ class ElasticsearchEnumerators {
 
   private static Function1<ElasticsearchJson.SearchHit, Object> singletonGetter(
       final String fieldName,
-      final Class fieldClass) {
-    return hits -> convert(hits.valueOrNull(fieldName), fieldClass);
+      final Class fieldClass,
+      final Map<String, String> mapping) {
+    return hit -> {
+      final String key;
+      if (hit.sourceOrFields().containsKey(fieldName)) {
+        key = fieldName;
+      } else {
+        key = mapping.getOrDefault(fieldName, fieldName);
+      }
+
+      final Object value;
+      if (ElasticsearchConstants.ID.equals(key)
+          || ElasticsearchConstants.ID.equals(mapping.getOrDefault(fieldName, fieldName))) {
+        // is the original projection on _id field?
+        value = hit.id();
+      } else {
+        value = hit.valueOrNull(key);
+      }
+      return convert(value, fieldClass);
+    };
   }
 
   /**
@@ -52,32 +71,47 @@ class ElasticsearchEnumerators {
    * @return function that converts the search result into a generic array
    */
   private static Function1<ElasticsearchJson.SearchHit, Object[]> listGetter(
-      final List<Map.Entry<String, Class>> fields) {
+      final List<Map.Entry<String, Class>> fields, Map<String, String> mapping) {
     return hit -> {
       Object[] objects = new Object[fields.size()];
       for (int i = 0; i < fields.size(); i++) {
         final Map.Entry<String, Class> field = fields.get(i);
-        final String name = field.getKey();
+        final String key;
+        if (hit.sourceOrFields().containsKey(field.getKey())) {
+          key = field.getKey();
+        } else {
+          key = mapping.getOrDefault(field.getKey(), field.getKey());
+        }
+
+        final Object value;
+        if (ElasticsearchConstants.ID.equals(key)
+            || ElasticsearchConstants.ID.equals(mapping.get(field.getKey()))
+            || ElasticsearchConstants.ID.equals(field.getKey())) {
+          // is the original projection on _id field?
+          value = hit.id();
+        } else {
+          value = hit.valueOrNull(key);
+        }
+
         final Class type = field.getValue();
-        objects[i] = convert(hit.valueOrNull(name), type);
+        objects[i] = convert(value, type);
       }
       return objects;
     };
   }
 
   static Function1<ElasticsearchJson.SearchHit, Object> getter(
-      List<Map.Entry<String, Class>> fields) {
+      List<Map.Entry<String, Class>> fields, Map<String, String> mapping) {
+    Objects.requireNonNull(fields, "fields");
     //noinspection unchecked
     final Function1 getter;
-    if (fields == null || fields.size() == 1 && "_MAP".equals(fields.get(0).getKey())) {
-      // select * from table
-      getter = mapGetter();
-    } else if (fields.size() == 1) {
+    if (fields.size() == 1) {
       // select foo from table
-      getter = singletonGetter(fields.get(0).getKey(), fields.get(0).getValue());
+      // select * from table
+      getter = singletonGetter(fields.get(0).getKey(), fields.get(0).getValue(), mapping);
     } else {
       // select a, b, c from table
-      getter = listGetter(fields);
+      getter = listGetter(fields, mapping);
     }
 
     return getter;

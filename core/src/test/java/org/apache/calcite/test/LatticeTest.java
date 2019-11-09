@@ -20,7 +20,10 @@ import org.apache.calcite.jdbc.CalciteSchema;
 import org.apache.calcite.materialize.Lattice;
 import org.apache.calcite.materialize.Lattices;
 import org.apache.calcite.materialize.MaterializationService;
+import org.apache.calcite.plan.RelOptPlanner;
+import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.rel.rules.AbstractMaterializedViewRule;
 import org.apache.calcite.runtime.Hook;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.util.ImmutableBitSet;
@@ -32,6 +35,7 @@ import com.google.common.collect.ImmutableList;
 import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
 import java.io.IOException;
 import java.sql.Connection;
@@ -58,6 +62,7 @@ import static org.junit.Assert.assertThat;
 /**
  * Unit test for lattices.
  */
+@Category(SlowTests.class)
 public class LatticeTest {
   private static final String SALES_LATTICE = "{\n"
       + "  name: 'star',\n"
@@ -307,7 +312,7 @@ public class LatticeTest {
         "select 1 from \"foodmart\".\"sales_fact_1997\" as s\n"
         + "join \"foodmart\".\"product\" as p using (\"product_id\")\n"
         + "left join \"foodmart\".\"time_by_day\" as t on s.\"product_id\" = p.\"product_id\"")
-        .connectThrows("only inner join allowed, but got LEFT");
+        .connectThrows("only non nulls-generating join allowed, but got LEFT");
   }
 
   /** Each lattice table must have a parent. */
@@ -332,7 +337,7 @@ public class LatticeTest {
                   + "  LogicalProject(DUMMY=[0])\n"
                   + "    StarTableScan(table=[[adhoc, star]])\n",
                   counter));
-    } catch (RuntimeException e) {
+    } catch (Throwable e) {
       assertThat(Throwables.getStackTraceAsString(e),
           containsString("CannotPlanException"));
     }
@@ -497,6 +502,14 @@ public class LatticeTest {
 
   private void checkTileAlgorithm(String statisticProvider,
       String expectedExplain) {
+    final RelOptRule[] rules = {
+        AbstractMaterializedViewRule.INSTANCE_PROJECT_FILTER,
+        AbstractMaterializedViewRule.INSTANCE_FILTER,
+        AbstractMaterializedViewRule.INSTANCE_PROJECT_JOIN,
+        AbstractMaterializedViewRule.INSTANCE_JOIN,
+        AbstractMaterializedViewRule.INSTANCE_PROJECT_AGGREGATE,
+        AbstractMaterializedViewRule.INSTANCE_AGGREGATE
+    };
     MaterializationService.setThreadLocal();
     MaterializationService.instance().clear();
     foodmartLatticeModel(statisticProvider)
@@ -504,8 +517,17 @@ public class LatticeTest {
             + "from \"foodmart\".\"sales_fact_1997\" as s\n"
             + "join \"foodmart\".\"time_by_day\" as t using (\"time_id\")\n")
         .enableMaterializations(true)
-        // disable for MySQL; times out running star-join query
-        // disable for H2; it thinks our generated SQL has invalid syntax
+
+    // Disable materialization rules from this test. For some reason, there is
+    // a weird interaction between these rules and the lattice rewriting that
+    // produces non-deterministic rewriting (even when only lattices are present).
+    // For more context, see
+    // <a href="https://issues.apache.org/jira/browse/CALCITE-2953">[CALCITE-2953]</a>.
+        .withHook(Hook.PLANNER, (Consumer<RelOptPlanner>) planner ->
+            Arrays.asList(rules).forEach(planner::removeRule))
+
+    // disable for MySQL; times out running star-join query
+    // disable for H2; it thinks our generated SQL has invalid syntax
         .enable(CalciteAssert.DB != CalciteAssert.DatabaseInstance.MYSQL
             && CalciteAssert.DB != CalciteAssert.DatabaseInstance.H2)
         .explainContains(expectedExplain)
@@ -696,31 +718,88 @@ public class LatticeTest {
   /** A tile with no measures should inherit default measure list from the
    * lattice. */
   @Test public void testTileWithNoMeasures() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  defaultMeasures: [ {\n"
+        + "    agg: 'count'\n"
+        + "  } ],\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'the_year', ['t', 'quarter'] ],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .query("select count(t.\"the_year\", t.\"quarter\")\n"
+            + "from \"foodmart\".\"sales_fact_1997\" as s\n"
+            + "join \"foodmart\".\"time_by_day\" as t using (\"time_id\")\n")
+        .enableMaterializations(true)
+        .explainContains("EnumerableAggregate(group=[{}], EXPR$0=[COUNT($0, $1)])\n"
+            + "  EnumerableTableScan(table=[[adhoc, m{32, 36}")
+        .returnsCount(1);
   }
 
   /** A lattice with no default measure list should get "count(*)" is its
    * default measure. */
   @Test public void testLatticeWithNoMeasures() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'the_year', ['t', 'quarter'] ],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .query("select count(*)\n"
+            + "from \"foodmart\".\"sales_fact_1997\" as s\n"
+            + "join \"foodmart\".\"time_by_day\" as t using (\"time_id\")\n")
+        .enableMaterializations(true)
+        .explainContains("EnumerableAggregate(group=[{}], EXPR$0=[COUNT()])\n"
+            + "  EnumerableTableScan(table=[[adhoc, m{32, 36}")
+        .returnsCount(1);
   }
 
   @Test public void testDimensionIsInvalidColumn() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'invalid_column'],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .connectThrows("Unknown lattice column 'invalid_column'");
   }
 
   @Test public void testMeasureArgIsInvalidColumn() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  defaultMeasures: [ {\n"
+        + "   agg: 'sum',\n"
+        + "   args: 'invalid_column'\n"
+        + "  } ],\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'the_year', ['t', 'quarter'] ],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .connectThrows("Unknown lattice column 'invalid_column'");
   }
 
-  /** It is an error for "customer_id" to be a measure arg, because is not a
-   * unique alias. Both "c" and "t" have "customer_id". */
+  /** It is an error for "time_id" to be a measure arg, because is not a
+   * unique alias. Both "s" and "t" have "time_id". */
   @Test public void testMeasureArgIsNotUniqueAlias() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  defaultMeasures: [ {\n"
+        + "    agg: 'count',\n"
+        + "    args: 'time_id'\n"
+        + "  } ],\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'the_year', ['t', 'quarter'] ],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .connectThrows("Lattice column alias 'time_id' is not unique");
   }
 
   @Test public void testMeasureAggIsInvalid() {
-    // TODO
+    foodmartModel(" auto: false,\n"
+        + "  defaultMeasures: [ {\n"
+        + "    agg: 'invalid_count',\n"
+        + "    args: 'customer_id'\n"
+        + "  } ],\n"
+        + "  tiles: [ {\n"
+        + "    dimensions: [ 'the_year', ['t', 'quarter'] ],\n"
+        + "    measures: [ ]\n"
+        + "  } ]\n")
+        .connectThrows("Unknown lattice aggregate function invalid_count");
   }
 
   @Test public void testTwoLattices() {

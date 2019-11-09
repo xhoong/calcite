@@ -23,6 +23,7 @@ import org.apache.calcite.plan.hep.HepPlanner;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.logical.LogicalIntersect;
 import org.apache.calcite.rel.logical.LogicalUnion;
@@ -103,9 +104,9 @@ public class HepPlannerTest extends RelOptTestBase {
         new CoerceInputsRule(LogicalIntersect.class, false,
             RelFactories.LOGICAL_BUILDER));
 
-    checkPlanning(planner,
-        "(select name from dept union select ename from emp)"
-            + " intersect (select fname from customer.contact)");
+    final String sql = "(select name from dept union select ename from emp)\n"
+        + "intersect (select fname from customer.contact)";
+    sql(sql).with(planner).check();
   }
 
   @Test public void testRuleDescription() throws Exception {
@@ -120,9 +121,51 @@ public class HepPlannerTest extends RelOptTestBase {
 
     planner.addRule(FilterToCalcRule.INSTANCE);
 
-    checkPlanning(
-        planner,
-        "select name from sales.dept where deptno=12");
+    final String sql = "select name from sales.dept where deptno=12";
+    sql(sql).with(planner).check();
+  }
+
+  /**
+   * Ensures {@link org.apache.calcite.rel.AbstractRelNode} digest does not include
+   * full digest tree.
+   */
+  @Test public void relDigestLength() {
+    HepProgramBuilder programBuilder = HepProgram.builder();
+    HepPlanner planner =
+        new HepPlanner(
+            programBuilder.build());
+    StringBuilder sb = new StringBuilder();
+    final int n = 10;
+    sb.append("select * from (");
+    sb.append("select name from sales.dept");
+    for (int i = 0; i < n; i++) {
+      sb.append(" union all select name from sales.dept");
+    }
+    sb.append(")");
+    RelRoot root = tester.convertSqlToRel(sb.toString());
+    planner.setRoot(root.rel);
+    RelNode best = planner.findBestExp();
+
+    // Good digest should look like rel#66:LogicalProject(input=rel#64:LogicalUnion)
+    // Bad digest includes full tree like rel#66:LogicalProject(input=rel#64:LogicalUnion(...))
+    // So the assertion is to ensure digest includes LogicalUnion exactly once
+
+    assertIncludesExactlyOnce("best.getDescription()", best.toString(), "LogicalUnion");
+    assertIncludesExactlyOnce("best.getDigest()", best.getDigest(), "LogicalUnion");
+  }
+
+  private void assertIncludesExactlyOnce(String message, String digest, String substring) {
+    int pos = 0;
+    int cnt = 0;
+    while (pos >= 0) {
+      pos = digest.indexOf(substring, pos + 1);
+      if (pos > 0) {
+        cnt++;
+      }
+    }
+    assertEquals(
+        message + " should include <<" + substring + ">> exactly once, actual value is " + digest,
+        1, cnt);
   }
 
   @Test public void testMatchLimitOneTopDown() throws Exception {
@@ -133,8 +176,7 @@ public class HepPlannerTest extends RelOptTestBase {
     programBuilder.addMatchLimit(1);
     programBuilder.addRuleInstance(UnionToDistinctRule.INSTANCE);
 
-    checkPlanning(
-        programBuilder.build(), UNION_TREE);
+    sql(UNION_TREE).with(programBuilder.build()).check();
   }
 
   @Test public void testMatchLimitOneBottomUp() throws Exception {
@@ -145,8 +187,7 @@ public class HepPlannerTest extends RelOptTestBase {
     programBuilder.addMatchOrder(HepMatchOrder.BOTTOM_UP);
     programBuilder.addRuleInstance(UnionToDistinctRule.INSTANCE);
 
-    checkPlanning(
-        programBuilder.build(), UNION_TREE);
+    sql(UNION_TREE).with(programBuilder.build()).check();
   }
 
   @Test public void testMatchUntilFixpoint() throws Exception {
@@ -156,8 +197,7 @@ public class HepPlannerTest extends RelOptTestBase {
     programBuilder.addMatchLimit(HepProgram.MATCH_UNTIL_FIXPOINT);
     programBuilder.addRuleInstance(UnionToDistinctRule.INSTANCE);
 
-    checkPlanning(
-        programBuilder.build(), UNION_TREE);
+    sql(UNION_TREE).with(programBuilder.build()).check();
   }
 
   @Test public void testReplaceCommonSubexpression() throws Exception {
@@ -168,10 +208,9 @@ public class HepPlannerTest extends RelOptTestBase {
     // rewriting something used as a common sub-expression
     // twice by the same parent (the join in this case).
 
-    checkPlanning(
-        ProjectRemoveRule.INSTANCE,
-        "select d1.deptno from (select * from dept) d1,"
-            + " (select * from dept) d2");
+    final String sql = "select d1.deptno from (select * from dept) d1,\n"
+        + "(select * from dept) d2";
+    sql(sql).withRule(ProjectRemoveRule.INSTANCE).check();
   }
 
   /** Tests that if two relational expressions are equivalent, the planner
@@ -207,14 +246,15 @@ public class HepPlannerTest extends RelOptTestBase {
     subprogramBuilder.addMatchOrder(HepMatchOrder.TOP_DOWN);
     subprogramBuilder.addMatchLimit(1);
     subprogramBuilder.addRuleInstance(ProjectToCalcRule.INSTANCE);
+    subprogramBuilder.addRuleInstance(FilterToCalcRule.INSTANCE);
     subprogramBuilder.addRuleInstance(CalcMergeRule.INSTANCE);
 
     HepProgramBuilder programBuilder = HepProgram.builder();
     programBuilder.addSubprogram(subprogramBuilder.build());
 
-    checkPlanning(
-        programBuilder.build(),
-        "select upper(ename) from (select lower(ename) as ename from emp)");
+    final String sql = "select upper(ename) from\n"
+        + "(select lower(ename) as ename from emp where empno = 100)";
+    sql(sql).with(programBuilder.build()).check();
   }
 
   @Test public void testGroup() throws Exception {
@@ -228,9 +268,8 @@ public class HepPlannerTest extends RelOptTestBase {
     programBuilder.addRuleInstance(FilterToCalcRule.INSTANCE);
     programBuilder.addGroupEnd();
 
-    checkPlanning(
-        programBuilder.build(),
-        "select upper(name) from dept where deptno=20");
+    final String sql = "select upper(name) from dept where deptno=20";
+    sql(sql).with(programBuilder.build()).check();
   }
 
   @Test public void testGC() throws Exception {
@@ -248,6 +287,20 @@ public class HepPlannerTest extends RelOptTestBase {
     planner.setRoot(
         tester.convertSqlToRel("select upper(name) from dept where deptno=20").rel);
     planner.findBestExp();
+  }
+
+  @Test public void testRelNodeCacheWithDigest() {
+    HepProgramBuilder programBuilder = HepProgram.builder();
+    HepPlanner planner =
+        new HepPlanner(
+            programBuilder.build());
+    String query = "(select n_nationkey from SALES.CUSTOMER) union all\n"
+        + "(select n_name from CUSTOMER_MODIFIABLEVIEW)";
+    sql(query).withTester(t -> createDynamicTester())
+        .withDecorrelation(true)
+        .with(programBuilder.build())
+        .with(planner)
+        .checkUnchanged();
   }
 
   @Test public void testRuleApplyCount() {

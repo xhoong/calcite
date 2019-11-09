@@ -22,6 +22,7 @@ import com.google.common.collect.ImmutableMap;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builtin methods in the Elasticsearch adapter.
@@ -35,6 +36,7 @@ enum ElasticsearchMethod {
       List.class, // sort
       List.class, // groupBy
       List.class, // aggregations
+      Map.class, // item to expression mapping. Eg. _MAP['a.b.c'] and EXPR$1
       Long.class, // offset
       Long.class); // fetch
 

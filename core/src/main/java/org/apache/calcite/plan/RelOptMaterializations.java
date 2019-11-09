@@ -16,14 +16,23 @@
  */
 package org.apache.calcite.plan;
 
+import org.apache.calcite.config.CalciteSystemProperty;
 import org.apache.calcite.plan.hep.HepPlanner;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
-import org.apache.calcite.prepare.CalcitePrepareImpl;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.rules.CalcMergeRule;
+import org.apache.calcite.rel.rules.FilterAggregateTransposeRule;
+import org.apache.calcite.rel.rules.FilterCalcMergeRule;
+import org.apache.calcite.rel.rules.FilterJoinRule;
+import org.apache.calcite.rel.rules.FilterMergeRule;
 import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
+import org.apache.calcite.rel.rules.FilterToCalcRule;
+import org.apache.calcite.rel.rules.ProjectCalcMergeRule;
+import org.apache.calcite.rel.rules.ProjectJoinTransposeRule;
 import org.apache.calcite.rel.rules.ProjectMergeRule;
 import org.apache.calcite.rel.rules.ProjectRemoveRule;
+import org.apache.calcite.rel.rules.ProjectToCalcRule;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.graph.DefaultDirectedGraph;
 import org.apache.calcite.util.graph.DefaultEdge;
@@ -109,7 +118,7 @@ public abstract class RelOptMaterializations {
       if (queryTableNames.contains(lattice.rootTable().getQualifiedName())) {
         RelNode rel2 = lattice.rewrite(leafJoinRoot.get());
         if (rel2 != null) {
-          if (CalcitePrepareImpl.DEBUG) {
+          if (CalciteSystemProperty.DEBUG.value()) {
             System.out.println("use lattice:\n"
                 + RelOptUtil.toString(rel2));
           }
@@ -185,10 +194,23 @@ public abstract class RelOptMaterializations {
     HepProgram program =
         new HepProgramBuilder()
             .addRuleInstance(FilterProjectTransposeRule.INSTANCE)
+            .addRuleInstance(FilterMergeRule.INSTANCE)
+            .addRuleInstance(FilterJoinRule.FILTER_ON_JOIN)
+            .addRuleInstance(FilterJoinRule.JOIN)
+            .addRuleInstance(FilterAggregateTransposeRule.INSTANCE)
             .addRuleInstance(ProjectMergeRule.INSTANCE)
             .addRuleInstance(ProjectRemoveRule.INSTANCE)
+            .addRuleInstance(ProjectJoinTransposeRule.INSTANCE)
+            .addRuleInstance(FilterToCalcRule.INSTANCE)
+            .addRuleInstance(ProjectToCalcRule.INSTANCE)
+            .addRuleInstance(FilterCalcMergeRule.INSTANCE)
+            .addRuleInstance(ProjectCalcMergeRule.INSTANCE)
+            .addRuleInstance(CalcMergeRule.INSTANCE)
             .build();
 
+    // We must use the same HEP planner for the two optimizations below.
+    // Thus different nodes with the same digest will share the same vertex in
+    // the plan graph. This is important for the matching process.
     final HepPlanner hepPlanner = new HepPlanner(program);
     hepPlanner.setRoot(target);
     target = hepPlanner.findBestExp();
@@ -196,8 +218,7 @@ public abstract class RelOptMaterializations {
     hepPlanner.setRoot(root);
     root = hepPlanner.findBestExp();
 
-    return new MaterializedViewSubstitutionVisitor(target, root)
-            .go(materialization.tableRel);
+    return new SubstitutionVisitor(target, root).go(materialization.tableRel);
   }
 
   /**

@@ -26,6 +26,7 @@ import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.TableFunctionImpl;
 import org.apache.calcite.sql.validate.SqlConformanceEnum;
 import org.apache.calcite.util.Smalls;
+import org.apache.calcite.util.TestUtil;
 
 import org.junit.Ignore;
 import org.junit.Test;
@@ -97,6 +98,24 @@ public class TableFunctionTest {
       schema.add("GenerateStrings", table);
       final String sql = "select *\n"
           + "from table(\"s\".\"GenerateStrings\"(5)) as t(n, c)\n"
+          + "where char_length(c) > 3";
+      ResultSet resultSet = connection.createStatement().executeQuery(sql);
+      assertThat(CalciteAssert.toString(resultSet),
+          equalTo("N=4; C=abcd\n"));
+    }
+  }
+
+  @Test public void testTableFunctionWithArrayParameter() throws SQLException {
+    try (Connection connection = DriverManager.getConnection("jdbc:calcite:")) {
+      CalciteConnection calciteConnection =
+          connection.unwrap(CalciteConnection.class);
+      SchemaPlus rootSchema = calciteConnection.getRootSchema();
+      SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
+      final TableFunction table =
+          TableFunctionImpl.create(Smalls.GENERATE_STRINGS_OF_INPUT_SIZE_METHOD);
+      schema.add("GenerateStringsOfInputSize", table);
+      final String sql = "select *\n"
+          + "from table(\"s\".\"GenerateStringsOfInputSize\"(ARRAY[5,4,3,1,2])) as t(n, c)\n"
           + "where char_length(c) > 3";
       ResultSet resultSet = connection.createStatement().executeQuery(sql);
       assertThat(CalciteAssert.toString(resultSet),
@@ -244,8 +263,7 @@ public class TableFunctionTest {
     }
   }
 
-  private Connection getConnectionWithMultiplyFunction()
-      throws ClassNotFoundException, SQLException {
+  private Connection getConnectionWithMultiplyFunction() throws SQLException {
     Connection connection =
         DriverManager.getConnection("jdbc:calcite:");
     CalciteConnection calciteConnection =
@@ -359,12 +377,10 @@ public class TableFunctionTest {
   }
 
   @Test public void testUserDefinedTableFunction4() {
-    final String q = "select *\n"
+    final String q = "select \"c1\"\n"
         + "from table(\"s\".\"multiplication\"('2', 3, 100))\n"
-        + "where c1 + 2 < c2";
-    final String e = "No match found for function signature "
-        + "multiplication(<CHARACTER>, <NUMERIC>, <NUMERIC>)";
-    with().query(q).throws_(e);
+        + "where \"c1\" + 2 < \"c2\"";
+    with().query(q).returnsUnordered("c1=103");
   }
 
   @Test public void testUserDefinedTableFunction5() {
@@ -389,7 +405,7 @@ public class TableFunctionTest {
             assertThat(numbers.toString(),
                 is("[1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233]"));
           } catch (SQLException e) {
-            throw new RuntimeException(e);
+            throw TestUtil.rethrow(e);
           }
         });
   }
@@ -428,6 +444,20 @@ public class TableFunctionTest {
               "C=5; N=3",
               "C=5; N=5");
     }
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2004">[CALCITE-2004]
+   * Wrong plan generated for left outer apply with table function</a>. */
+  @Test public void testLeftOuterApply() {
+    final String sql = "select *\n"
+        + "from (values 4) as t (c)\n"
+        + "left join lateral table(\"s\".\"fibonacci2\"(c)) as R(n) on c=n";
+    with()
+        .with(CalciteConnectionProperty.CONFORMANCE,
+            SqlConformanceEnum.LENIENT)
+        .query(sql)
+        .returnsUnordered("C=4; N=null");
   }
 
   /** Test case for

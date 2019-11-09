@@ -82,19 +82,21 @@ public class ElasticsearchToEnumerableConverter extends ConverterImpl implements
     final Expression table = block.append("table",
         implementor.table
             .getExpression(ElasticsearchTable.ElasticsearchQueryable.class));
-    List<String> opList = implementor.list;
-    final Expression ops = block.append("ops", constantArrayList(opList, String.class));
+    final Expression ops = block.append("ops", Expressions.constant(implementor.list));
     final Expression sort = block.append("sort", constantArrayList(implementor.sort, Pair.class));
     final Expression groupBy = block.append("groupBy", Expressions.constant(implementor.groupBy));
     final Expression aggregations = block.append("aggregations",
         constantArrayList(implementor.aggregations, Pair.class));
+
+    final Expression mappings = block.append("mappings",
+        Expressions.constant(implementor.expressionItemMap));
 
     final Expression offset = block.append("offset", Expressions.constant(implementor.offset));
     final Expression fetch = block.append("fetch", Expressions.constant(implementor.fetch));
 
     Expression enumerable = block.append("enumerable",
         Expressions.call(table, ElasticsearchMethod.ELASTICSEARCH_QUERYABLE_FIND.method, ops,
-            fields, sort, groupBy, aggregations, offset, fetch));
+            fields, sort, groupBy, aggregations, mappings, offset, fetch));
     block.add(Expressions.return_(null, enumerable));
     return relImplementor.result(physType, block.toBlock());
   }

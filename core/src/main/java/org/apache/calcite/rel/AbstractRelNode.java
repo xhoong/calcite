@@ -27,7 +27,6 @@ import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.RelTrait;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.core.CorrelationId;
-import org.apache.calcite.rel.externalize.RelWriterImpl;
 import org.apache.calcite.rel.metadata.Metadata;
 import org.apache.calcite.rel.metadata.MetadataFactory;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
@@ -46,8 +45,6 @@ import com.google.common.collect.ImmutableSet;
 
 import org.slf4j.Logger;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -68,11 +65,6 @@ public abstract class AbstractRelNode implements RelNode {
   //~ Instance fields --------------------------------------------------------
 
   /**
-   * Description, consists of id plus digest.
-   */
-  private String desc;
-
-  /**
    * Cached type of this relational expression.
    */
   protected RelDataType rowType;
@@ -83,8 +75,6 @@ public abstract class AbstractRelNode implements RelNode {
    * is equivalent if and only if it has the same value. Computed by
    * {@link #computeDigest}, assigned by {@link #onRegister}, returned by
    * {@link #getDigest()}.
-   *
-   * @see #desc
    */
   protected String digest;
 
@@ -112,7 +102,6 @@ public abstract class AbstractRelNode implements RelNode {
     this.traitSet = traitSet;
     this.id = NEXT_ID.getAndIncrement();
     this.digest = getRelTypeName() + "#" + id;
-    this.desc = digest;
     LOGGER.trace("new {}", digest);
   }
 
@@ -161,13 +150,13 @@ public abstract class AbstractRelNode implements RelNode {
 
   @SuppressWarnings("deprecation")
   public boolean isDistinct() {
-    final RelMetadataQuery mq = RelMetadataQuery.instance();
+    final RelMetadataQuery mq = cluster.getMetadataQuery();
     return Boolean.TRUE.equals(mq.areRowsUnique(this));
   }
 
   @SuppressWarnings("deprecation")
   public boolean isKey(ImmutableBitSet columns) {
-    final RelMetadataQuery mq = RelMetadataQuery.instance();
+    final RelMetadataQuery mq = cluster.getMetadataQuery();
     return Boolean.TRUE.equals(mq.areColumnsUnique(this, columns));
   }
 
@@ -190,16 +179,14 @@ public abstract class AbstractRelNode implements RelNode {
   }
 
   public final String getRelTypeName() {
-    String className = getClass().getName();
-    int i = className.lastIndexOf("$");
-    if (i >= 0) {
-      return className.substring(i + 1);
+    String cn = getClass().getName();
+    int i = cn.length();
+    while (--i >= 0) {
+      if (cn.charAt(i) == '$' || cn.charAt(i) == '.') {
+        return cn.substring(i + 1);
+      }
     }
-    i = className.lastIndexOf(".");
-    if (i >= 0) {
-      return className.substring(i + 1);
-    }
-    return className;
+    return cn;
   }
 
   public boolean isValid(Litmus litmus, Context context) {
@@ -241,7 +228,7 @@ public abstract class AbstractRelNode implements RelNode {
 
   @SuppressWarnings("deprecation")
   public final double getRows() {
-    return estimateRowCount(RelMetadataQuery.instance());
+    return estimateRowCount(cluster.getMetadataQuery());
   }
 
   public double estimateRowCount(RelMetadataQuery mq) {
@@ -283,7 +270,7 @@ public abstract class AbstractRelNode implements RelNode {
 
   @SuppressWarnings("deprecation")
   public final RelOptCost computeSelfCost(RelOptPlanner planner) {
-    return computeSelfCost(planner, RelMetadataQuery.instance());
+    return computeSelfCost(planner, cluster.getMetadataQuery());
   }
 
   public RelOptCost computeSelfCost(RelOptPlanner planner,
@@ -353,15 +340,9 @@ public abstract class AbstractRelNode implements RelNode {
   }
 
   public String recomputeDigest() {
-    String tempDigest = computeDigest();
-    assert tempDigest != null : "post: return != null";
-    String prefix = "rel#" + id + ":";
-
-    // Substring uses the same underlying array of chars, so saves a bit
-    // of memory.
-    this.desc = prefix + tempDigest;
-    this.digest = this.desc.substring(prefix.length());
-    return this.digest;
+    digest = computeDigest();
+    assert digest != null : "computeDigest() should be non-null";
+    return digest;
   }
 
   public void replaceInput(
@@ -370,12 +351,17 @@ public abstract class AbstractRelNode implements RelNode {
     throw new UnsupportedOperationException("replaceInput called on " + this);
   }
 
+  /* Description, consists of id plus digest */
   public String toString() {
-    return desc;
+    StringBuilder sb = new StringBuilder();
+    sb = RelOptUtil.appendRelDescription(sb, this);
+    return sb.toString();
   }
 
+  /* Description, consists of id plus digest */
+  @Deprecated // to be removed before 2.0
   public final String getDescription() {
-    return desc;
+    return this.toString();
   }
 
   public final String getDigest() {
@@ -392,33 +378,90 @@ public abstract class AbstractRelNode implements RelNode {
    * @return Digest
    */
   protected String computeDigest() {
-    StringWriter sw = new StringWriter();
-    RelWriter pw =
-        new RelWriterImpl(
-            new PrintWriter(sw),
-            SqlExplainLevel.DIGEST_ATTRIBUTES, false) {
-          protected void explain_(
-              RelNode rel, List<Pair<String, Object>> values) {
-            pw.write(getRelTypeName());
+    RelDigestWriter rdw = new RelDigestWriter();
+    explain(rdw);
+    return rdw.digest;
+  }
 
-            for (RelTrait trait : traitSet) {
-              pw.write(".");
-              pw.write(trait.toString());
-            }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This method (and {@link #hashCode} is intentionally final. We do not want
+   * sub-classes of {@link RelNode} to redefine identity. Various algorithms
+   * (e.g. visitors, planner) can define the identity as meets their needs.
+   */
+  @Override public final boolean equals(Object obj) {
+    return super.equals(obj);
+  }
 
-            pw.write("(");
-            int j = 0;
-            for (Pair<String, Object> value : values) {
-              if (j++ > 0) {
-                pw.write(",");
-              }
-              pw.write(value.left + "=" + value.right);
-            }
-            pw.write(")");
-          }
-        };
-    explain(pw);
-    return sw.toString();
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This method (and {@link #equals} is intentionally final. We do not want
+   * sub-classes of {@link RelNode} to redefine identity. Various algorithms
+   * (e.g. visitors, planner) can define the identity as meets their needs.
+   */
+  @Override public final int hashCode() {
+    return super.hashCode();
+  }
+
+  /**
+   * A writer object used exclusively for computing the digest of a RelNode.
+   *
+   * <p>The writer is meant to be used only for computing a single digest and then thrown away.
+   * After calling {@link #done(RelNode)} the writer should be used only to obtain the computed
+   * {@link #digest}. Any other action is prohibited.</p>
+   *
+   */
+  private static final class RelDigestWriter implements RelWriter {
+
+    private final List<Pair<String, Object>> values = new ArrayList<>();
+
+    String digest = null;
+
+    @Override public void explain(final RelNode rel, final List<Pair<String, Object>> valueList) {
+      throw new IllegalStateException("Should not be called for computing digest");
+    }
+
+    @Override public SqlExplainLevel getDetailLevel() {
+      return SqlExplainLevel.DIGEST_ATTRIBUTES;
+    }
+
+    @Override public RelWriter item(String term, Object value) {
+      values.add(Pair.of(term, value));
+      return this;
+    }
+
+    @Override public RelWriter done(RelNode node) {
+      StringBuilder sb = new StringBuilder();
+      sb.append(node.getRelTypeName());
+
+      for (RelTrait trait : node.getTraitSet()) {
+        sb.append('.');
+        sb.append(trait.toString());
+      }
+
+      sb.append('(');
+      int j = 0;
+      for (Pair<String, Object> value : values) {
+        if (j++ > 0) {
+          sb.append(',');
+        }
+        sb.append(value.left);
+        sb.append('=');
+        if (value.right instanceof RelNode) {
+          RelNode input = (RelNode) value.right;
+          sb.append(input.getRelTypeName());
+          sb.append('#');
+          sb.append(input.getId());
+        } else {
+          sb.append(value.right);
+        }
+      }
+      sb.append(')');
+      digest = sb.toString();
+      return this;
+    }
   }
 }
 

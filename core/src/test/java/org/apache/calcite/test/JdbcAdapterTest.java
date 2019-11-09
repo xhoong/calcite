@@ -19,6 +19,7 @@ package org.apache.calcite.test;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.test.CalciteAssert.AssertThat;
 import org.apache.calcite.test.CalciteAssert.DatabaseInstance;
+import org.apache.calcite.util.TestUtil;
 
 import org.hsqldb.jdbcDriver;
 import org.junit.Test;
@@ -51,7 +52,7 @@ public class JdbcAdapterTest {
     final String sql = "select * from \"days\", (values 1, 2) as t(c)";
     final String explain = "PLAN="
         + "EnumerableCalc(expr#0..2=[{inputs}], day=[$t1], week_day=[$t2], C=[$t0])\n"
-        + "  EnumerableJoin(condition=[true], joinType=[inner])\n"
+        + "  EnumerableHashJoin(condition=[true], joinType=[inner])\n"
         + "    EnumerableValues(tuples=[[{ 1 }, { 2 }]])\n"
         + "    JdbcToEnumerableConverter\n"
         + "      JdbcTableScan(table=[[foodmart, days]])";
@@ -84,6 +85,35 @@ public class JdbcAdapterTest {
             + "FROM \"foodmart\".\"sales_fact_1998\"");
   }
 
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-3115">[CALCITE-3115]
+   * Cannot add JdbcRules which have different JdbcConvention
+   * to same VolcanoPlanner's RuleSet.</a>*/
+  @Test public void testUnionPlan2() {
+    CalciteAssert.model(JdbcTest.FOODMART_SCOTT_MODEL)
+        .query("select \"store_name\" from \"foodmart\".\"store\" where \"store_id\" < 10\n"
+            + "union all\n"
+            + "select ename from SCOTT.emp where empno > 10")
+        .explainContains("PLAN=EnumerableUnion(all=[true])\n"
+                    + "  JdbcToEnumerableConverter\n"
+                    + "    JdbcProject(store_name=[$3])\n"
+                    + "      JdbcFilter(condition=[<($0, 10)])\n"
+                    + "        JdbcTableScan(table=[[foodmart, store]])\n"
+                    + "  JdbcToEnumerableConverter\n"
+                    + "    JdbcProject(ENAME=[$1])\n"
+                    + "      JdbcFilter(condition=[>($0, 10)])\n"
+                    + "        JdbcTableScan(table=[[SCOTT, EMP]])")
+        .runs()
+        .enable(CalciteAssert.DB == CalciteAssert.DatabaseInstance.HSQLDB)
+        .planHasSql("SELECT \"store_name\"\n"
+                + "FROM \"foodmart\".\"store\"\n"
+                + "WHERE \"store_id\" < 10")
+        .planHasSql("SELECT \"ENAME\"\n"
+                + "FROM \"SCOTT\".\"EMP\"\n"
+                + "WHERE \"EMPNO\" > 10");
+  }
+
   @Test public void testFilterUnionPlan() {
     CalciteAssert.model(JdbcTest.FOODMART_MODEL)
         .query("select * from (\n"
@@ -111,7 +141,10 @@ public class JdbcAdapterTest {
         .planHasSql(
             "SELECT \"store_id\", \"store_name\"\n"
             + "FROM \"foodmart\".\"store\"\n"
-            + "WHERE \"store_name\" = 'Store 1' OR \"store_name\" = 'Store 10' OR \"store_name\" = 'Store 11' OR \"store_name\" = 'Store 15' OR \"store_name\" = 'Store 16' OR \"store_name\" = 'Store 24' OR \"store_name\" = 'Store 3' OR \"store_name\" = 'Store 7'")
+            + "WHERE \"store_name\" = 'Store 1' OR \"store_name\" = 'Store 10'"
+                + " OR (\"store_name\" = 'Store 11' OR \"store_name\" = 'Store 15')"
+                + " OR (\"store_name\" = 'Store 16' OR \"store_name\" = 'Store 24'"
+                + " OR (\"store_name\" = 'Store 3' OR \"store_name\" = 'Store 7'))")
         .returns("store_id=1; store_name=Store 1\n"
             + "store_id=3; store_name=Store 3\n"
             + "store_id=7; store_name=Store 7\n"
@@ -290,7 +323,7 @@ public class JdbcAdapterTest {
     CalciteAssert.model(JdbcTest.SCOTT_MODEL)
         .query("select empno, ename, d.deptno, dname \n"
             + "from scott.emp e,scott.dept d")
-        .explainContains("PLAN=EnumerableJoin(condition=[true], "
+        .explainContains("PLAN=EnumerableHashJoin(condition=[true], "
             + "joinType=[inner])\n"
             + "  JdbcToEnumerableConverter\n"
             + "    JdbcProject(EMPNO=[$0], ENAME=[$1])\n"
@@ -436,6 +469,34 @@ public class JdbcAdapterTest {
         .runs()
         .planHasSql("SELECT *\n"
             + "FROM \"foodmart\".\"expense_fact\"");
+  }
+
+  @Test public void testTablesNoCatalogSchema() {
+    final String model =
+        JdbcTest.FOODMART_MODEL
+            .replace("jdbcCatalog: 'foodmart'", "jdbcCatalog: null")
+            .replace("jdbcSchema: 'foodmart'", "jdbcSchema: null");
+    // Since Calcite uses PostgreSQL JDBC driver version >= 4.1,
+    // catalog/schema can be retrieved from JDBC connection and
+    // this test succeeds
+    CalciteAssert.model(model)
+        // Calcite uses PostgreSQL JDBC driver version >= 4.1
+        .enable(CalciteAssert.DB == DatabaseInstance.POSTGRESQL)
+        .query("select \"store_id\", \"account_id\", \"exp_date\","
+            + " \"time_id\", \"category_id\", \"currency_id\", \"amount\","
+            + " last_value(\"time_id\") over ()"
+            + " as \"last_version\" from \"expense_fact\"")
+        .runs();
+    // Since Calcite uses HSQLDB JDBC driver version < 4.1,
+    // catalog/schema cannot be retrieved from JDBC connection and
+    // this test fails
+    CalciteAssert.model(model)
+        .enable(CalciteAssert.DB == DatabaseInstance.HSQLDB)
+        .query("select \"store_id\", \"account_id\", \"exp_date\","
+            + " \"time_id\", \"category_id\", \"currency_id\", \"amount\","
+            + " last_value(\"time_id\") over ()"
+            + " as \"last_version\" from \"expense_fact\"")
+        .throws_("'expense_fact' not found");
   }
 
   /** Test case for
@@ -624,7 +685,7 @@ public class JdbcAdapterTest {
                 connection.getMetaData().getTables(null, null, "%", null);
             assertFalse(CalciteAssert.toString(resultSet).isEmpty());
           } catch (SQLException e) {
-            throw new RuntimeException(e);
+            throw TestUtil.rethrow(e);
           }
         });
   }
@@ -718,7 +779,7 @@ public class JdbcAdapterTest {
             .explainContains(explain)
             .planUpdateHasSql(jdbcSql, 1);
       } catch (SQLException e) {
-        throw new RuntimeException(e);
+        throw TestUtil.rethrow(e);
       }
     });
   }
@@ -750,7 +811,7 @@ public class JdbcAdapterTest {
             .explainContains(explain)
             .planUpdateHasSql(jdbcSql, 2);
       } catch (SQLException e) {
-        throw new RuntimeException(e);
+        throw TestUtil.rethrow(e);
       }
     });
   }
@@ -787,7 +848,7 @@ public class JdbcAdapterTest {
             .explainContains(explain)
             .planUpdateHasSql(jdbcSql, 1);
       } catch (SQLException e) {
-        throw new RuntimeException(e);
+        throw TestUtil.rethrow(e);
       }
     });
   }
@@ -815,7 +876,7 @@ public class JdbcAdapterTest {
             .planUpdateHasSql(jdbcSql, 1);
         return null;
       } catch (SQLException e) {
-        throw new RuntimeException(e);
+        throw TestUtil.rethrow(e);
       }
     });
   }
@@ -839,7 +900,7 @@ public class JdbcAdapterTest {
             .explainContains(explain)
             .planUpdateHasSql(jdbcSql, 1);
       } catch (SQLException e) {
-        throw new RuntimeException(e);
+        throw TestUtil.rethrow(e);
       }
     });
   }

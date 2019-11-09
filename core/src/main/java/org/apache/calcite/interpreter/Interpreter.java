@@ -17,6 +17,7 @@
 package org.apache.calcite.interpreter;
 
 import org.apache.calcite.DataContext;
+import org.apache.calcite.config.CalciteSystemProperty;
 import org.apache.calcite.linq4j.AbstractEnumerable;
 import org.apache.calcite.linq4j.Enumerable;
 import org.apache.calcite.linq4j.Enumerator;
@@ -27,7 +28,6 @@ import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.hep.HepPlanner;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
-import org.apache.calcite.prepare.CalcitePrepareImpl;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelVisitor;
 import org.apache.calcite.rel.rules.CalcSplitRule;
@@ -417,7 +417,7 @@ public class Interpreter extends AbstractEnumerable<Object[]>
         if (rel == null) {
           break;
         }
-        if (CalcitePrepareImpl.DEBUG) {
+        if (CalciteSystemProperty.DEBUG.value()) {
           System.out.println("Interpreter: rewrite " + p + " to " + rel);
         }
         p = rel;
@@ -435,9 +435,9 @@ public class Interpreter extends AbstractEnumerable<Object[]>
 
       // rewrite children first (from left to right)
       final List<RelNode> inputs = relInputs.get(p);
-      for (Ord<RelNode> input : Ord.zip(Util.first(inputs, p.getInputs()))) {
-        outEdges.put(input.e, new Edge(p, input.i));
-      }
+      RelNode finalP = p;
+      Ord.forEach(Util.first(inputs, p.getInputs()),
+          (r, i) -> outEdges.put(r, new Edge(finalP, i)));
       if (inputs != null) {
         for (int i = 0; i < inputs.size(); i++) {
           RelNode input = inputs.get(i);
@@ -534,6 +534,13 @@ public class Interpreter extends AbstractEnumerable<Object[]>
         nodeInfo = new NodeInfo(rel, null);
         nodes.put(rel, nodeInfo);
         for (Edge edge : edges2) {
+          nodeInfo.sinks.put(edge, new ListSink(new ArrayDeque<>()));
+        }
+      } else {
+        for (Edge edge : edges2) {
+          if (nodeInfo.sinks.containsKey(edge)) {
+            continue;
+          }
           nodeInfo.sinks.put(edge, new ListSink(new ArrayDeque<>()));
         }
       }

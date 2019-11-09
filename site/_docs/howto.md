@@ -31,15 +31,15 @@ adapters.
 
 ## Building from a source distribution
 
-Prerequisite is Java (JDK 8, 9 or 10) on your path.
+Prerequisite is Java (JDK 8, 9, 10, 11, or 12) on your path.
 
 Unpack the source distribution `.tar.gz` file,
 `cd` to the root directory of the unpacked source,
 then build using the included maven wrapper:
 
 {% highlight bash %}
-$ tar xvfz calcite-1.17.0-source.tar.gz
-$ cd calcite-1.17.0
+$ tar xvfz calcite-1.21.0-source.tar.gz
+$ cd calcite-1.21.0
 $ ./mvnw install
 {% endhighlight %}
 
@@ -49,7 +49,7 @@ tests.
 ## Building from git
 
 Prerequisites are git
-and Java (JDK 8, 9 or 10) on your path.
+and Java (JDK 8, 9, 10, 11, or 12) on your path.
 
 Create a local copy of the github repository,
 `cd` to its root directory,
@@ -307,13 +307,13 @@ bye
 {% endhighlight %}
 
 Connect using the
-[mongo-zips-model.json]({{ site.sourceRoot }}/mongodb/src/test/resources/mongo-zips-model.json)
+[mongo-model.json]({{ site.sourceRoot }}/mongodb/src/test/resources/mongo-model.json)
 Calcite model:
 
 {% highlight bash %}
 $ ./sqlline
-sqlline> !connect jdbc:calcite:model=mongodb/target/test-classes/mongo-zips-model.json admin admin
-Connecting to jdbc:calcite:model=mongodb/target/test-classes/mongo-zips-model.json
+sqlline> !connect jdbc:calcite:model=mongodb/target/test-classes/mongo-model.json admin admin
+Connecting to jdbc:calcite:model=mongodb/target/test-classes/mongo-model.json
 Connected to: Calcite (version 1.x.x)
 Driver: Calcite JDBC Driver (version 1.x.x)
 Autocommit status: true
@@ -457,12 +457,34 @@ particular release managers.
 
 ## Merging pull requests (for Calcite committers)
 
-Ask the contributor to squash the PR into a single commit with a message starting with [CALCITE-XXX] where XXX is the associated JIRA issue number.
-You can take this step yourself if needed.
-The contributor's name should also be added in parentheses at the end of the first line of the commit message.
-Finally, after a couple new lines make sure the message contains "Close apache/calcite#YYY" where YYY is the GitHub issue number.
-This is important as it is the only way we have to close issues on GitHub without asking the originator to do so manually.
-When the PR has been merged and pushed, be sure to mark the JIRA issue as resolved (do not use closed as that is reserved for release time).
+These are instructions for a Calcite committer who has reviewed a pull request
+from a contributor, found it satisfactory, and is about to merge it to master.
+Usually the contributor is not a committer (otherwise they would be committing
+it themselves, after you gave approval in a review).
+
+If the PR has multiple commits, squash them into a single commit. The
+commit message should follow the conventions outined in
+[contribution guidelines]({{ site.baseurl }}/develop/#contributing).
+If there are conflicts it is better to ask the contributor to take this step,
+otherwise it is preferred to do this manually since it saves time and also
+avoids unnecessary notification messages to many people on GitHub.
+
+If the contributor is not a committer, add their name in parentheses at the end
+of the first line of the commit message.
+
+If the merge is performed via command line (not through the GitHub web
+interface), make sure the message contains a line "Close apache/calcite#YYY",
+where YYY is the GitHub pull request identifier.
+
+When the PR has been merged and pushed, be sure to update the JIRA case. You
+must:
+ * resolve the issue (do not close it as this will be done by the release
+manager);
+ * select "Fixed" as resolution cause;
+ * mark the appropriate version (e.g., 1.21.0) in the "Fix version" field;
+ * add a comment (e.g., "Fixed in ...") with a hyperlink pointing to the commit
+which resolves the issue (in GitHub or GitBox), and also thank the contributor
+for their contribution.
 
 ## Set up PGP signing keys (for Calcite committers)
 
@@ -479,25 +501,25 @@ ball because that would be
 
 ## Set up Maven repository credentials (for Calcite committers)
 
-Follow the instructions [here](http://www.apache.org/dev/publishing-maven-artifacts.html#dev-env) to add your credentials to your maven configuration.
+Follow the instructions [here](https://www.apache.org/dev/publishing-maven-artifacts.html#dev-env) to add your credentials to your maven configuration.
 
 ## Making a snapshot (for Calcite committers)
 
 Before you start:
 
 * Set up signing keys as described above.
-* Make sure you are using JDK 8 (not 9 or 10).
+* Make sure you are using JDK 8.
 * Make sure build and tests succeed with `-Dcalcite.test.db=hsqldb` (the default)
 
 {% highlight bash %}
-# Set passphrase variable without putting it into shell history
-read -s GPG_PASSPHRASE
+# Tell GPG how to read a password from your terminal
+export GPG_TTY=$(tty)
 
 # Make sure that there are no junk files in the sandbox
 git clean -xn
 ./mvnw clean
 
-./mvnw -Papache-release -Dgpg.passphrase=${GPG_PASSPHRASE} install
+./mvnw -Papache-release install
 {% endhighlight %}
 
 When the dry-run has succeeded, change `install` to `deploy`.
@@ -581,31 +603,31 @@ If any of the steps fail, clean up (see below), fix the problem, and
 start again from the top.
 
 {% highlight bash %}
-# Set passphrase variable without putting it into shell history
-read -s GPG_PASSPHRASE
+# Tell GPG how to read a password from your terminal
+export GPG_TTY=$(tty)
 
 # Make sure that there are no junk files in the sandbox
 git clean -xn
 ./mvnw clean
 
 # Do a dry run of the release:prepare step, which sets version numbers
-# (accept the default tag name of calcite-X.Y.Z)
-# Note X.Y.Z is the current version we're trying to release, and X.Y+1.Z is the next development version.
-# For example, if I am currently building a release for 1.16.0, X.Y.Z would be 1.16.0 and X.Y+1.Z would be 1.17.0.
-./mvnw -DdryRun=true -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments="-Dgpg.passphrase=${GPG_PASSPHRASE}" release:prepare 2>&1 | tee /tmp/prepare-dry.log
+# (accept the default tag name of calcite-X.Y.Z).
+# Note X.Y.Z is the current version we're trying to release (e.g. 1.8.0),
+# and X.(Y+1).Z is the next development version (e.g. 1.9.0).
+./mvnw -DdryRun=true -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.(Y+1).Z-SNAPSHOT -Papache-release -Darguments=-DskipTests release:prepare 2>&1 | tee /tmp/prepare-dry.log
 
 # If you have multiple GPG keys, you can select the key used to sign the release by adding `-Dgpg.keyname=${GPG_KEY_ID}` to `-Darguments`:
-./mvnw -DdryRun=true -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments="-Dgpg.passphrase=${GPG_PASSPHRASE} -Dgpg.keyname=${GPG_KEY_ID}" release:prepare 2>&1 | tee /tmp/prepare-dry.log
+./mvnw -DdryRun=true -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.(Y+1).Z-SNAPSHOT -Papache-release -Darguments="-DskipTests -Dgpg.keyname=${GPG_KEY_ID}" release:prepare 2>&1 | tee /tmp/prepare-dry.log
 {% endhighlight %}
 
 Check the artifacts.
 Note that when performing the dry run `SNAPSHOT` will appear in any file or directory names given below.
 The version will be automatically changed when performing the release for real.
 
-* In the `target` directory should be these 6 files, among others:
-  * apache-calcite-X.Y.Z-src.tar.gz
-  * apache-calcite-X.Y.Z-src.tar.gz.asc
-  * apache-calcite-X.Y.Z-src.tar.gz.sha256
+* In the `target` directory should be these 3 files, among others:
+  * `apache-calcite-X.Y.Z-src.tar.gz`
+  * `apache-calcite-X.Y.Z-src.tar.gz.asc`
+  * `apache-calcite-X.Y.Z-src.tar.gz.sha256`
 * Note that the file names start `apache-calcite-`.
 * In the source distro `.tar.gz` (currently there is
   no binary distro), check that all files belong to a directory called
@@ -629,16 +651,21 @@ Now, remove the `-DdryRun` flag and run the release for real.
 For this step you'll have to add the [Apache servers](https://maven.apache.org/developers/committer-settings.html) to `~/.m2/settings.xml`.
 
 {% highlight bash %}
+# Make sure that there are no junk files in the sandbox; performing a dry run may have generated
+# redundant files that do not need to be present in the release artifacts.
+git clean -xn
+./mvnw clean
+
 # Prepare sets the version numbers, creates a tag, and pushes it to git
 # Note X.Y.Z is the current version we're trying to release, and X.Y+1.Z is the next development version.
 # For example, if I am currently building a release for 1.16.0, X.Y.Z would be 1.16.0 and X.Y+1.Z would be 1.17.0.
-./mvnw -DdryRun=false -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments="-Dgpg.passphrase=${GPG_PASSPHRASE}" release:prepare 2>&1 | tee /tmp/prepare.log
+./mvnw -DdryRun=false -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments=-DskipTests release:prepare 2>&1 | tee /tmp/prepare.log
 
 # If you have multiple GPG keys, you can select the key used to sign the release by adding `-Dgpg.keyname=${GPG_KEY_ID}` to `-Darguments`:
-./mvnw -DdryRun=false -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments="-Dgpg.passphrase=${GPG_PASSPHRASE} -Dgpg.keyname=${GPG_KEY_ID}" release:prepare 2>&1 | tee /tmp/prepare-dry.log
+./mvnw -DdryRun=false -DskipTests -DreleaseVersion=X.Y.Z -DdevelopmentVersion=X.Y+1.Z-SNAPSHOT -Papache-release -Darguments="-DskipTests -Dgpg.keyname=${GPG_KEY_ID}" release:prepare 2>&1 | tee /tmp/prepare.log
 
 # Perform checks out the tagged version, builds, and deploys to the staging repository
-./mvnw -DskipTests -Papache-release -Darguments="-Dgpg.passphrase=${GPG_PASSPHRASE}" release:perform 2>&1 | tee /tmp/perform.log
+./mvnw -DskipTests -Papache-release release:perform 2>&1 | tee /tmp/perform.log
 {% endhighlight %}
 
 Verify the staged artifacts in the Nexus repository:
@@ -741,7 +768,7 @@ Thanks to everyone who has contributed to this release.
 https://github.com/apache/calcite/blob/XXXX/site/_docs/history.md
 
 The commit to be voted upon:
-https://git-wip-us.apache.org/repos/asf/calcite/commit/NNNNNN
+https://gitbox.apache.org/repos/asf?p=calcite.git;a=commit;h=NNNNNN
 
 Its hash is XXXX.
 
@@ -821,14 +848,6 @@ This is based on the time when you expect to announce the release.
 This is usually a day after the vote closes.
 Remember that UTC date changes at 4pm Pacific time.
 
-In JIRA, search for
-[all issues resolved in this release](https://issues.apache.org/jira/issues/?jql=project%20%3D%20CALCITE%20and%20fixVersion%20%3D%201.5.0%20and%20status%20%3D%20Resolved%20and%20resolution%20%3D%20Fixed),
-and do a bulk update changing their status to "Closed",
-with a change comment
-"Resolved in release X.Y.Z (YYYY-MM-DD)"
-(fill in release number and date appropriately).
-Uncheck "Send mail for this update".
-
 Promote the staged nexus artifacts.
 
 * Go to [https://repository.apache.org/](https://repository.apache.org/) and login
@@ -874,17 +893,33 @@ The old releases will remain available in the
 You should receive an email from the [Apache Reporter Service](https://reporter.apache.org/).
 Make sure to add the version number and date of the latest release at the site linked to in the email.
 
-Add a release note by copying
-[site/_posts/2016-10-12-release-1.10.0.md]({{ site.sourceRoot }}/site/_posts/2016-10-12-release-1.10.0.md),
-generate the javadoc using `./mvnw site`, [publish the site](#publish-the-web-site),
-and check that it appears in the contents in [news](http://localhost:4000/news/).
+Update the site with the release note, the release announcement, and the javadoc of the new version.
+The javadoc can be generated only from a final version (not a SNAPSHOT) so checkout the most recent
+tag and start working there (`git checkout calcite-X.Y.Z`). Add a release announcement by copying
+[site/_posts/2016-10-12-release-1.10.0.md]({{ site.sourceRoot }}/site/_posts/2016-10-12-release-1.10.0.md).
+Generate the javadoc, and [preview](http://localhost:4000/news/) the site by following the
+instructions in [site/README.md]({{ site.sourceRoot }}/site/README.md). Check that the announcement,
+javadoc, and release note appear correctly and then publish the site following the instructions
+in the same file. Now checkout again the release branch (`git checkout branch-X.Y`) and commit
+the release announcement.
 
-Merge the release branch back into `master` (e.g. `git merge --ff-only branch-X.Y`).
+Merge the release branch back into `master` (e.g., `git merge --ff-only branch-X.Y`) and align
+the `master` with the `site` branch (e.g., `git merge --ff-only site`).
+
+In JIRA, search for
+[all issues resolved in this release](https://issues.apache.org/jira/issues/?jql=project%20%3D%20CALCITE%20and%20fixVersion%20%3D%201.5.0%20and%20status%20%3D%20Resolved%20and%20resolution%20%3D%20Fixed),
+and do a bulk update changing their status to "Closed",
+with a change comment
+"Resolved in release X.Y.Z (YYYY-MM-DD)"
+(fill in release number and date appropriately).
+Uncheck "Send mail for this update". Under the [releases tab](https://issues.apache.org/jira/projects/CALCITE?selectedItem=com.atlassian.jira.jira-projects-plugin%3Arelease-page&status=released-unreleased)
+of the Calcite project mark the release X.Y.Z as released. If it does not already exist create also
+a new version (e.g., X.Y+1.Z) for the next release.
 
 After 24 hours, announce the release by sending an email to
 [announce@apache.org](https://mail-archives.apache.org/mod_mbox/www-announce/).
 You can use
-[the 1.10.0 announcement](https://mail-archives.apache.org/mod_mbox/calcite-dev/201610.mbox/%3C11A13D1A-8364-4A34-A11B-A8E5EA57A740%40apache.org%3E)
+[the 1.20.0 announcement](https://mail-archives.apache.org/mod_mbox/www-announce/201906.mbox/%3CCA%2BEpF8tcJcZ41rVuwJODJmyRy-qAxZUQm9OxKsoDi07c2SKs_A%40mail.gmail.com%3E)
 as a template. Be sure to include a brief description of the project.
 
 ## Publishing the web site (for Calcite committers)

@@ -25,6 +25,7 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
@@ -60,7 +61,7 @@ public class GeodeFilter extends Filter implements GeodeRel {
 
     super(cluster, traitSet, input, condition);
 
-    Translator translator = new Translator(getRowType());
+    Translator translator = new Translator(getRowType(), getCluster().getRexBuilder());
     this.match = translator.translateMatch(condition);
 
     assert getConvention() == GeodeRel.CONVENTION;
@@ -89,8 +90,11 @@ public class GeodeFilter extends Filter implements GeodeRel {
 
     private final List<String> fieldNames;
 
-    Translator(RelDataType rowType) {
+    private RexBuilder rexBuilder;
+
+    Translator(RelDataType rowType, RexBuilder rexBuilder) {
       this.rowType = rowType;
+      this.rexBuilder = rexBuilder;
       this.fieldNames = GeodeRules.geodeFieldNames(rowType);
     }
 
@@ -162,6 +166,7 @@ public class GeodeFilter extends Filter implements GeodeRel {
       case CAST:
         // FIXME This will not work in all cases (for example, we ignore string encoding)
         return getLeftNodeFieldName(((RexCall) left).operands.get(0));
+      case ITEM:
       case OTHER_FUNCTION:
         return left.accept(new GeodeRules.RexToGeodeTranslator(this.fieldNames));
       default:
@@ -293,6 +298,7 @@ public class GeodeFilter extends Filter implements GeodeRel {
     private String translateMatch2(RexNode node) {
       // We currently only use equality, but inequalities on clustering keys
       // should be possible in the future
+      RexNode child;
       switch (node.getKind()) {
       case EQUALS:
         return translateBinary("=", "=", (RexCall) node);
@@ -304,9 +310,23 @@ public class GeodeFilter extends Filter implements GeodeRel {
         return translateBinary(">", "<", (RexCall) node);
       case GREATER_THAN_OR_EQUAL:
         return translateBinary(">=", "<=", (RexCall) node);
+      case INPUT_REF:
+        return translateBinary2("=", node, rexBuilder.makeLiteral(true));
+      case NOT:
+        child = ((RexCall) node).getOperands().get(0);
+        if (child.getKind() == SqlKind.CAST) {
+          child = ((RexCall) child).getOperands().get(0);
+        }
+        if (child.getKind() == SqlKind.INPUT_REF) {
+          return translateBinary2("=", child, rexBuilder.makeLiteral(false));
+        }
+        break;
+      case CAST:
+        return translateMatch2(((RexCall) node).getOperands().get(0));
       default:
-        throw new AssertionError("cannot translate " + node);
+        break;
       }
+      throw new AssertionError("Cannot translate " + node + ", kind=" + node.getKind());
     }
 
     /**
@@ -347,7 +367,7 @@ public class GeodeFilter extends Filter implements GeodeRel {
       case CAST:
         // FIXME This will not work in all cases (for example, we ignore string encoding)
         return translateBinary2(op, ((RexCall) left).operands.get(0), right);
-      case OTHER_FUNCTION:
+      case ITEM:
         String item = left.accept(new GeodeRules.RexToGeodeTranslator(this.fieldNames));
         return (item == null) ? null : item + " " + op + " " + quoteCharLiteral(rightLiteral);
       default:

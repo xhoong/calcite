@@ -78,9 +78,8 @@ public class AggregateJoinTransposeRule extends RelOptRule {
       Class<? extends Join> joinClass, RelBuilderFactory relBuilderFactory,
       boolean allowFunctions) {
     super(
-        operandJ(aggregateClass, null,
-            aggregate -> aggregate.getGroupType() == Aggregate.Group.SIMPLE,
-            operand(joinClass, any())),
+        operandJ(aggregateClass, null, agg -> isAggregateSupported(agg, allowFunctions),
+            operand(joinClass, null, any())),
         relBuilderFactory, null);
     this.allowFunctions = allowFunctions;
   }
@@ -126,31 +125,41 @@ public class AggregateJoinTransposeRule extends RelOptRule {
         allowFunctions);
   }
 
+  private static boolean isAggregateSupported(Aggregate aggregate, boolean allowFunctions) {
+    if (!allowFunctions && !aggregate.getAggCallList().isEmpty()) {
+      return false;
+    }
+    if (aggregate.getGroupType() != Aggregate.Group.SIMPLE) {
+      return false;
+    }
+    // If any aggregate functions do not support splitting, bail out
+    // If any aggregate call has a filter or is distinct, bail out
+    for (AggregateCall aggregateCall : aggregate.getAggCallList()) {
+      if (aggregateCall.getAggregation().unwrap(SqlSplittableAggFunction.class)
+          == null) {
+        return false;
+      }
+      if (aggregateCall.filterArg >= 0 || aggregateCall.isDistinct()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // OUTER joins are supported for group by without aggregate functions
+  // FULL OUTER JOIN is not supported since it could produce wrong result
+  // due to bug (CALCITE-3012)
+  private boolean isJoinSupported(final Join join, final Aggregate aggregate) {
+    return join.getJoinType() == JoinRelType.INNER || aggregate.getAggCallList().isEmpty();
+  }
+
   public void onMatch(RelOptRuleCall call) {
     final Aggregate aggregate = call.rel(0);
     final Join join = call.rel(1);
     final RexBuilder rexBuilder = aggregate.getCluster().getRexBuilder();
     final RelBuilder relBuilder = call.builder();
 
-    // If any aggregate functions do not support splitting, bail out
-    // If any aggregate call has a filter, bail out
-    for (AggregateCall aggregateCall : aggregate.getAggCallList()) {
-      if (aggregateCall.getAggregation().unwrap(SqlSplittableAggFunction.class)
-          == null) {
-        return;
-      }
-      if (aggregateCall.filterArg >= 0) {
-        return;
-      }
-    }
-
-    // If it is not an inner join, we do not push the
-    // aggregate operator
-    if (join.getJoinType() != JoinRelType.INNER) {
-      return;
-    }
-
-    if (!allowFunctions && !aggregate.getAggCallList().isEmpty()) {
+    if (!isJoinSupported(join, aggregate)) {
       return;
     }
 
@@ -248,8 +257,10 @@ public class AggregateJoinTransposeRule extends RelOptRule {
               final int index = ((RexInputRef) singleton).getIndex();
               if (!belowAggregateKey.get(index)) {
                 projects.add(singleton);
+                side.split.put(aggCall.i, projects.size() - 1);
+              } else {
+                side.split.put(aggCall.i, index);
               }
-              side.split.put(aggCall.i, index);
             } else {
               projects.add(singleton);
               side.split.put(aggCall.i, projects.size() - 1);
@@ -315,8 +326,7 @@ public class AggregateJoinTransposeRule extends RelOptRule {
 
     // Aggregate above to sum up the sub-totals
     final List<AggregateCall> newAggCalls = new ArrayList<>();
-    final int groupIndicatorCount =
-        aggregate.getGroupCount() + aggregate.getIndicatorCount();
+    final int groupCount = aggregate.getGroupCount();
     final int newLeftWidth = sides.get(0).newInput.getRowType().getFieldCount();
     final List<RexNode> projects =
         new ArrayList<>(
@@ -330,7 +340,7 @@ public class AggregateJoinTransposeRule extends RelOptRule {
       final Integer rightSubTotal = sides.get(1).split.get(aggCall.i);
       newAggCalls.add(
           splitter.topSplit(rexBuilder, registry(projects),
-              groupIndicatorCount, relBuilder.peek().getRowType(), aggCall.e,
+              groupCount, relBuilder.peek().getRowType(), aggCall.e,
               leftSubTotal == null ? -1 : leftSubTotal,
               rightSubTotal == null ? -1 : rightSubTotal + newLeftWidth));
     }
@@ -338,8 +348,9 @@ public class AggregateJoinTransposeRule extends RelOptRule {
     relBuilder.project(projects);
 
     boolean aggConvertedToProjects = false;
-    if (allColumnsInAggregate) {
+    if (allColumnsInAggregate && join.getJoinType() != JoinRelType.FULL) {
       // let's see if we can convert aggregate into projects
+      // This shouldn't be done for FULL OUTER JOIN, aggregate on top is always required
       List<RexNode> projects2 = new ArrayList<>();
       for (int key : Mappings.apply(mapping, aggregate.getGroupSet())) {
         projects2.add(relBuilder.field(key));

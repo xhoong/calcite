@@ -26,8 +26,8 @@ import org.apache.calcite.rel.core.Intersect;
 import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.Minus;
 import org.apache.calcite.rel.core.Project;
-import org.apache.calcite.rel.core.SemiJoin;
 import org.apache.calcite.rel.core.Sort;
+import org.apache.calcite.rel.core.TableModify;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.core.Values;
@@ -114,11 +114,6 @@ public class RelMdNodeTypes
     return getNodeTypes(rel, Join.class, mq);
   }
 
-  public Multimap<Class<? extends RelNode>, RelNode> getNodeTypes(SemiJoin rel,
-      RelMetadataQuery mq) {
-    return getNodeTypes(rel, SemiJoin.class, mq);
-  }
-
   public Multimap<Class<? extends RelNode>, RelNode> getNodeTypes(Aggregate rel,
       RelMetadataQuery mq) {
     return getNodeTypes(rel, Aggregate.class, mq);
@@ -132,6 +127,11 @@ public class RelMdNodeTypes
   public Multimap<Class<? extends RelNode>, RelNode> getNodeTypes(Values rel,
       RelMetadataQuery mq) {
     return getNodeTypes(rel, Values.class, mq);
+  }
+
+  public Multimap<Class<? extends RelNode>, RelNode> getNodeTypes(TableModify rel,
+      RelMetadataQuery mq) {
+    return getNodeTypes(rel, TableModify.class, mq);
   }
 
   private static Multimap<Class<? extends RelNode>, RelNode> getNodeTypes(RelNode rel,

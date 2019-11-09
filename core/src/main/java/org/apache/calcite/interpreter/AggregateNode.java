@@ -80,7 +80,6 @@ public class AggregateNode extends AbstractSingleNode<Aggregate> {
 
     this.unionGroups = union;
     this.outputRowLength = unionGroups.cardinality()
-        + (rel.indicator ? unionGroups.cardinality() : 0)
         + rel.getAggCallList().size();
 
     ImmutableList.Builder<AccumulatorFactory> builder = ImmutableList.builder();
@@ -150,6 +149,9 @@ public class AggregateNode extends AbstractSingleNode<Aggregate> {
       case DOUBLE:
       case REAL:
         clazz = MinDouble.class;
+        break;
+      case BOOLEAN:
+        clazz = MinBoolean.class;
         break;
       default:
         clazz = MinLong.class;
@@ -374,9 +376,6 @@ public class AggregateNode extends AbstractSingleNode<Aggregate> {
         for (Integer groupPos : unionGroups) {
           if (grouping.get(groupPos)) {
             rb.set(index, key.getObject(index));
-            if (rel.indicator) {
-              rb.set(unionGroups.cardinality() + index, true);
-            }
           }
           // need to set false when not part of grouping set.
 
@@ -536,7 +535,30 @@ public class AggregateNode extends AbstractSingleNode<Aggregate> {
    */
   public static class MinDouble extends NumericComparison<Double> {
     public MinDouble() {
-      super(Double.MAX_VALUE, Math::max);
+      super(Double.MAX_VALUE, Math::min);
+    }
+  }
+
+  /** Implementation of {@code MIN} function to calculate the minimum of
+   * {@code boolean} values as a user-defined aggregate.
+   */
+  public static class MinBoolean {
+    public MinBoolean() { }
+
+    public Boolean init() {
+      return Boolean.TRUE;
+    }
+
+    public Boolean add(Boolean accumulator, Boolean value) {
+      return accumulator.compareTo(value) < 0 ? accumulator : value;
+    }
+
+    public Boolean merge(Boolean accumulator0, Boolean accumulator1) {
+      return add(accumulator0, accumulator1);
+    }
+
+    public Boolean result(Boolean accumulator) {
+      return accumulator;
     }
   }
 

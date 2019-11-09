@@ -295,6 +295,21 @@ public class RexUtil {
     return node;
   }
 
+  /** Removes any casts.
+   *
+   * <p>For example, {@code CAST('1' AS INTEGER)} becomes {@code '1'}. */
+  public static RexNode removeCast(RexNode e) {
+    for (;;) {
+      switch (e.getKind()) {
+      case CAST:
+        e = ((RexCall) e).operands.get(0);
+        break;
+      default:
+        return e;
+      }
+    }
+  }
+
   /** Creates a map containing each (e, constant) pair that occurs within
    * a predicate list.
    *
@@ -367,18 +382,17 @@ public class RexUtil {
       return;
     }
     final List<RexNode> operands = ((RexCall) predicate).getOperands();
-    if (operands.size() != 2 && predicate.getKind() == SqlKind.EQUALS) {
-      decompose(excludeSet, predicate);
-      return;
-    }
-    // if it reaches here, we have rexNode equals rexNode
     final RexNode left;
     final RexNode right;
     if (predicate.getKind() == SqlKind.EQUALS) {
       left = operands.get(0);
       right = operands.get(1);
-    } else {
+    } else { // is null
       left = operands.get(0);
+      if (!left.getType().isNullable()) {
+        // There's no sense in inferring $0=null when $0 is not nullable
+        return;
+      }
       right = rexBuilder.makeNullLiteral(left.getType());
     }
     // Note that literals are immutable too, and they can only be compared
@@ -1221,7 +1235,7 @@ public class RexUtil {
     if (target < 0) {
       return null;
     }
-    return fieldCollation.copy(target);
+    return fieldCollation.withFieldIndex(target);
   }
 
   /**
@@ -1844,14 +1858,15 @@ public class RexUtil {
   @Deprecated // to be removed before 2.0
   public static RexNode simplifyOr(RexBuilder rexBuilder, RexCall call) {
     return new RexSimplify(rexBuilder, RelOptPredicateList.EMPTY, EXECUTOR)
-        .simplifyOr(call);
+        .simplifyUnknownAs(call, RexUnknownAs.UNKNOWN);
   }
 
   @Deprecated // to be removed before 2.0
   public static RexNode simplifyOrs(RexBuilder rexBuilder,
       List<RexNode> terms) {
     return new RexSimplify(rexBuilder, RelOptPredicateList.EMPTY, EXECUTOR)
-        .simplifyOrs(terms);
+        .simplifyUnknownAs(rexBuilder.makeCall(SqlStdOperatorTable.OR, terms),
+            RexUnknownAs.UNKNOWN);
   }
 
   /**

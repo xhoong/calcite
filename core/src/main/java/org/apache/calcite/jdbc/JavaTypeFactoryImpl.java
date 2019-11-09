@@ -34,10 +34,9 @@ import org.apache.calcite.sql.type.IntervalSqlType;
 import org.apache.calcite.sql.type.JavaToSqlTypeConversionRules;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
-
-import com.google.common.collect.Lists;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -49,6 +48,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of {@link JavaTypeFactory}.
@@ -165,9 +165,6 @@ public class JavaTypeFactoryImpl
       JavaType javaType = (JavaType) type;
       return javaType.getJavaClass();
     }
-    if (type.isStruct() && type.getFieldCount() == 1) {
-      return getJavaClass(type.getFieldList().get(0).getType());
-    }
     if (type instanceof BasicSqlType || type instanceof IntervalSqlType) {
       switch (type.getSqlTypeName()) {
       case VARCHAR:
@@ -217,6 +214,8 @@ public class JavaTypeFactoryImpl
         return Enum.class;
       case ANY:
         return Object.class;
+      case NULL:
+        return Void.class;
       }
     }
     switch (type.getSqlTypeName()) {
@@ -244,15 +243,29 @@ public class JavaTypeFactoryImpl
   public static RelDataType toSql(final RelDataTypeFactory typeFactory,
       RelDataType type) {
     if (type instanceof RelRecordType) {
-      return typeFactory.createStructType(
-          Lists.transform(type.getFieldList(),
-              field -> toSql(typeFactory, field.getType())),
-          type.getFieldNames());
-    }
-    if (type instanceof JavaType) {
       return typeFactory.createTypeWithNullability(
-          typeFactory.createSqlType(type.getSqlTypeName()),
+          typeFactory.createStructType(
+              type.getFieldList()
+                  .stream()
+                  .map(field -> toSql(typeFactory, field.getType()))
+                  .collect(Collectors.toList()),
+              type.getFieldNames()),
           type.isNullable());
+    } else if (type instanceof JavaType) {
+      SqlTypeName sqlTypeName = type.getSqlTypeName();
+      final RelDataType relDataType;
+      if (SqlTypeUtil.isArray(type)) {
+        final RelDataType elementType = type.getComponentType() == null
+                // type.getJavaClass() is collection with erased generic type
+                ? typeFactory.createSqlType(SqlTypeName.ANY)
+                // elementType returned by JavaType is also of JavaType,
+                // and needs conversion using typeFactory
+                : toSql(typeFactory, type.getComponentType());
+        relDataType = typeFactory.createArrayType(elementType, -1);
+      } else {
+        relDataType = typeFactory.createSqlType(sqlTypeName);
+      }
+      return typeFactory.createTypeWithNullability(relDataType, type.isNullable());
     }
     return type;
   }

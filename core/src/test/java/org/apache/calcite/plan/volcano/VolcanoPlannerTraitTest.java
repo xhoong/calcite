@@ -258,6 +258,21 @@ public class VolcanoPlannerTraitTest {
     assertTrue(child instanceof PhysLeafRel);
   }
 
+  @Test public void testPlanWithNoneConvention() {
+    VolcanoPlanner planner = new VolcanoPlanner();
+    planner.addRelTraitDef(ConventionTraitDef.INSTANCE);
+    RelOptCluster cluster = newCluster(planner);
+    NoneTinyLeafRel leaf = new NoneTinyLeafRel(cluster, "noneLeafRel");
+    planner.setRoot(leaf);
+    RelOptCost cost = planner.getCost(leaf, cluster.getMetadataQuery());
+
+    assertTrue(cost.isInfinite());
+
+    planner.setNoneConventionHasInfiniteCost(false);
+    cost = planner.getCost(leaf, cluster.getMetadataQuery());
+    assertTrue(!cost.isInfinite());
+  }
+
   //~ Inner Classes ----------------------------------------------------------
 
   /** Implementation of {@link RelTrait} for testing. */
@@ -327,7 +342,7 @@ public class VolcanoPlannerTraitTest {
       RelTrait fromTrait = rel.getTraitSet().getTrait(this);
 
       if (conversionMap.containsKey(fromTrait)) {
-        final RelMetadataQuery mq = RelMetadataQuery.instance();
+        final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
         for (Pair<RelTrait, ConverterRule> traitAndRule
             : conversionMap.get(fromTrait)) {
           RelTrait trait = traitAndRule.left;
@@ -550,6 +565,27 @@ public class VolcanoPlannerTraitTest {
           new PhysLeafRel(
               leafRel.getCluster(),
               leafRel.getLabel()));
+    }
+  }
+
+  /** Relational expression with zero input, of NONE convention, and tiny cost. */
+  private static class NoneTinyLeafRel extends TestLeafRel {
+    protected NoneTinyLeafRel(
+        RelOptCluster cluster,
+        String label) {
+      super(
+          cluster,
+          cluster.traitSetOf(Convention.NONE),
+          label);
+    }
+
+    @Override public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
+      return new NoneTinyLeafRel(getCluster(), getLabel());
+    }
+
+    public RelOptCost computeSelfCost(RelOptPlanner planner,
+                                      RelMetadataQuery mq) {
+      return planner.getCostFactory().makeTinyCost();
     }
   }
 

@@ -165,6 +165,8 @@ public abstract class RelOptRuleCall {
    * children, and hence where the matched children are not retrievable by any
    * other means.
    *
+   * <p>Warning: it produces wrong result for {@code unordered(...)} case.
+   *
    * @param rel Relational expression
    * @return Children of relational expression
    */
@@ -192,10 +194,11 @@ public abstract class RelOptRuleCall {
   }
 
   /**
-   * Returns the current RelMetadataQuery, to be used for instance by
+   * Returns the current RelMetadataQuery or its sub-class,
+   * to be used for instance by
    * {@link RelOptRule#onMatch(RelOptRuleCall)}.
    */
-  public RelMetadataQuery getMetadataQuery() {
+  public <M extends RelMetadataQuery> M getMetadataQuery() {
     return rel(0).getCluster().getMetadataQuery();
   }
 
