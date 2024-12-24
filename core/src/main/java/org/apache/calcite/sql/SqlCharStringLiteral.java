@@ -22,7 +22,11 @@ import org.apache.calcite.util.Bug;
 import org.apache.calcite.util.NlsString;
 import org.apache.calcite.util.Util;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A character string literal.
@@ -41,29 +45,34 @@ public class SqlCharStringLiteral extends SqlAbstractStringLiteral {
   //~ Methods ----------------------------------------------------------------
 
   /**
-   * @return the underlying NlsString
+   * Returns the underlying NlsString.
+   *
+   * @deprecated Use {@link #getValueAs getValueAs(NlsString.class)}
    */
+  @Deprecated // to be removed before 2.0
   public NlsString getNlsString() {
-    return (NlsString) value;
+    return getValueNonNull();
   }
 
+  private NlsString getValueNonNull() {
+    return (NlsString) requireNonNull(value, "value");
+  }
   /**
-   * @return the collation
+   * Returns the collation.
    */
-  public SqlCollation getCollation() {
-    return getNlsString().getCollation();
+  public @Nullable SqlCollation getCollation() {
+    return getValueNonNull().getCollation();
   }
 
   @Override public SqlCharStringLiteral clone(SqlParserPos pos) {
-    return new SqlCharStringLiteral((NlsString) value, pos);
+    return new SqlCharStringLiteral(getValueNonNull(), pos);
   }
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       int leftPrec,
       int rightPrec) {
-    assert value instanceof NlsString;
-    final NlsString nlsString = (NlsString) this.value;
+    final NlsString nlsString = getValueNonNull();
     if (false) {
       Util.discard(Bug.FRG78_FIXED);
       String stringValue = nlsString.getValue();
@@ -73,13 +82,11 @@ public class SqlCharStringLiteral extends SqlAbstractStringLiteral {
     writer.literal(nlsString.asSql(true, true, writer.getDialect()));
   }
 
-  protected SqlAbstractStringLiteral concat1(List<SqlLiteral> literals) {
+  @Override protected SqlAbstractStringLiteral concat1(List<SqlLiteral> literals) {
     return new SqlCharStringLiteral(
         NlsString.concat(
             Util.transform(literals,
-                literal -> ((SqlCharStringLiteral) literal).getNlsString())),
+                literal -> literal.getValueAs(NlsString.class))),
         literals.get(0).getParserPosition());
   }
 }
-
-// End SqlCharStringLiteral.java

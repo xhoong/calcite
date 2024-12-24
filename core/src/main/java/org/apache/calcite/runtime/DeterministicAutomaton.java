@@ -19,11 +19,15 @@ package org.apache.calcite.runtime;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A deterministic finite automaton (DFA).
@@ -38,8 +42,9 @@ public class DeterministicAutomaton {
   private final ImmutableList<Transition> transitions;
 
   /** Constructs the DFA from an epsilon-NFA. */
+  @SuppressWarnings("method.invocation.invalid")
   DeterministicAutomaton(Automaton automaton) {
-    this.automaton = Objects.requireNonNull(automaton);
+    this.automaton = requireNonNull(automaton, "automaton");
     // Calculate eps closure of start state
     final Set<MultiState> traversedStates = new HashSet<>();
     // Add transitions
@@ -143,10 +148,10 @@ public class DeterministicAutomaton {
 
     Transition(MultiState fromState, MultiState toState, int symbolId,
         String symbol) {
-      this.fromState = Objects.requireNonNull(fromState);
-      this.toState = Objects.requireNonNull(toState);
+      this.fromState = requireNonNull(fromState, "fromState");
+      this.toState = requireNonNull(toState, "toState");
       this.symbolId = symbolId;
-      this.symbol = Objects.requireNonNull(symbol);
+      this.symbol = requireNonNull(symbol, "symbol");
     }
   }
 
@@ -162,14 +167,14 @@ public class DeterministicAutomaton {
     }
 
     MultiState(ImmutableSet<Automaton.State> states) {
-      this.states = Objects.requireNonNull(states);
+      this.states = requireNonNull(states, "states");
     }
 
     public boolean contains(Automaton.State state) {
       return states.contains(state);
     }
 
-    @Override public boolean equals(Object o) {
+    @Override public boolean equals(@Nullable Object o) {
       return this == o
           || o instanceof MultiState
           && Objects.equals(states, ((MultiState) o).states);
@@ -184,5 +189,3 @@ public class DeterministicAutomaton {
     }
   }
 }
-
-// End DeterministicAutomaton.java

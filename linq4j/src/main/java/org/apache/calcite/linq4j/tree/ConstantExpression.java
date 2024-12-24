@@ -16,11 +16,19 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.apache.calcite.linq4j.util.Compatible;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -28,22 +36,21 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * Represents an expression that has a constant value.
  */
 public class ConstantExpression extends Expression {
-  public final Object value;
+  public final @Nullable Object value;
 
-  public ConstantExpression(Type type, Object value) {
+  public ConstantExpression(Type type, @Nullable Object value) {
     super(ExpressionType.Constant, type);
     this.value = value;
     if (value != null) {
       if (type instanceof Class) {
         Class clazz = (Class) type;
-        Primitive primitive = Primitive.of(clazz);
-        if (primitive != null) {
-          clazz = primitive.boxClass;
-        }
+        clazz = Primitive.box(clazz);
         if (!clazz.isInstance(value)
             && !((clazz == Float.class || clazz == Double.class)
                 && value instanceof BigDecimal)) {
@@ -54,7 +61,7 @@ public class ConstantExpression extends Expression {
     }
   }
 
-  public Object evaluate(Evaluator evaluator) {
+  @Override public @Nullable Object evaluate(Evaluator evaluator) {
     return value;
   }
 
@@ -62,7 +69,7 @@ public class ConstantExpression extends Expression {
     return shuttle.visit(this);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
@@ -77,15 +84,13 @@ public class ConstantExpression extends Expression {
   }
 
   private static ExpressionWriter write(ExpressionWriter writer,
-      final Object value, Type type) {
+      final Object value, @Nullable Type type) {
     if (value == null) {
       return writer.append("null");
     }
     if (type == null) {
       type = value.getClass();
-      if (Primitive.isBox(type)) {
-        type = Primitive.ofBox(type).primitiveClass;
-      }
+      type = Primitive.unbox(type);
     }
     if (value instanceof String) {
       escapeString(writer.getBuf(), (String) value);
@@ -107,7 +112,15 @@ public class ConstantExpression extends Expression {
         if (value instanceof BigDecimal) {
           bigDecimal = (BigDecimal) value;
         } else {
-          bigDecimal = BigDecimal.valueOf((Float) value);
+          float f = (Float) value;
+          if (f == Float.POSITIVE_INFINITY) {
+            return writer.append("Float.POSITIVE_INFINITY");
+          } else if (f == Float.NEGATIVE_INFINITY) {
+            return writer.append("Float.NEGATIVE_INFINITY");
+          } else if (Float.isNaN(f)) {
+            return writer.append("Float.NaN");
+          }
+          bigDecimal = BigDecimal.valueOf(f);
         }
         if (bigDecimal.precision() > 6) {
           return writer.append("Float.intBitsToFloat(")
@@ -119,7 +132,15 @@ public class ConstantExpression extends Expression {
         if (value instanceof BigDecimal) {
           bigDecimal = (BigDecimal) value;
         } else {
-          bigDecimal = BigDecimal.valueOf((Double) value);
+          double d = (Double) value;
+          if (d == Double.POSITIVE_INFINITY) {
+            return writer.append("Double.POSITIVE_INFINITY");
+          } else if (d == Double.NEGATIVE_INFINITY) {
+            return writer.append("Double.NEGATIVE_INFINITY");
+          } else if (Double.isNaN(d)) {
+            return writer.append("Double.NaN");
+          }
+          bigDecimal = BigDecimal.valueOf(d);
         }
         if (bigDecimal.precision() > 10) {
           return writer.append("Double.longBitsToDouble(")
@@ -136,6 +157,10 @@ public class ConstantExpression extends Expression {
       writer.append(primitive2.boxName + ".valueOf(");
       write(writer, value, primitive2.primitiveClass);
       return writer.append(")");
+    }
+    Primitive primitive3 = Primitive.ofBox(value.getClass());
+    if (Object.class.equals(type) && primitive3 != null) {
+      return write(writer, value, primitive3.primitiveClass);
     }
     if (value instanceof Enum) {
       return writer.append(((Enum) value).getDeclaringClass())
@@ -171,7 +196,7 @@ public class ConstantExpression extends Expression {
       return writer.append(recordType.getName()).append(".class");
     }
     if (value.getClass().isArray()) {
-      writer.append("new ").append(value.getClass().getComponentType());
+      writer.append("new ").append(requireNonNull(value.getClass().getComponentType()));
       list(writer, Primitive.asList(value), "[] {\n", ",\n", "}");
       return writer;
     }
@@ -189,23 +214,26 @@ public class ConstantExpression extends Expression {
     if (value instanceof Set) {
       return writeSet(writer, (Set) value);
     }
+    if (value instanceof Charset) {
+      writer.append("java.nio.charset.Charset.forName(\"");
+      writer.append(value);
+      writer.append("\")");
+      return writer;
+    }
 
-    Constructor constructor = matchingConstructor(value);
+    final Field[] classFields = getClassFields(value.getClass());
+    Constructor constructor = matchingConstructor(value, classFields);
     if (constructor != null) {
       writer.append("new ").append(value.getClass());
       list(writer,
-          Arrays.stream(value.getClass().getFields())
-              .map(field -> {
-                try {
-                  return field.get(value);
-                } catch (IllegalAccessException e) {
-                  throw new RuntimeException(e);
-                }
-              })
+          Arrays.stream(classFields)
+              // <@Nullable Object> is needed for CheckerFramework
+              .<@Nullable Object>map(field -> getFieldValue(value, field))
               .collect(Collectors.toList()),
           "(\n", ",\n", ")");
       return writer;
     }
+
     return writer.append(value);
   }
 
@@ -275,8 +303,7 @@ public class ConstantExpression extends Expression {
     return writer.append(end);
   }
 
-  private static Constructor matchingConstructor(Object value) {
-    final Field[] fields = value.getClass().getFields();
+  private static @Nullable Constructor matchingConstructor(Object value, Field[] fields) {
     for (Constructor<?> constructor : value.getClass().getConstructors()) {
       if (argsMatchFields(fields, constructor.getParameterTypes())) {
         return constructor;
@@ -328,7 +355,58 @@ public class ConstantExpression extends Expression {
     buf.append('"');
   }
 
-  @Override public boolean equals(Object o) {
+  private static @Nullable Object getFieldValue(Object source, Field field) {
+    if (isRecord(source.getClass())) {
+      return getValueFromGetterMethod(source, field);
+    }
+    return getValueFromField(source, field);
+  }
+
+  private static @Nullable Object getValueFromGetterMethod(Object source, Field field) {
+    try {
+      return findPublicGetter(field, source.getClass().getMethods()).invoke(source);
+    } catch (IllegalAccessException | InvocationTargetException e) {
+      throw new IllegalArgumentException("Could not invoke getter method for field: "
+          + field.getName(), e);
+    }
+  }
+
+  private static @Nullable Object getValueFromField(Object source, Field field) {
+    try {
+      return field.get(source);
+    } catch (IllegalAccessException e) {
+      throw new IllegalArgumentException("Could not get field value for field: "
+          + field.getName(), e);
+    }
+  }
+
+  private static Field[] getClassFields(Class<?> clazz) {
+    return isRecord(clazz) ? clazz.getDeclaredFields() : clazz.getFields();
+  }
+
+  private static boolean isRecord(Class<?> clazz) {
+    return Compatible.INSTANCE.isRecord(clazz);
+  }
+
+  private static Method findPublicGetter(Field field, Method[] methods) {
+    return Arrays.stream(methods)
+        .filter(method -> isFieldGetter(field, method))
+        .findFirst()
+        .orElseThrow(() -> new IllegalArgumentException("Could not get field value"));
+  }
+
+  private static boolean isFieldGetter(Field field, Method method) {
+    return method.getReturnType().equals(field.getType())
+        && Modifier.isPublic(method.getModifiers())
+        && method.getParameterCount() == 0
+        && nameMatchesGetter(field, method);
+  }
+
+  private static boolean nameMatchesGetter(Field field, Method method) {
+    return method.getName().equals(field.getName());
+  }
+
+  @Override public boolean equals(@Nullable Object o) {
     // REVIEW: Should constants with the same value and different type
     // (e.g. 3L and 3) be considered equal.
     if (this == o) {
@@ -354,5 +432,3 @@ public class ConstantExpression extends Expression {
     return Objects.hash(nodeType, type, value);
   }
 }
-
-// End ConstantExpression.java

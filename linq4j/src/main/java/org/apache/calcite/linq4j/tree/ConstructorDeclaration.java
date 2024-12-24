@@ -16,12 +16,15 @@
  */
 package org.apache.calcite.linq4j.tree;
 
-import com.google.common.collect.Lists;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Declaration of a constructor.
@@ -31,20 +34,15 @@ public class ConstructorDeclaration extends MemberDeclaration {
   public final Type resultType;
   public final List<ParameterExpression> parameters;
   public final BlockStatement body;
-  /**
-   * Cache the hash code for the expression
-   */
+  /** Cached hash code for the expression. */
   private int hash;
 
   public ConstructorDeclaration(int modifier, Type declaredAgainst,
       List<ParameterExpression> parameters, BlockStatement body) {
-    assert parameters != null : "parameters should not be null";
-    assert body != null : "body should not be null";
-    assert declaredAgainst != null : "declaredAgainst should not be null";
     this.modifier = modifier;
-    this.resultType = declaredAgainst;
-    this.parameters = parameters;
-    this.body = body;
+    this.resultType = requireNonNull(declaredAgainst, "declaredAgainst");
+    this.parameters = requireNonNull(parameters, "parameters");
+    this.body = requireNonNull(body, "body");
   }
 
   @Override public MemberDeclaration accept(Shuttle shuttle) {
@@ -54,31 +52,32 @@ public class ConstructorDeclaration extends MemberDeclaration {
     return shuttle.visit(this, body);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
-  public void accept(ExpressionWriter writer) {
+  @Override public void accept(ExpressionWriter writer) {
     String modifiers = Modifier.toString(modifier);
     writer.append(modifiers);
     if (!modifiers.isEmpty()) {
       writer.append(' ');
     }
+    //noinspection unchecked
     writer
         .append(resultType)
         .list("(", ", ", ")",
-            Lists.transform(parameters, parameter -> {
+            () -> (Iterator) parameters.stream().map(parameter -> {
               final String modifiers1 =
                   Modifier.toString(parameter.modifier);
               return modifiers1 + (modifiers1.isEmpty() ? "" : " ")
                   + Types.className(parameter.getType()) + " "
                   + parameter.name;
-            }))
+            }).iterator())
         .append(' ').append(body);
     writer.newlineAndIndent();
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -87,21 +86,10 @@ public class ConstructorDeclaration extends MemberDeclaration {
     }
 
     ConstructorDeclaration that = (ConstructorDeclaration) o;
-
-    if (modifier != that.modifier) {
-      return false;
-    }
-    if (!body.equals(that.body)) {
-      return false;
-    }
-    if (!parameters.equals(that.parameters)) {
-      return false;
-    }
-    if (!resultType.equals(that.resultType)) {
-      return false;
-    }
-
-    return true;
+    return modifier == that.modifier
+        && body.equals(that.body)
+        && parameters.equals(that.parameters)
+        && resultType.equals(that.resultType);
   }
 
   @Override public int hashCode() {
@@ -116,5 +104,3 @@ public class ConstructorDeclaration extends MemberDeclaration {
     return result;
   }
 }
-
-// End ConstructorDeclaration.java

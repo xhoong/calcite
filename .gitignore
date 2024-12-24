@@ -14,9 +14,35 @@
 # limitations under the License.
 #
 *~
-target
-.idea
+.DS_Store
+.gradle
+/target
+/*/target
+/example/*/target
+/build
+/*/build
+/example/*/build
+/buildSrc/build
+/buildSrc/subprojects/*/build
+/site/.jekyll-cache
+
+# VSCode Java plugin
+/example/*/bin
+/*/bin
+/bin
+/.vscode/*
+
+# IDEA
+/out
+/*/out/
+/example/*/out
+# The star is required for further !/.idea/ to work, see https://git-scm.com/docs/gitignore
+/.idea/*
+# Icon for JetBrains Toolbox
+!/.idea/icon.png
+!/.idea/vcs.xml
 *.iml
+
 settings.xml
 .classpath.txt
 .fullclasspath.txt
@@ -35,4 +61,8 @@ nb-configuration.xml
 
 .mvn/wrapper/maven-wrapper.jar
 
-# End .gitignore
+# Local configuration file (sdk path, etc)
+local.properties
+
+# jenv
+.java-version

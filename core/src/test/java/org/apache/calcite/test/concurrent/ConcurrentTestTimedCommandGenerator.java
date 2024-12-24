@@ -36,12 +36,9 @@ import java.util.NoSuchElementException;
  */
 public class ConcurrentTestTimedCommandGenerator
     extends ConcurrentTestCommandGenerator {
-  //~ Instance fields --------------------------------------------------------
 
-  private int runTimeSeconds;
+  private final int runTimeSeconds;
   private long endTimeMillis;
-
-  //~ Constructors -----------------------------------------------------------
 
   /**
    * Constructs a new ConcurrentTestTimedCommandGenerator that will run
@@ -52,12 +49,8 @@ public class ConcurrentTestTimedCommandGenerator
    * @param runTimeSeconds minimum run-time length, in seconds
    */
   public ConcurrentTestTimedCommandGenerator(int runTimeSeconds) {
-    super();
-
     this.runTimeSeconds = runTimeSeconds;
   }
-
-  //~ Methods ----------------------------------------------------------------
 
   /**
    * Retrieves an Iterator based on the configured commands. This Iterator,
@@ -103,9 +96,9 @@ public class ConcurrentTestTimedCommandGenerator
    *
    * @param <E> element type
    */
-  private class TimedIterator<E> implements Iterator<E> {
+  private static class TimedIterator<E> implements Iterator<E> {
     private final List<E> commands;
-    private long endTimeMillis;
+    private final long endTimeMillis;
     private int commandIndex;
 
     private TimedIterator(
@@ -123,7 +116,7 @@ public class ConcurrentTestTimedCommandGenerator
 
       if (System.currentTimeMillis() < endTimeMillis) {
         commandIndex = 0;
-        return commands.size() > 0; // handle empty array
+        return !commands.isEmpty(); // handle empty array
       }
 
       return false;
@@ -142,5 +135,3 @@ public class ConcurrentTestTimedCommandGenerator
     }
   }
 }
-
-// End ConcurrentTestTimedCommandGenerator.java

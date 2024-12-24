@@ -40,8 +40,12 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.sql.SqlDialect;
 import org.apache.calcite.util.BuiltInMethod;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.ArrayList;
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Relational expression representing a scan of a table in a JDBC data source
@@ -60,12 +64,13 @@ public class JdbcToSparkConverter
         getCluster(), traitSet, sole(inputs));
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
-    return super.computeSelfCost(planner, mq).multiplyBy(.1);
+    final RelOptCost cost = requireNonNull(super.computeSelfCost(planner, mq));
+    return cost.multiplyBy(.1);
   }
 
-  public SparkRel.Result implementSpark(SparkRel.Implementor implementor) {
+  @Override public SparkRel.Result implementSpark(SparkRel.Implementor implementor) {
     // Generate:
     //   ResultSetEnumerable.of(schema.getDataSource(), "select ...")
     final BlockBuilder list = new BlockBuilder();
@@ -75,7 +80,7 @@ public class JdbcToSparkConverter
             implementor.getTypeFactory(), getRowType(),
             JavaRowFormat.CUSTOM);
     final JdbcConvention jdbcConvention =
-        (JdbcConvention) child.getConvention();
+        requireNonNull((JdbcConvention) child.getConvention());
     String sql = generateSql(jdbcConvention.dialect);
     if (CalciteSystemProperty.DEBUG.value()) {
       System.out.println("[" + sql + "]");
@@ -113,9 +118,7 @@ public class JdbcToSparkConverter
         new JdbcImplementor(dialect,
             (JavaTypeFactory) getCluster().getTypeFactory());
     final JdbcImplementor.Result result =
-        jdbcImplementor.visitChild(0, getInput());
+        jdbcImplementor.visitRoot(this.getInput());
     return result.asStatement().toSqlString(dialect).getSql();
   }
 }
-
-// End JdbcToSparkConverter.java

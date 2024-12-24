@@ -20,7 +20,9 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.TimeString;
 
-import com.google.common.base.Preconditions;
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A SQL literal representing a TIME value, for example <code>TIME
@@ -34,37 +36,35 @@ public class SqlTimeLiteral extends SqlAbstractDateTimeLiteral {
   SqlTimeLiteral(TimeString t, int precision, boolean hasTimeZone,
       SqlParserPos pos) {
     super(t, hasTimeZone, SqlTypeName.TIME, precision, pos);
-    Preconditions.checkArgument(this.precision >= 0);
+    checkArgument(this.precision >= 0);
   }
 
   //~ Methods ----------------------------------------------------------------
 
   /** Converts this literal to a {@link TimeString}. */
   protected TimeString getTime() {
-    return (TimeString) value;
+    return (TimeString) requireNonNull(value, "value");
   }
 
   @Override public SqlTimeLiteral clone(SqlParserPos pos) {
-    return new SqlTimeLiteral((TimeString) value, precision, hasTimeZone, pos);
+    return new SqlTimeLiteral(getTime(), precision, hasTimeZone, pos);
   }
 
-  public String toString() {
+  @Override public String toString() {
     return "TIME '" + toFormattedString() + "'";
   }
 
   /**
    * Returns e.g. '03:05:67.456'.
    */
-  public String toFormattedString() {
+  @Override public String toFormattedString() {
     return getTime().toString(precision);
   }
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       int leftPrec,
       int rightPrec) {
     writer.getDialect().unparseDateTimeLiteral(writer, this, leftPrec, rightPrec);
   }
 }
-
-// End SqlTimeLiteral.java

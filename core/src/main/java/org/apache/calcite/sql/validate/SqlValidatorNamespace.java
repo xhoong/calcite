@@ -17,8 +17,13 @@
 package org.apache.calcite.sql.validate;
 
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Pair;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.dataflow.qual.Pure;
 
 import java.util.List;
 
@@ -43,7 +48,7 @@ import java.util.List;
  * {@link SqlValidatorNamespace}. Your SelectNamespace will be there somewhere,
  * but might be one or two levels deep.  Don't try to cast the namespace or use
  * <code>instanceof</code>; use {@link SqlValidatorNamespace#unwrap(Class)} and
- * {@link SqlValidatorNamespace#isWrapperFor(Class)} instead.</p>
+ * {@link SqlValidatorNamespace#isWrapperFor(Class)} instead.
  *
  * @see SqlValidator
  * @see SqlValidatorScope
@@ -61,7 +66,7 @@ public interface SqlValidatorNamespace {
   /**
    * Returns the underlying table, or null if there is none.
    */
-  SqlValidatorTable getTable();
+  @Nullable SqlValidatorTable getTable();
 
   /**
    * Returns the row type of this namespace, which comprises a list of names
@@ -83,11 +88,11 @@ public interface SqlValidatorNamespace {
    * Sets the type of this namespace.
    *
    * <p>Allows the type for the namespace to be explicitly set, but usually is
-   * called during {@link #validate(RelDataType)}.</p>
+   * called during {@link #validate(RelDataType)}.
    *
    * <p>Implicitly also sets the row type. If the type is not a struct, then
    * the row type is the type wrapped as a struct with a single column,
-   * otherwise the type and row type are the same.</p>
+   * otherwise the type and row type are the same.
    */
   void setType(RelDataType type);
 
@@ -101,10 +106,10 @@ public interface SqlValidatorNamespace {
   /**
    * Validates this namespace.
    *
-   * <p>If the scope has already been validated, does nothing.</p>
+   * <p>If the scope has already been validated, does nothing.
    *
    * <p>Please call {@link SqlValidatorImpl#validateNamespace} rather than
-   * calling this method directly.</p>
+   * calling this method directly.
    *
    * @param targetRowType Desired row type, must not be null, may be the data
    *                      type 'unknown'.
@@ -116,14 +121,15 @@ public interface SqlValidatorNamespace {
    *
    * @return parse tree node; null for {@link TableNamespace}
    */
-  SqlNode getNode();
+  @Nullable SqlNode getNode();
 
   /**
    * Returns the parse tree node that at is at the root of this namespace and
    * includes all decorations. If there are no decorations, returns the same
    * as {@link #getNode()}.
    */
-  SqlNode getEnclosingNode();
+  @Pure
+  @Nullable SqlNode getEnclosingNode();
 
   /**
    * Looks up a child namespace of a given name.
@@ -135,7 +141,7 @@ public interface SqlValidatorNamespace {
    * @param name Name of namespace
    * @return Namespace
    */
-  SqlValidatorNamespace lookupChild(String name);
+  @Nullable SqlValidatorNamespace lookupChild(String name);
 
   /**
    * Returns whether this namespace has a field of a given name.
@@ -143,7 +149,17 @@ public interface SqlValidatorNamespace {
    * @param name Field name
    * @return Whether field exists
    */
-  boolean fieldExists(String name);
+  default boolean fieldExists(String name) {
+    return field(name) != null;
+  }
+
+  /**
+   * Returns a field of a given name, or null.
+   *
+   * @param name Field name
+   * @return Field, or null
+   */
+  @Nullable RelDataTypeField field(String name);
 
   /**
    * Returns a list of expressions which are monotonic in this namespace. For
@@ -185,10 +201,10 @@ public interface SqlValidatorNamespace {
    *
    * <p>A {@code WITH}) clause defines table names that resolve to queries
    * (the body of the with-item). An {@link IdentifierNamespace} typically
-   * resolves to a {@link TableNamespace}.</p>
+   * resolves to a {@link TableNamespace}.
    *
    * <p>You must not call this method before {@link #validate(RelDataType)} has
-   * completed.</p> */
+   * completed. */
   SqlValidatorNamespace resolve();
 
   /** Returns whether this namespace is capable of giving results of the desired
@@ -197,6 +213,10 @@ public interface SqlValidatorNamespace {
    * @param modality Modality
    */
   boolean supportsModality(SqlModality modality);
-}
 
-// End SqlValidatorNamespace.java
+  /** Returns the ordinals (in the row type) of the "must-filter" fields,
+   * fields that that must be filtered in a query. */
+  default ImmutableBitSet getMustFilterFields() {
+    return ImmutableBitSet.of();
+  }
+}

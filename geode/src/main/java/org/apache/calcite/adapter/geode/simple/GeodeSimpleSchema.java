@@ -34,27 +34,19 @@ import static org.apache.calcite.adapter.geode.util.GeodeUtils.autodetectRelType
  */
 public class GeodeSimpleSchema extends AbstractSchema {
 
-  private String locatorHost;
-  private int locatorPort;
-  private String[] regionNames;
-  private String pdxAutoSerializerPackageExp;
-  private ClientCache clientCache;
+  @SuppressWarnings("unused")
+  private final String[] regionNames;
+  @SuppressWarnings("unused")
+  private final ClientCache clientCache;
   private ImmutableMap<String, Table> tableMap;
 
-  public GeodeSimpleSchema(
-      String locatorHost, int locatorPort,
+  public GeodeSimpleSchema(String locatorHost, int locatorPort,
       String[] regionNames, String pdxAutoSerializerPackageExp) {
     super();
-    this.locatorHost = locatorHost;
-    this.locatorPort = locatorPort;
     this.regionNames = regionNames;
-    this.pdxAutoSerializerPackageExp = pdxAutoSerializerPackageExp;
-
-    this.clientCache = GeodeUtils.createClientCache(
-        locatorHost,
-        locatorPort,
-        pdxAutoSerializerPackageExp,
-        true);
+    this.clientCache =
+        GeodeUtils.createClientCache(locatorHost, locatorPort,
+            pdxAutoSerializerPackageExp, true);
   }
 
   @Override protected Map<String, Table> getTableMap() {
@@ -66,8 +58,9 @@ public class GeodeSimpleSchema extends AbstractSchema {
 
         Region region = GeodeUtils.createRegion(clientCache, regionName);
 
-        Table table = new GeodeSimpleScannableTable(regionName, autodetectRelTypeFromRegion(region),
-            clientCache);
+        Table table =
+            new GeodeSimpleScannableTable(regionName,
+                autodetectRelTypeFromRegion(region), clientCache);
 
         builder.put(regionName, table);
       }
@@ -77,5 +70,3 @@ public class GeodeSimpleSchema extends AbstractSchema {
     return tableMap;
   }
 }
-
-// End GeodeSimpleSchema.java

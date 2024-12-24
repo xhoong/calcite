@@ -16,6 +16,8 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -23,57 +25,63 @@ import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Objects;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static java.util.Objects.requireNonNull;
+
 /**
  * Represents a call to either a static or an instance method.
  */
 public class MethodCallExpression extends Expression {
   public final Method method;
-  public final Expression targetExpression; // null for call to static method
+  public final @Nullable Expression targetExpression; // null for call to static method
   public final List<Expression> expressions;
-  /**
-   * Cache the hash code for the expression
-   */
+  /** Cached hash code for the expression. */
   private int hash;
 
   MethodCallExpression(Type returnType, Method method,
-      Expression targetExpression, List<Expression> expressions) {
+      @Nullable Expression targetExpression, List<Expression> expressions) {
     super(ExpressionType.Call, returnType);
-    assert expressions != null : "expressions should not be null";
-    assert method != null : "method should not be null";
-    assert (targetExpression == null) == Modifier.isStatic(
-        method.getModifiers());
-    assert Types.toClass(returnType) == method.getReturnType();
-    this.method = method;
+    checkArgument((targetExpression == null)
+        == Modifier.isStatic(method.getModifiers()),
+        "static method requires target expression "
+            + "[static: %s, targetExpression: %s]",
+        Modifier.isStatic(method.getModifiers()),
+        targetExpression);
+    checkArgument(Types.toClass(returnType) == method.getReturnType());
+    this.method = requireNonNull(method, "method");
     this.targetExpression = targetExpression;
-    this.expressions = expressions;
+    this.expressions = requireNonNull(expressions, "expressions");
   }
 
-  MethodCallExpression(Method method, Expression targetExpression,
+  MethodCallExpression(Method method, @Nullable Expression targetExpression,
       List<Expression> expressions) {
     this(method.getReturnType(), method, targetExpression, expressions);
   }
 
   @Override public Expression accept(Shuttle shuttle) {
     shuttle = shuttle.preVisit(this);
-    Expression targetExpression = Expressions.accept(this.targetExpression,
-        shuttle);
-    List<Expression> expressions = Expressions.acceptExpressions(
-        this.expressions, shuttle);
+    Expression targetExpression =
+        this.targetExpression == null
+            ? null
+            : this.targetExpression.accept(shuttle);
+    List<Expression> expressions =
+        Expressions.acceptExpressions(this.expressions, shuttle);
     return shuttle.visit(this, targetExpression, expressions);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
-  @Override public Object evaluate(Evaluator evaluator) {
+  @Override public @Nullable Object evaluate(Evaluator evaluator) {
     final Object target;
     if (targetExpression == null) {
       target = null;
     } else {
       target = targetExpression.evaluate(evaluator);
     }
-    final Object[] args = new Object[expressions.size()];
+    final @Nullable Object[] args = new Object[expressions.size()];
     for (int i = 0; i < expressions.size(); i++) {
       Expression expression = expressions.get(i);
       args[i] = expression.evaluate(evaluator);
@@ -107,7 +115,7 @@ public class MethodCallExpression extends Expression {
     writer.append(')');
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -119,19 +127,9 @@ public class MethodCallExpression extends Expression {
     }
 
     MethodCallExpression that = (MethodCallExpression) o;
-
-    if (!expressions.equals(that.expressions)) {
-      return false;
-    }
-    if (!method.equals(that.method)) {
-      return false;
-    }
-    if (targetExpression != null ? !targetExpression.equals(that
-        .targetExpression) : that.targetExpression != null) {
-      return false;
-    }
-
-    return true;
+    return expressions.equals(that.expressions)
+        && method.equals(that.method)
+        && Objects.equals(targetExpression, that.targetExpression);
   }
 
   @Override public int hashCode() {
@@ -147,5 +145,3 @@ public class MethodCallExpression extends Expression {
     return result;
   }
 }
-
-// End MethodCallExpression.java

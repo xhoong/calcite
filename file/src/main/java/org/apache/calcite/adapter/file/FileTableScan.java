@@ -34,7 +34,11 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
 
+import com.google.common.collect.ImmutableList;
+
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Relational expression representing a scan of an HTML table.
@@ -49,11 +53,9 @@ class FileTableScan extends TableScan implements EnumerableRel {
 
   protected FileTableScan(RelOptCluster cluster, RelOptTable table,
       FileTable webTable, int[] fields) {
-    super(cluster, cluster.traitSetOf(EnumerableConvention.INSTANCE), table);
-    this.webTable = webTable;
+    super(cluster, cluster.traitSetOf(EnumerableConvention.INSTANCE), ImmutableList.of(), table);
+    this.webTable = requireNonNull(webTable, "webTable");
     this.fields = fields;
-
-    assert webTable != null;
   }
 
   @Override public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
@@ -76,7 +78,7 @@ class FileTableScan extends TableScan implements EnumerableRel {
     return builder.build();
   }
 
-  public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
+  @Override public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
     PhysType physType =
         PhysTypeImpl.of(
             implementor.getTypeFactory(),
@@ -86,9 +88,8 @@ class FileTableScan extends TableScan implements EnumerableRel {
     return implementor.result(
         physType,
         Blocks.toBlock(
-            Expressions.call(table.getExpression(FileTable.class), "project",
+            Expressions.call(
+                requireNonNull(table.getExpression(FileTable.class)), "project",
                 Expressions.constant(fields))));
   }
 }
-
-// End FileTableScan.java

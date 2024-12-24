@@ -20,10 +20,13 @@ import org.apache.calcite.adapter.java.JavaTypeFactory;
 import org.apache.calcite.linq4j.QueryProvider;
 import org.apache.calcite.linq4j.tree.Expressions;
 import org.apache.calcite.linq4j.tree.ParameterExpression;
+import org.apache.calcite.rel.type.TimeFrameSet;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.sql.advise.SqlAdvisor;
 
 import com.google.common.base.CaseFormat;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -34,6 +37,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Runtime context allowing access to the tables in a database.
+ *
+ * @see DataContexts
  */
 public interface DataContext {
   ParameterExpression ROOT =
@@ -42,7 +47,7 @@ public interface DataContext {
   /**
    * Returns a sub-schema with a given name, or null.
    */
-  SchemaPlus getRootSchema();
+  @Nullable SchemaPlus getRootSchema();
 
   /**
    * Returns the type factory.
@@ -58,11 +63,11 @@ public interface DataContext {
    * Returns a context variable.
    *
    * <p>Supported variables include: "sparkContext", "currentTimestamp",
-   * "localTimestamp".</p>
+   * "localTimestamp".
    *
    * @param name Name of variable
    */
-  Object get(String name);
+  @Nullable Object get(String name);
 
   /** Variable that may be asked for in a call to {@link DataContext#get}. */
   enum Variable {
@@ -76,6 +81,11 @@ public interface DataContext {
      * milliseconds after 1970-01-01 00:00:00, in the time zone of the current
      * statement. Required. */
     LOCAL_TIMESTAMP("localTimestamp", Long.class),
+
+    /** The time in the operating system time zone of the database server. In
+     * milliseconds after 1970-01-01 00:00:00, in the time zone of the database
+     * server. Required. */
+    SYS_TIMESTAMP("sysTimestamp", Long.class),
 
     /** The Spark engine. Available if Spark is on the class path. */
     SPARK_CONTEXT("sparkContext", Object.class),
@@ -113,6 +123,11 @@ public interface DataContext {
      * time zone. */
     TIME_ZONE("timeZone", TimeZone.class),
 
+    /** Set of built-in and custom time frames for use in functions such as
+     * {@code FLOOR} and {@code EXTRACT}. Required; defaults to
+     * {@link org.apache.calcite.rel.type.TimeFrames#CORE}. */
+    TIME_FRAME_SET("timeFrameSet", TimeFrameSet.class),
+
     /** The query user.
      *
      * <p>Default value is "sa". */
@@ -141,5 +156,3 @@ public interface DataContext {
     }
   }
 }
-
-// End DataContext.java

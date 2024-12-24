@@ -22,6 +22,8 @@ import org.apache.calcite.linq4j.function.Functions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.Type;
@@ -29,6 +31,8 @@ import java.lang.reflect.TypeVariable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Represents a strongly typed lambda expression as a data structure in the form
@@ -38,27 +42,27 @@ import java.util.Objects;
  */
 public final class FunctionExpression<F extends Function<?>>
     extends LambdaExpression {
-  public final F function;
-  public final BlockStatement body;
+  public final @Nullable F function;
+  public final @Nullable BlockStatement body;
   public final List<ParameterExpression> parameterList;
-  private F dynamicFunction;
-  /**
-   * Cache the hash code for the expression
-   */
+  private @Nullable F dynamicFunction;
+  /** Cached hash code for the expression. */
   private int hash;
 
-  private FunctionExpression(Class<F> type, F function, BlockStatement body,
+  private FunctionExpression(Class<F> type, @Nullable F function,
+      @Nullable BlockStatement body,
       List<ParameterExpression> parameterList) {
     super(ExpressionType.Lambda, type);
-    assert type != null : "type should not be null";
-    assert function != null || body != null
-        : "both function and body should not be null";
-    assert parameterList != null : "parameterList should not be null";
+    if (function == null && body == null) {
+      throw new IllegalArgumentException(
+          "both function and body should not be null");
+    }
     this.function = function;
     this.body = body;
-    this.parameterList = parameterList;
+    this.parameterList = requireNonNull(parameterList, "parameterList");
   }
 
+  @SuppressWarnings({"unchecked", "rawtypes"})
   public FunctionExpression(F function) {
     this((Class) function.getClass(), function, null, ImmutableList.of());
   }
@@ -70,11 +74,11 @@ public final class FunctionExpression<F extends Function<?>>
 
   @Override public Expression accept(Shuttle shuttle) {
     shuttle = shuttle.preVisit(this);
-    BlockStatement body = this.body.accept(shuttle);
+    BlockStatement body = this.body == null ? null : this.body.accept(shuttle);
     return shuttle.visit(this, body);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
@@ -84,7 +88,7 @@ public final class FunctionExpression<F extends Function<?>>
       for (int i = 0; i < args.length; i++) {
         evaluator.push(parameterList.get(i), args[i]);
       }
-      return evaluator.evaluate(body);
+      return evaluator.evaluate(requireNonNull(body, "body"));
     };
   }
 
@@ -95,9 +99,12 @@ public final class FunctionExpression<F extends Function<?>>
     if (dynamicFunction == null) {
       final Invokable x = compile();
 
+      ClassLoader classLoader = requireNonNull(getClass().getClassLoader());
       //noinspection unchecked
-      dynamicFunction = (F) Proxy.newProxyInstance(getClass().getClassLoader(),
-          new Class[]{Types.toClass(type)}, (proxy, method, args) -> x.dynamicInvoke(args));
+      dynamicFunction =
+          (F) Proxy.newProxyInstance(classLoader,
+              new Class[]{Types.toClass(type)},
+              (proxy, method, args) -> x.dynamicInvoke(args));
     }
     return dynamicFunction;
   }
@@ -144,9 +151,10 @@ public final class FunctionExpression<F extends Function<?>>
       boxBridgeParams.add(parameterExpression.declString(parameterBoxType));
       boxBridgeArgs.add(parameterExpression.name
           + (Primitive.is(parameterType)
-          ? "." + Primitive.of(parameterType).primitiveName + "Value()"
+          ? "." + requireNonNull(Primitive.of(parameterType)).primitiveName + "Value()"
           : ""));
     }
+    requireNonNull(body, "body");
     Type bridgeResultType = Functions.FUNCTION_RESULT_TYPES.get(this.type);
     if (bridgeResultType == null) {
       bridgeResultType = body.getType();
@@ -204,13 +212,11 @@ public final class FunctionExpression<F extends Function<?>>
 
   private boolean isAbstractMethodPrimitive() {
     Method method = getAbstractMethod();
-    assert method != null;
     return Primitive.is(method.getReturnType());
   }
 
   private String getAbstractMethodName() {
     final Method abstractMethod = getAbstractMethod();
-    assert abstractMethod != null;
     return abstractMethod.getName();
   }
 
@@ -224,10 +230,10 @@ public final class FunctionExpression<F extends Function<?>>
         return declaredMethods.get(0);
       }
     }
-    return null;
+    throw new IllegalStateException("Method not found, type = " + type);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -239,19 +245,9 @@ public final class FunctionExpression<F extends Function<?>>
     }
 
     FunctionExpression that = (FunctionExpression) o;
-
-    if (body != null ? !body.equals(that.body) : that.body != null) {
-      return false;
-    }
-    if (function != null ? !function.equals(that.function) : that.function
-        != null) {
-      return false;
-    }
-    if (!parameterList.equals(that.parameterList)) {
-      return false;
-    }
-
-    return true;
+    return Objects.equals(body, that.body)
+        && Objects.equals(function, that.function)
+        && parameterList.equals(that.parameterList);
   }
 
   @Override public int hashCode() {
@@ -268,8 +264,6 @@ public final class FunctionExpression<F extends Function<?>>
 
   /** Function that can be invoked with a variable number of arguments. */
   public interface Invokable {
-    Object dynamicInvoke(Object... args);
+    @Nullable Object dynamicInvoke(@Nullable Object... args);
   }
 }
-
-// End FunctionExpression.java

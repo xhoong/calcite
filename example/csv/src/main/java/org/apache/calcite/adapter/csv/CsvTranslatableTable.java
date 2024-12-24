@@ -17,6 +17,8 @@
 package org.apache.calcite.adapter.csv;
 
 import org.apache.calcite.DataContext;
+import org.apache.calcite.adapter.file.CsvEnumerator;
+import org.apache.calcite.adapter.java.JavaTypeFactory;
 import org.apache.calcite.linq4j.AbstractEnumerable;
 import org.apache.calcite.linq4j.Enumerable;
 import org.apache.calcite.linq4j.Enumerator;
@@ -30,7 +32,10 @@ import org.apache.calcite.schema.QueryableTable;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Schemas;
 import org.apache.calcite.schema.TranslatableTable;
+import org.apache.calcite.util.ImmutableIntList;
 import org.apache.calcite.util.Source;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.lang.reflect.Type;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,42 +46,46 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CsvTranslatableTable extends CsvTable
     implements QueryableTable, TranslatableTable {
   /** Creates a CsvTable. */
-  CsvTranslatableTable(Source source, RelProtoDataType protoRowType) {
+  CsvTranslatableTable(Source source, @Nullable RelProtoDataType protoRowType) {
     super(source, protoRowType);
   }
 
-  public String toString() {
+  @Override public String toString() {
     return "CsvTranslatableTable";
   }
 
-  /** Returns an enumerable over a given projection of the fields.
-   *
-   * <p>Called from generated code. */
+  /** Returns an enumerable over a given projection of the fields. */
+  @SuppressWarnings("unused") // called from generated code
   public Enumerable<Object> project(final DataContext root,
       final int[] fields) {
     final AtomicBoolean cancelFlag = DataContext.Variable.CANCEL_FLAG.get(root);
     return new AbstractEnumerable<Object>() {
-      public Enumerator<Object> enumerator() {
-        return new CsvEnumerator<>(source, cancelFlag, fieldTypes, fields);
+      @Override public Enumerator<Object> enumerator() {
+        JavaTypeFactory typeFactory = root.getTypeFactory();
+        return new CsvEnumerator<>(
+            source,
+            cancelFlag,
+            getFieldTypes(typeFactory),
+            ImmutableIntList.of(fields));
       }
     };
   }
 
-  public Expression getExpression(SchemaPlus schema, String tableName,
+  @Override public Expression getExpression(SchemaPlus schema, String tableName,
       Class clazz) {
     return Schemas.tableExpression(schema, getElementType(), tableName, clazz);
   }
 
-  public Type getElementType() {
+  @Override public Type getElementType() {
     return Object[].class;
   }
 
-  public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
+  @Override public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
       SchemaPlus schema, String tableName) {
     throw new UnsupportedOperationException();
   }
 
-  public RelNode toRel(
+  @Override public RelNode toRel(
       RelOptTable.ToRelContext context,
       RelOptTable relOptTable) {
     // Request all fields.
@@ -85,5 +94,3 @@ public class CsvTranslatableTable extends CsvTable
     return new CsvTableScan(context.getCluster(), relOptTable, this, fields);
   }
 }
-
-// End CsvTranslatableTable.java

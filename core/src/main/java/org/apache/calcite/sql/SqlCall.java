@@ -26,10 +26,16 @@ import org.apache.calcite.sql.validate.SqlValidatorImpl;
 import org.apache.calcite.sql.validate.SqlValidatorScope;
 import org.apache.calcite.util.Litmus;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.dataflow.qual.Pure;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import javax.annotation.Nonnull;
+
+import static org.apache.calcite.linq4j.Nullness.castNonNull;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A <code>SqlCall</code> is a call to an {@link SqlOperator operator}.
@@ -40,7 +46,7 @@ import javax.annotation.Nonnull;
 public abstract class SqlCall extends SqlNode {
   //~ Constructors -----------------------------------------------------------
 
-  public SqlCall(SqlParserPos pos) {
+  protected SqlCall(SqlParserPos pos) {
     super(pos);
   }
 
@@ -61,7 +67,7 @@ public abstract class SqlCall extends SqlNode {
    * @param i Operand index
    * @param operand Operand value
    */
-  public void setOperand(int i, SqlNode operand) {
+  public void setOperand(int i, @Nullable SqlNode operand) {
     throw new UnsupportedOperationException();
   }
 
@@ -69,13 +75,36 @@ public abstract class SqlCall extends SqlNode {
     return getOperator().getKind();
   }
 
-  public abstract @Nonnull SqlOperator getOperator();
+  @Pure
+  public abstract SqlOperator getOperator();
 
-  public abstract @Nonnull List<SqlNode> getOperandList();
+  /**
+   * Returns the list of operands. The set and order of operands is
+   * call-specific.
+   *
+   * <p>Note: the proper type would be {@code List<@Nullable SqlNode>}, however,
+   * it would trigger too many changes to the current codebase.
+   *
+   * @return the list of call operands, never null, the operands can be null
+   */
+  public abstract List</*Nullable*/ SqlNode> getOperandList();
 
+  /**
+   * Returns i-th operand (0-based).
+   *
+   * <p>Note: the result might be null, so the proper signature would be
+   * {@code <S extends @Nullable SqlNode>}, however, it would trigger to many
+   * changes to the current codebase.
+   *
+   * @param i operand index (0-based)
+   * @param <S> type of the result
+   * @return i-th operand (0-based), the result might be null
+   */
   @SuppressWarnings("unchecked")
-  public <S extends SqlNode> S operand(int i) {
-    return (S) getOperandList().get(i);
+  public <S extends /*Nullable*/ SqlNode> S operand(int i) {
+    // Note: in general, null elements exist in the list, however, the code
+    // assumes operand(..) is non-nullable, so we add a cast here
+    return (S) castNonNull(getOperandList().get(i));
   }
 
   public int operandCount() {
@@ -83,12 +112,11 @@ public abstract class SqlCall extends SqlNode {
   }
 
   @Override public SqlNode clone(SqlParserPos pos) {
-    final List<SqlNode> operandList = getOperandList();
     return getOperator().createCall(getFunctionQuantifier(), pos,
-        operandList.toArray(new SqlNode[0]));
+        getOperandList());
   }
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       int leftPrec,
       int rightPrec) {
@@ -96,7 +124,8 @@ public abstract class SqlCall extends SqlNode {
     final SqlDialect dialect = writer.getDialect();
     if (leftPrec > operator.getLeftPrec()
         || (operator.getRightPrec() <= rightPrec && (rightPrec != 0))
-        || writer.isAlwaysUseParentheses() && isA(SqlKind.EXPRESSION)) {
+        || writer.isAlwaysUseParentheses() && isA(SqlKind.EXPRESSION)
+        || (operator.getRightPrec() <= rightPrec + 1 && isA(SqlKind.COMPARISON))) {
       final SqlWriter.Frame frame = writer.startList("(", ")");
       dialect.unparseCall(writer, this, 0, 0);
       writer.endList(frame);
@@ -112,11 +141,11 @@ public abstract class SqlCall extends SqlNode {
    * {@link SqlOperator#validateCall}. Derived classes may override (as do,
    * for example {@link SqlSelect} and {@link SqlUpdate}).
    */
-  public void validate(SqlValidator validator, SqlValidatorScope scope) {
+  @Override public void validate(SqlValidator validator, SqlValidatorScope scope) {
     validator.validateCall(this, scope);
   }
 
-  public void findValidOptions(
+  @Override public void findValidOptions(
       SqlValidator validator,
       SqlValidatorScope scope,
       SqlParserPos pos,
@@ -135,11 +164,11 @@ public abstract class SqlCall extends SqlNode {
     // no valid options
   }
 
-  public <R> R accept(SqlVisitor<R> visitor) {
+  @Override public <R> R accept(SqlVisitor<R> visitor) {
     return visitor.visit(this);
   }
 
-  public boolean equalsDeep(SqlNode node, Litmus litmus) {
+  @Override public boolean equalsDeep(@Nullable SqlNode node, Litmus litmus) {
     if (node == this) {
       return true;
     }
@@ -154,6 +183,9 @@ public abstract class SqlCall extends SqlNode {
     if (!this.getOperator().getName().equalsIgnoreCase(that.getOperator().getName())) {
       return litmus.fail("{} != {}", this, node);
     }
+    if (!equalDeep(this.getFunctionQuantifier(), that.getFunctionQuantifier(), litmus)) {
+      return litmus.fail("{} != {} (function quantifier differs)", this, node);
+    }
     return equalDeep(this.getOperandList(), that.getOperandList(), litmus);
   }
 
@@ -161,12 +193,13 @@ public abstract class SqlCall extends SqlNode {
    * Returns a string describing the actual argument types of a call, e.g.
    * "SUBSTR(VARCHAR(12), NUMBER(3,2), INTEGER)".
    */
-  protected String getCallSignature(
+  public String getCallSignature(
       SqlValidator validator,
-      SqlValidatorScope scope) {
+      @Nullable SqlValidatorScope scope) {
     List<String> signatureList = new ArrayList<>();
     for (final SqlNode operand : getOperandList()) {
-      final RelDataType argType = validator.deriveType(scope, operand);
+      final RelDataType argType =
+          validator.deriveType(requireNonNull(scope, "scope"), operand);
       if (null == argType) {
         continue;
       }
@@ -175,7 +208,7 @@ public abstract class SqlCall extends SqlNode {
     return SqlUtil.getOperatorSignature(getOperator(), signatureList);
   }
 
-  public SqlMonotonicity getMonotonicity(SqlValidatorScope scope) {
+  @Override public SqlMonotonicity getMonotonicity(SqlValidatorScope scope) {
     // Delegate to operator.
     final SqlCallBinding binding =
         new SqlCallBinding(scope.getValidator(), scope, this);
@@ -183,9 +216,9 @@ public abstract class SqlCall extends SqlNode {
   }
 
   /**
-   * Test to see if it is the function COUNT(*)
+   * Returns whether it is the function {@code COUNT(*)}.
    *
-   * @return boolean true if function call to COUNT(*)
+   * @return true if function call to COUNT(*)
    */
   public boolean isCountStar() {
     SqlOperator sqlOperator = getOperator();
@@ -203,9 +236,8 @@ public abstract class SqlCall extends SqlNode {
     return false;
   }
 
-  public SqlLiteral getFunctionQuantifier() {
+  @Pure
+  public @Nullable SqlLiteral getFunctionQuantifier() {
     return null;
   }
 }
-
-// End SqlCall.java

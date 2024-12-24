@@ -18,6 +18,7 @@ package org.apache.calcite.adapter.file;
 
 import org.apache.calcite.util.Source;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -26,8 +27,11 @@ import org.jsoup.select.Elements;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Scrapes HTML tables from URLs using Jsoup.
@@ -35,27 +39,24 @@ import java.util.concurrent.TimeUnit;
 public class FileReader implements Iterable<Elements> {
 
   private final Source source;
-  private final String selector;
-  private final Integer index;
+  private final @Nullable String selector;
+  private final @Nullable Integer index;
   private final Charset charset = StandardCharsets.UTF_8;
-  private Element tableElement;
-  private Elements headings;
+  private @Nullable Element tableElement;
+  private @Nullable Elements headings;
 
-  public FileReader(Source source, String selector, Integer index)
-      throws FileReaderException {
-    if (source == null) {
-      throw new FileReaderException("URL must not be null");
-    }
-    this.source = source;
+  public FileReader(Source source, @Nullable String selector,
+      @Nullable Integer index) {
+    this.source = requireNonNull(source, "source must not be null");
     this.selector = selector;
     this.index = index;
   }
 
-  public FileReader(Source source, String selector) throws FileReaderException {
+  public FileReader(Source source, String selector) {
     this(source, selector, null);
   }
 
-  public FileReader(Source source) throws FileReaderException {
+  public FileReader(Source source) {
     this(source, null, null);
   }
 
@@ -63,16 +64,20 @@ public class FileReader implements Iterable<Elements> {
     final Document doc;
     try {
       String proto = source.protocol();
-      if (proto.equals("file")) {
+      if ("file".equals(proto)) {
         doc = Jsoup.parse(source.file(), this.charset.name());
-      } else {
+      } else if (Arrays.asList("http", "https", "ftp").contains(proto)) {
+        // known protocols handled by URL
         doc = Jsoup.parse(source.url(), (int) TimeUnit.SECONDS.toMillis(20));
+      } else {
+        // generically read this source
+        doc = Jsoup.parse(source.openStream(), charset.name(), "");
       }
     } catch (IOException e) {
-      throw new FileReaderException("Cannot read " + source.path(), e);
+      throw new FileReaderException("Cannot read " + source, e);
     }
 
-    this.tableElement = (this.selector != null && !this.selector.equals(""))
+    this.tableElement = (this.selector != null && !this.selector.isEmpty())
         ? getSelectedTable(doc, this.selector) : getBestTable(doc);
   }
 
@@ -86,7 +91,7 @@ public class FileReader implements Iterable<Elements> {
 
     if (this.index == null) {
       if (list.size() != 1) {
-        throw new FileReaderException("" + list.size()
+        throw new FileReaderException(list.size()
             + " HTML element(s) selected");
       }
 
@@ -104,7 +109,7 @@ public class FileReader implements Iterable<Elements> {
     }
   }
 
-  private Element getBestTable(Document doc) throws FileReaderException {
+  private static Element getBestTable(Document doc) throws FileReaderException {
     Element bestTable = null;
     int bestScore = -1;
 
@@ -131,8 +136,7 @@ public class FileReader implements Iterable<Elements> {
     getTable();
   }
 
-  Elements getHeadings() throws FileReaderException {
-
+  Elements getHeadings() {
     if (this.headings == null) {
       this.iterator();
     }
@@ -140,11 +144,7 @@ public class FileReader implements Iterable<Elements> {
     return this.headings;
   }
 
-  private String tableKey() {
-    return "Table: {url: " + this.source + ", selector: " + this.selector + "}";
-  }
-
-  public FileReaderIterator iterator() {
+  @Override public FileReaderIterator iterator() {
     if (this.tableElement == null) {
       try {
         getTable();
@@ -160,12 +160,11 @@ public class FileReader implements Iterable<Elements> {
 
     // if we haven't cached the headings, get them
     // TODO: this needs to be reworked to properly cache the headings
-    //if (this.headings == null) {
-    if (true) {
+    if (/* this.headings == null */ true) {
       // first row must contain headings
       Elements headings = iterator.next("th");
       // if not, generate some default column names
-      if (headings.size() == 0) {
+      if (headings.isEmpty()) {
         // rewind and peek at the first row of data
         iterator = new FileReaderIterator(this.tableElement.select("tr"));
         Elements firstRow = iterator.next("td");
@@ -197,7 +196,7 @@ public class FileReader implements Iterable<Elements> {
       this.rowIterator = rows.iterator();
     }
 
-    public boolean hasNext() {
+    @Override public boolean hasNext() {
       return this.rowIterator.hasNext();
     }
 
@@ -208,14 +207,12 @@ public class FileReader implements Iterable<Elements> {
     }
 
     // return th and td elements by default
-    public Elements next() {
+    @Override public Elements next() {
       return next("th,td");
     }
 
-    public void remove() {
+    @Override public void remove() {
       throw new UnsupportedOperationException("NFW - can't remove!");
     }
   }
 }
-
-// End FileReader.java

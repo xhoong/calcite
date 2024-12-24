@@ -21,13 +21,17 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeFamily;
 import org.apache.calcite.sql.SqlIntervalQualifier;
+import org.apache.calcite.sql.SqlWindow;
 import org.apache.calcite.sql.parser.SqlParserPos;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.sql.Types;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -72,7 +76,12 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
   ANY,
   CURSOR,
   COLUMN_LIST,
-  GEO;
+  GEO,
+  FUNCTION,
+  VARIANT,
+  /** Like ANY, but do not even validate the operand. It may not be an
+   * expression. */
+  IGNORE;
 
   private static final Map<Integer, SqlTypeFamily> JDBC_TYPE_TO_FAMILY =
       ImmutableMap.<Integer, SqlTypeFamily>builder()
@@ -111,6 +120,7 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
 
           .put(ExtraSqlTypes.REF_CURSOR, CURSOR)
           .put(Types.ARRAY, ARRAY)
+          .put(Types.JAVA_OBJECT, VARIANT)
           .build();
 
   /**
@@ -119,13 +129,45 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
    * @param jdbcType the JDBC type of interest
    * @return containing family
    */
-  public static SqlTypeFamily getFamilyForJdbcType(int jdbcType) {
+  public static @Nullable SqlTypeFamily getFamilyForJdbcType(int jdbcType) {
     return JDBC_TYPE_TO_FAMILY.get(jdbcType);
   }
 
-  /**
-   * @return collection of {@link SqlTypeName}s included in this family
-   */
+  /** For this type family, returns the allow types of the difference between
+   * two values of this family.
+   *
+   * <p>Equivalently, given an {@code ORDER BY} expression with one key,
+   * returns the allowable type families of the difference between two keys.
+   *
+   * <p>Example 1. For {@code ORDER BY empno}, a NUMERIC, the difference
+   * between two {@code empno} values is also NUMERIC.
+   *
+   * <p>Example 2. For {@code ORDER BY hireDate}, a DATE, the difference
+   * between two {@code hireDate} values might be an INTERVAL_DAY_TIME
+   * or INTERVAL_YEAR_MONTH.
+   *
+   * <p>The result determines whether a {@link SqlWindow} with a {@code RANGE}
+   * is valid (for example, {@code OVER (ORDER BY empno RANGE 10} is valid
+   * because {@code 10} is numeric);
+   * and whether a call to
+   * {@link org.apache.calcite.sql.fun.SqlStdOperatorTable#PERCENTILE_CONT PERCENTILE_CONT}
+   * is valid (for example, {@code PERCENTILE_CONT(0.25)} ORDER BY (hireDate)}
+   * is valid because {@code hireDate} values may be interpolated by adding
+   * values of type {@code INTERVAL_DAY_TIME}. */
+  public List<SqlTypeFamily> allowableDifferenceTypes() {
+    switch (this) {
+    case NUMERIC:
+      return ImmutableList.of(NUMERIC);
+    case DATE:
+    case TIME:
+    case TIMESTAMP:
+      return ImmutableList.of(INTERVAL_DAY_TIME, INTERVAL_YEAR_MONTH);
+    default:
+      return ImmutableList.of();
+    }
+  }
+
+  /** Returns the collection of {@link SqlTypeName}s included in this family. */
   public Collection<SqlTypeName> getTypeNames() {
     switch (this) {
     case CHARACTER:
@@ -139,9 +181,13 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
     case DATE:
       return ImmutableList.of(SqlTypeName.DATE);
     case TIME:
-      return ImmutableList.of(SqlTypeName.TIME, SqlTypeName.TIME_WITH_LOCAL_TIME_ZONE);
+      return ImmutableList.of(SqlTypeName.TIME,
+          SqlTypeName.TIME_WITH_LOCAL_TIME_ZONE,
+          SqlTypeName.TIME_TZ);
     case TIMESTAMP:
-      return ImmutableList.of(SqlTypeName.TIMESTAMP, SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE);
+      return ImmutableList.of(SqlTypeName.TIMESTAMP,
+          SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE,
+          SqlTypeName.TIMESTAMP_TZ);
     case BOOLEAN:
       return SqlTypeName.BOOLEAN_TYPES;
     case INTERVAL_YEAR_MONTH:
@@ -161,7 +207,7 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
     case DATETIME_INTERVAL:
       return SqlTypeName.INTERVAL_TYPES;
     case GEO:
-      return ImmutableList.of(SqlTypeName.GEOMETRY);
+      return SqlTypeName.GEOMETRY_TYPES;
     case MULTISET:
       return ImmutableList.of(SqlTypeName.MULTISET);
     case ARRAY:
@@ -176,15 +222,17 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
       return ImmutableList.of(SqlTypeName.CURSOR);
     case COLUMN_LIST:
       return ImmutableList.of(SqlTypeName.COLUMN_LIST);
+    case FUNCTION:
+      return ImmutableList.of(SqlTypeName.FUNCTION);
+    case VARIANT:
+      return ImmutableList.of(SqlTypeName.VARIANT);
     default:
       throw new IllegalArgumentException();
     }
   }
 
-  /**
-   * @return Default {@link RelDataType} belongs to this family.
-   */
-  public RelDataType getDefaultConcreteType(RelDataTypeFactory factory) {
+  /** Return the default {@link RelDataType} that belongs to this family. */
+  public @Nullable RelDataType getDefaultConcreteType(RelDataTypeFactory factory) {
     switch (this) {
     case CHARACTER:
       return factory.createSqlType(SqlTypeName.VARCHAR);
@@ -233,6 +281,12 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
       return factory.createSqlType(SqlTypeName.CURSOR);
     case COLUMN_LIST:
       return factory.createSqlType(SqlTypeName.COLUMN_LIST);
+    case FUNCTION:
+      return factory.createFunctionSqlType(
+          factory.createStructType(ImmutableList.of(), ImmutableList.of()),
+          factory.createSqlType(SqlTypeName.ANY));
+    case VARIANT:
+      return factory.createSqlType(SqlTypeName.VARIANT);
     default:
       return null;
     }
@@ -242,5 +296,3 @@ public enum SqlTypeFamily implements RelDataTypeFamily {
     return SqlTypeUtil.isOfSameTypeName(getTypeNames(), type);
   }
 }
-
-// End SqlTypeFamily.java

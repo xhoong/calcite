@@ -119,17 +119,13 @@ public class Benchmark {
         y += x * x;
       }
       final double stddev = Math.sqrt(y / count);
-      if (durations.size() == 0) {
+      if (durations.isEmpty()) {
         LOGGER.debug("{}: {}", desc, "no runs");
       } else {
-        LOGGER.debug(
-                "{}: {} first; {} +- {}; {} min; {} max; {} nanos",
-                desc,
-                durations.get(0), avg, stddev, coreDurations.get(0),
-                Util.last(coreDurations), durationsString);
+        LOGGER.debug("{}: {} first; {} +- {}; {} min; {} max; {} nanos",
+            desc, durations.get(0), avg, stddev, coreDurations.get(0),
+            Util.last(coreDurations), durationsString);
       }
     }
   }
 }
-
-// End Benchmark.java

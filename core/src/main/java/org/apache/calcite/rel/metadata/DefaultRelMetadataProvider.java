@@ -55,6 +55,8 @@ public class DefaultRelMetadataProvider extends ChainedRelMetadataProvider {
             RelMdSize.SOURCE,
             RelMdParallelism.SOURCE,
             RelMdDistribution.SOURCE,
+            RelMdLowerBoundCost.SOURCE,
+            RelMdMeasure.SOURCE,
             RelMdMemory.SOURCE,
             RelMdDistinctRowCount.SOURCE,
             RelMdSelectivity.SOURCE,
@@ -64,5 +66,3 @@ public class DefaultRelMetadataProvider extends ChainedRelMetadataProvider {
             RelMdCollation.SOURCE));
   }
 }
-
-// End DefaultRelMetadataProvider.java

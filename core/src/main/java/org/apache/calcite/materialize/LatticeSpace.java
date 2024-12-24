@@ -24,22 +24,25 @@ import org.apache.calcite.util.graph.AttributedDirectedGraph;
 import org.apache.calcite.util.mapping.IntPair;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+
+import org.checkerframework.checker.initialization.qual.NotOnlyInitialized;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+
+import static java.util.Objects.requireNonNull;
 
 /** Space within which lattices exist. */
 class LatticeSpace {
   final SqlStatisticProvider statisticProvider;
   private final Map<List<String>, LatticeTable> tableMap = new HashMap<>();
-  final AttributedDirectedGraph<LatticeTable, Step> g =
+  @SuppressWarnings("assignment.type.incompatible")
+  final @NotOnlyInitialized AttributedDirectedGraph<LatticeTable, Step> g =
       new AttributedDirectedGraph<>(new Step.Factory(this));
   private final Map<List<String>, String> simpleTableNames = new HashMap<>();
   private final Set<String> simpleNames = new HashSet<>();
@@ -49,7 +52,8 @@ class LatticeSpace {
   final Map<LatticeTable, List<RexNode>> tableExpressions = new HashMap<>();
 
   LatticeSpace(SqlStatisticProvider statisticProvider) {
-    this.statisticProvider = Objects.requireNonNull(statisticProvider);
+    this.statisticProvider =
+        requireNonNull(statisticProvider, "statisticProvider");
   }
 
   /** Derives a unique name for a table, qualifying with schema name only if
@@ -120,7 +124,7 @@ class LatticeSpace {
   /** Returns a list of {@link IntPair}, transposing source and target fields,
    * and ensuring the result is sorted and unique. */
   static List<IntPair> swap(List<IntPair> keys) {
-    return sortUnique(Lists.transform(keys, IntPair.SWAP));
+    return sortUnique(Util.transform(keys, x -> IntPair.of(x.target, x.source)));
   }
 
   Path addPath(List<Step> steps) {
@@ -165,9 +169,11 @@ class LatticeSpace {
     if (field < fieldCount) {
       return fieldList.get(field).getName();
     } else {
-      return tableExpressions.get(table).get(field - fieldCount).toString();
+      List<RexNode> rexNodes = tableExpressions.get(table);
+      if (rexNodes == null) {
+        throw new AssertionError("no expressions found for table " + table);
+      }
+      return rexNodes.get(field - fieldCount).toString();
     }
   }
 }
-
-// End LatticeSpace.java

@@ -22,10 +22,13 @@ import org.apache.calcite.sql.type.SqlOperandTypeInference;
 import org.apache.calcite.sql.type.SqlReturnTypeInference;
 import org.apache.calcite.sql.validate.SqlMonotonicity;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * SQL function that computes keys by which rows can be partitioned and
@@ -47,7 +50,7 @@ import java.util.List;
  */
 public class SqlGroupedWindowFunction extends SqlFunction {
   /** The grouped function, if this an auxiliary function; null otherwise. */
-  public final SqlGroupedWindowFunction groupFunction;
+  public final @Nullable SqlGroupedWindowFunction groupFunction;
 
   /** Creates a SqlGroupedWindowFunction.
    *
@@ -61,29 +64,30 @@ public class SqlGroupedWindowFunction extends SqlFunction {
    * @param category             Categorization for function
    */
   public SqlGroupedWindowFunction(String name, SqlKind kind,
-      SqlGroupedWindowFunction groupFunction,
+      @Nullable SqlGroupedWindowFunction groupFunction,
       SqlReturnTypeInference returnTypeInference,
-      SqlOperandTypeInference operandTypeInference,
-      SqlOperandTypeChecker operandTypeChecker, SqlFunctionCategory category) {
+      @Nullable SqlOperandTypeInference operandTypeInference,
+      @Nullable SqlOperandTypeChecker operandTypeChecker,
+      SqlFunctionCategory category) {
     super(name, kind, returnTypeInference, operandTypeInference,
         operandTypeChecker, category);
     this.groupFunction = groupFunction;
-    Preconditions.checkArgument(groupFunction == null
+    checkArgument(groupFunction == null
         || groupFunction.groupFunction == null);
   }
 
   @Deprecated // to be removed before 2.0
   public SqlGroupedWindowFunction(String name, SqlKind kind,
-      SqlGroupedWindowFunction groupFunction,
-      SqlOperandTypeChecker operandTypeChecker) {
+      @Nullable SqlGroupedWindowFunction groupFunction,
+      @Nullable SqlOperandTypeChecker operandTypeChecker) {
     this(name, kind, groupFunction, ReturnTypes.ARG0, null, operandTypeChecker,
         SqlFunctionCategory.SYSTEM);
   }
 
   @Deprecated // to be removed before 2.0
   public SqlGroupedWindowFunction(SqlKind kind,
-      SqlGroupedWindowFunction groupFunction,
-      SqlOperandTypeChecker operandTypeChecker) {
+      @Nullable SqlGroupedWindowFunction groupFunction,
+      @Nullable SqlOperandTypeChecker operandTypeChecker) {
     this(kind.name(), kind, groupFunction, ReturnTypes.ARG0, null,
         operandTypeChecker, SqlFunctionCategory.SYSTEM);
   }
@@ -128,13 +132,4 @@ public class SqlGroupedWindowFunction extends SqlFunction {
     // make the method abstract.
     return call.getOperandMonotonicity(0).unstrict();
   }
-
-  @Override public String getName() {
-    // Always rename the name of the SqlKind. The tumble operator is called
-    // "$TUMBLE", so that it does not clash with a user-defined table function
-    // "TUMBLE", but we want the name to be "TUMBLE".
-    return getKind().name();
-  }
 }
-
-// End SqlGroupedWindowFunction.java

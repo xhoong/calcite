@@ -25,12 +25,15 @@ import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.SingleRel;
+import org.apache.calcite.rel.hint.Hintable;
+import org.apache.calcite.rel.hint.RelHint;
 import org.apache.calcite.rel.metadata.RelMdUtil;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexLocalRef;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexOver;
 import org.apache.calcite.rex.RexProgram;
 import org.apache.calcite.rex.RexProgramBuilder;
 import org.apache.calcite.rex.RexShuttle;
@@ -38,36 +41,54 @@ import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.util.Litmus;
 import org.apache.calcite.util.Util;
 
+import com.google.common.collect.ImmutableList;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 
 /**
  * <code>Calc</code> is an abstract base class for implementations of
  * {@link org.apache.calcite.rel.logical.LogicalCalc}.
  */
-public abstract class Calc extends SingleRel {
+public abstract class Calc extends SingleRel implements Hintable {
   //~ Instance fields --------------------------------------------------------
+
+  protected final ImmutableList<RelHint> hints;
 
   protected final RexProgram program;
 
   //~ Constructors -----------------------------------------------------------
-
   /**
    * Creates a Calc.
    *
    * @param cluster Cluster
    * @param traits Traits
+   * @param hints Hints of this relational expression
    * @param child Input relation
    * @param program Calc program
    */
+  @SuppressWarnings("method.invocation.invalid")
   protected Calc(
       RelOptCluster cluster,
       RelTraitSet traits,
+      List<RelHint> hints,
       RelNode child,
       RexProgram program) {
     super(cluster, traits, child);
     this.rowType = program.getOutputRowType();
     this.program = program;
+    this.hints = ImmutableList.copyOf(hints);
     assert isValid(Litmus.THROW, null);
+  }
+
+  @Deprecated // to be removed before 2.0
+  protected Calc(
+      RelOptCluster cluster,
+      RelTraitSet traits,
+      RelNode child,
+      RexProgram program) {
+    this(cluster, traits, ImmutableList.of(), child, program);
   }
 
   @Deprecated // to be removed before 2.0
@@ -77,7 +98,7 @@ public abstract class Calc extends SingleRel {
       RelNode child,
       RexProgram program,
       List<RelCollation> collationList) {
-    this(cluster, traits, child, program);
+    this(cluster, traits, ImmutableList.of(), child, program);
     Util.discard(collationList);
   }
 
@@ -113,7 +134,12 @@ public abstract class Calc extends SingleRel {
     return copy(traitSet, child, program);
   }
 
-  public boolean isValid(Litmus litmus, Context context) {
+  /** Returns whether this Calc contains any windowed-aggregate functions. */
+  public final boolean containsOver() {
+    return RexOver.containsOver(program);
+  }
+
+  @Override public boolean isValid(Litmus litmus, @Nullable Context context) {
     if (!RelOptUtil.equal(
         "program's input type",
         program.getInputRowType(),
@@ -127,6 +153,9 @@ public abstract class Calc extends SingleRel {
     if (!program.isNormalized(litmus, getCluster().getRexBuilder())) {
       return litmus.fail(null);
     }
+    if (RexUtil.M2V_FINDER.inProgram(program)) {
+      return litmus.fail("program contains M2V");
+    }
     return litmus.succeed();
   }
 
@@ -134,11 +163,15 @@ public abstract class Calc extends SingleRel {
     return program;
   }
 
+  @Override public ImmutableList<RelHint> getHints() {
+    return hints;
+  }
+
   @Override public double estimateRowCount(RelMetadataQuery mq) {
     return RelMdUtil.estimateFilteredRows(getInput(), program, mq);
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
     double dRows = mq.getRowCount(this);
     double dCpu = mq.getRowCount(getInput())
@@ -147,11 +180,11 @@ public abstract class Calc extends SingleRel {
     return planner.getCostFactory().makeCost(dRows, dCpu, dIo);
   }
 
-  public RelWriter explainTerms(RelWriter pw) {
+  @Override public RelWriter explainTerms(RelWriter pw) {
     return program.explainCalc(super.explainTerms(pw));
   }
 
-  public RelNode accept(RexShuttle shuttle) {
+  @Override public RelNode accept(RexShuttle shuttle) {
     List<RexNode> oldExprs = program.getExprList();
     List<RexNode> exprs = shuttle.apply(oldExprs);
     List<RexLocalRef> oldProjects = program.getProjectList();
@@ -177,7 +210,7 @@ public abstract class Calc extends SingleRel {
         RexUtil.createStructType(
             rexBuilder.getTypeFactory(),
             projects,
-            this.rowType.getFieldNames(),
+            getRowType().getFieldNames(),
             null);
     final RexProgram newProgram =
         RexProgramBuilder.create(
@@ -187,5 +220,3 @@ public abstract class Calc extends SingleRel {
     return copy(traitSet, getInput(), newProgram);
   }
 }
-
-// End Calc.java

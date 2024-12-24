@@ -21,7 +21,8 @@ import com.fasterxml.jackson.core.JsonGenerator;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Utility class to generate elastic search queries. Most query builders have
@@ -187,6 +188,16 @@ class QueryBuilders {
   }
 
   /**
+   * A query that wraps another query and simply returns a dismax score equal to the
+   * query boost for every document in the query.
+   *
+   * @param queryBuilder The query to wrap in a constant score query
+   */
+  static DisMaxQueryBuilder disMaxQueryBuilder(QueryBuilder queryBuilder) {
+    return new DisMaxQueryBuilder(queryBuilder);
+  }
+
+  /**
    * A filter to filter only documents where a field exists in them.
    *
    * @param name The name of the field
@@ -203,12 +214,13 @@ class QueryBuilders {
   }
 
   /**
-   * Base class to build ES queries
+   * Base class to build Elasticsearch queries.
    */
   abstract static class QueryBuilder {
 
     /**
-     * Convert existing query to JSON format using jackson API.
+     * Converts an existing query to JSON format using jackson API.
+     *
      * @param generator used to generate JSON elements
      * @throws IOException if IO error occurred
      */
@@ -216,7 +228,7 @@ class QueryBuilders {
   }
 
   /**
-   * Query for boolean logic
+   * Query for boolean logic.
    */
   static class BoolQueryBuilder extends QueryBuilder {
     private final List<QueryBuilder> mustClauses = new ArrayList<>();
@@ -225,25 +237,25 @@ class QueryBuilders {
     private final List<QueryBuilder> shouldClauses = new ArrayList<>();
 
     BoolQueryBuilder must(QueryBuilder queryBuilder) {
-      Objects.requireNonNull(queryBuilder, "queryBuilder");
+      requireNonNull(queryBuilder, "queryBuilder");
       mustClauses.add(queryBuilder);
       return this;
     }
 
     BoolQueryBuilder filter(QueryBuilder queryBuilder) {
-      Objects.requireNonNull(queryBuilder, "queryBuilder");
+      requireNonNull(queryBuilder, "queryBuilder");
       filterClauses.add(queryBuilder);
       return this;
     }
 
     BoolQueryBuilder mustNot(QueryBuilder queryBuilder) {
-      Objects.requireNonNull(queryBuilder, "queryBuilder");
+      requireNonNull(queryBuilder, "queryBuilder");
       mustNotClauses.add(queryBuilder);
       return this;
     }
 
     BoolQueryBuilder should(QueryBuilder queryBuilder) {
-      Objects.requireNonNull(queryBuilder, "queryBuilder");
+      requireNonNull(queryBuilder, "queryBuilder");
       shouldClauses.add(queryBuilder);
       return this;
     }
@@ -260,7 +272,7 @@ class QueryBuilders {
       gen.writeEndObject();
     }
 
-    private void writeJsonArray(String field, List<QueryBuilder> clauses, JsonGenerator gen)
+    private static void writeJsonArray(String field, List<QueryBuilder> clauses, JsonGenerator gen)
         throws IOException {
       if (clauses.isEmpty()) {
         return;
@@ -271,7 +283,7 @@ class QueryBuilders {
         clauses.get(0).writeJson(gen);
       } else {
         gen.writeArrayFieldStart(field);
-        for (QueryBuilder clause: clauses) {
+        for (QueryBuilder clause : clauses) {
           clause.writeJson(gen);
         }
         gen.writeEndArray();
@@ -287,8 +299,8 @@ class QueryBuilders {
     private final Object value;
 
     private TermQueryBuilder(final String fieldName, final Object value) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
-      this.value = Objects.requireNonNull(value, "value");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
+      this.value = requireNonNull(value, "value");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -310,8 +322,8 @@ class QueryBuilders {
     private final Iterable<?> values;
 
     private TermsQueryBuilder(final String fieldName, final Iterable<?> values) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
-      this.values = Objects.requireNonNull(values, "values");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
+      this.values = requireNonNull(values, "values");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -320,7 +332,7 @@ class QueryBuilders {
       generator.writeStartObject();
       generator.writeFieldName(fieldName);
       generator.writeStartArray();
-      for (Object value: values) {
+      for (Object value : values) {
         writeObject(generator, value);
       }
       generator.writeEndArray();
@@ -339,8 +351,8 @@ class QueryBuilders {
     private final Object value;
 
     private MatchQueryBuilder(final String fieldName, final Object value) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
-      this.value = Objects.requireNonNull(value, "value");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
+      this.value = requireNonNull(value, "value");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -363,8 +375,8 @@ class QueryBuilders {
     private final Iterable<?> values;
 
     private MatchesQueryBuilder(final String fieldName, final Iterable<?> values) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
-      this.values = Objects.requireNonNull(values, "values");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
+      this.values = requireNonNull(values, "values");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -373,7 +385,7 @@ class QueryBuilders {
       generator.writeStartObject();
       generator.writeFieldName(fieldName);
       generator.writeStartArray();
-      for (Object value: values) {
+      for (Object value : values) {
         writeObject(generator, value);
       }
       generator.writeEndArray();
@@ -408,17 +420,17 @@ class QueryBuilders {
     private String format;
 
     private RangeQueryBuilder(final String fieldName) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
     }
 
     private RangeQueryBuilder to(Object value, boolean lte) {
-      this.lt = Objects.requireNonNull(value, "value");
+      this.lt = requireNonNull(value, "value");
       this.lte = lte;
       return this;
     }
 
     private RangeQueryBuilder from(Object value, boolean gte) {
-      this.gt = Objects.requireNonNull(value, "value");
+      this.gt = requireNonNull(value, "value");
       this.gte = gte;
       return this;
     }
@@ -481,7 +493,9 @@ class QueryBuilders {
    * A Query that does fuzzy matching for a specific value.
    */
   static class RegexpQueryBuilder extends QueryBuilder {
+    @SuppressWarnings("unused")
     private final String fieldName;
+    @SuppressWarnings("unused")
     private final String value;
 
     RegexpQueryBuilder(final String fieldName, final String value) {
@@ -489,7 +503,7 @@ class QueryBuilders {
       this.value = value;
     }
 
-    @Override void writeJson(final JsonGenerator generator) throws IOException {
+    @Override void writeJson(final JsonGenerator generator) {
       throw new UnsupportedOperationException();
     }
   }
@@ -501,7 +515,7 @@ class QueryBuilders {
     private final String fieldName;
 
     ExistsQueryBuilder(final String fieldName) {
-      this.fieldName = Objects.requireNonNull(fieldName, "fieldName");
+      this.fieldName = requireNonNull(fieldName, "fieldName");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -523,7 +537,7 @@ class QueryBuilders {
     private final QueryBuilder builder;
 
     private ConstantScoreQueryBuilder(final QueryBuilder builder) {
-      this.builder = Objects.requireNonNull(builder, "builder");
+      this.builder = requireNonNull(builder, "builder");
     }
 
     @Override void writeJson(final JsonGenerator generator) throws IOException {
@@ -536,6 +550,33 @@ class QueryBuilders {
       generator.writeEndObject();
     }
   }
+
+  /**
+   * A query that wraps a filter and simply returns a dismax score equal to the
+   * query boost for every document in the filter.
+   */
+  static class DisMaxQueryBuilder extends QueryBuilder {
+
+    private final QueryBuilder builder;
+
+    private DisMaxQueryBuilder(final QueryBuilder builder) {
+      this.builder = requireNonNull(builder, "builder");
+    }
+
+    @Override void writeJson(final JsonGenerator generator) throws IOException {
+      generator.writeStartObject();
+      generator.writeFieldName("dis_max");
+      generator.writeStartObject();
+      generator.writeFieldName("queries");
+      generator.writeStartArray();
+      builder.writeJson(generator);
+      generator.writeEndArray();
+      generator.writeEndObject();
+      generator.writeEndObject();
+    }
+  }
+
+
 
   /**
    * A query that matches on all documents.
@@ -558,5 +599,3 @@ class QueryBuilders {
     }
   }
 }
-
-// End QueryBuilders.java

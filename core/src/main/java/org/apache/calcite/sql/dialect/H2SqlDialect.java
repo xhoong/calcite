@@ -16,6 +16,7 @@
  */
 package org.apache.calcite.sql.dialect;
 
+import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.sql.SqlDialect;
 
 /**
@@ -40,6 +41,8 @@ public class H2SqlDialect extends SqlDialect {
   @Override public boolean supportsWindowFunctions() {
     return false;
   }
-}
 
-// End H2SqlDialect.java
+  @Override public boolean supportsJoinType(JoinRelType joinType) {
+    return joinType != JoinRelType.FULL;
+  }
+}

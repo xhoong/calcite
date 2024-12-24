@@ -29,29 +29,21 @@ package org.apache.calcite.plan;
 public interface RelOptCost {
   //~ Methods ----------------------------------------------------------------
 
-  /**
-   * @return number of rows processed; this should not be confused with the
-   * row count produced by a relational expression
-   * ({@link org.apache.calcite.rel.RelNode#estimateRowCount})
-   */
+  /** Returns the number of rows processed; this should not be
+   * confused with the row count produced by a relational expression
+   * ({@link org.apache.calcite.rel.RelNode#estimateRowCount}). */
   double getRows();
 
-  /**
-   * @return usage of CPU resources
-   */
+  /** Returns usage of CPU resources. */
   double getCpu();
 
-  /**
-   * @return usage of I/O resources
-   */
+  /** Returns usage of I/O resources. */
   double getIo();
 
-  /**
-   * @return true iff this cost represents an expression that hasn't actually
+  /** Returns whether this cost represents an expression that hasn't actually
    * been implemented (e.g. a pure relational algebra expression) or can't
    * actually be implemented, e.g. a transfer of data between two disconnected
-   * sites
-   */
+   * sites. */
   boolean isInfinite();
 
   // REVIEW jvs 3-Apr-2006:  we should standardize this
@@ -63,6 +55,7 @@ public interface RelOptCost {
    * @param cost another cost
    * @return true iff this is exactly equal to other cost
    */
+  @SuppressWarnings("NonOverridingEquals")
   boolean equals(RelOptCost cost);
 
   /**
@@ -130,7 +123,19 @@ public interface RelOptCost {
    * Forces implementations to override {@link Object#toString} and provide a
    * good cost rendering to use during tracing.
    */
-  String toString();
-}
+  @Override String toString();
 
-// End RelOptCost.java
+  static String toString(double value) {
+    if (value == Double.MAX_VALUE) {
+      return "{huge}";
+    } else if (value == Double.POSITIVE_INFINITY) {
+      return "{inf}";
+    } else if (value == 1.0) {
+      return "{tiny}";
+    } else if (value == 0.0) {
+      return "{0}";
+    } else {
+      return Double.toString(value);
+    }
+  }
+}

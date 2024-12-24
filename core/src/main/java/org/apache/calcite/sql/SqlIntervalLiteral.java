@@ -20,7 +20,15 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Litmus;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Objects;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static org.apache.calcite.linq4j.Nullness.castNonNull;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A SQL literal representing a time interval.
@@ -33,9 +41,9 @@ import java.util.Objects;
  * <li>INTERVAL '3:4' YEAR TO MONTH</li>
  * </ul>
  *
- * <p>YEAR/MONTH intervals are not implemented yet.</p>
+ * <p>YEAR/MONTH intervals are not implemented yet.
  *
- * <p>The interval string, such as '1:00:05.345', is not parsed yet.</p>
+ * <p>The interval string, such as '1:00:05.345', is not parsed yet.
  */
 public class SqlIntervalLiteral extends SqlLiteral {
   //~ Constructors -----------------------------------------------------------
@@ -53,7 +61,7 @@ public class SqlIntervalLiteral extends SqlLiteral {
   }
 
   private SqlIntervalLiteral(
-      IntervalValue intervalValue,
+      @Nullable IntervalValue intervalValue,
       SqlTypeName sqlTypeName,
       SqlParserPos pos) {
     super(
@@ -68,7 +76,7 @@ public class SqlIntervalLiteral extends SqlLiteral {
     return new SqlIntervalLiteral((IntervalValue) value, getTypeName(), pos);
   }
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       int leftPrec,
       int rightPrec) {
@@ -76,8 +84,8 @@ public class SqlIntervalLiteral extends SqlLiteral {
   }
 
   @SuppressWarnings("deprecation")
-  public int signum() {
-    return ((IntervalValue) value).signum();
+  @Override public int signum() {
+    return ((IntervalValue) castNonNull(value)).signum();
   }
 
   //~ Inner Classes ----------------------------------------------------------
@@ -97,19 +105,16 @@ public class SqlIntervalLiteral extends SqlLiteral {
      * @param sign              Sign (+1 or -1)
      * @param intervalStr       Interval string
      */
-    IntervalValue(
-        SqlIntervalQualifier intervalQualifier,
-        int sign,
+    IntervalValue(SqlIntervalQualifier intervalQualifier, int sign,
         String intervalStr) {
-      assert (sign == -1) || (sign == 1);
-      assert intervalQualifier != null;
-      assert intervalStr != null;
-      this.intervalQualifier = intervalQualifier;
+      this.intervalQualifier =
+          requireNonNull(intervalQualifier, "intervalQualifier");
       this.sign = sign;
-      this.intervalStr = intervalStr;
+      this.intervalStr = requireNonNull(intervalStr, "intervalStr");
+      checkArgument(sign == -1 || sign == 1);
     }
 
-    public boolean equals(Object obj) {
+    @Override public boolean equals(@Nullable Object obj) {
       if (!(obj instanceof IntervalValue)) {
         return false;
       }
@@ -120,7 +125,7 @@ public class SqlIntervalLiteral extends SqlLiteral {
               Litmus.IGNORE);
     }
 
-    public int hashCode() {
+    @Override public int hashCode() {
       return Objects.hash(sign, intervalStr, intervalQualifier);
     }
 
@@ -147,10 +152,8 @@ public class SqlIntervalLiteral extends SqlLiteral {
       return 0;
     }
 
-    public String toString() {
+    @Override public String toString() {
       return intervalStr;
     }
   }
 }
-
-// End SqlIntervalLiteral.java

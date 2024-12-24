@@ -21,9 +21,13 @@ import org.apache.calcite.rel.core.CorrelationId;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexBuilder;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static java.lang.Integer.parseInt;
 
 /**
  * A <code>RelOptQuery</code> represents a set of
@@ -81,7 +85,7 @@ public class RelOptQuery {
   @Deprecated // to be removed before 2.0
   public static int getCorrelOrdinal(String correlName) {
     assert correlName.startsWith(CORREL_PREFIX);
-    return Integer.parseInt(correlName.substring(CORREL_PREFIX.length()));
+    return parseInt(correlName.substring(CORREL_PREFIX.length()));
   }
 
   /**
@@ -114,7 +118,7 @@ public class RelOptQuery {
   /**
    * Returns the relational expression which populates a correlating variable.
    */
-  public RelNode lookupCorrel(String name) {
+  public @Nullable RelNode lookupCorrel(String name) {
     return mapCorrelToRel.get(name);
   }
 
@@ -127,5 +131,3 @@ public class RelOptQuery {
     mapCorrelToRel.put(name, rel);
   }
 }
-
-// End RelOptQuery.java

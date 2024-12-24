@@ -27,13 +27,19 @@ import org.apache.calcite.util.Util;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Collections;
 import java.util.List;
 
 import static org.apache.calcite.util.Static.RESOURCE;
 
+import static java.util.Objects.requireNonNull;
+
 /**
- * Parameter type-checking strategy where all operand types must be the same.
+ * Parameter type-checking strategy where the type of operand I must
+ * be <b>comparable</b> with the type of operand I-1, for all legal values of I.
+ * See {@link SqlTypeUtil#isComparable} for a definition of "comparable" types.
  */
 public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
   //~ Instance fields --------------------------------------------------------
@@ -49,15 +55,7 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
 
   //~ Methods ----------------------------------------------------------------
 
-  public Consistency getConsistency() {
-    return Consistency.NONE;
-  }
-
-  public boolean isOptional(int i) {
-    return false;
-  }
-
-  public boolean checkOperandTypes(
+  @Override public boolean checkOperandTypes(
       SqlCallBinding callBinding,
       boolean throwOnFailure) {
     return checkOperandTypesImpl(
@@ -75,12 +73,15 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
   protected boolean checkOperandTypesImpl(
       SqlOperatorBinding operatorBinding,
       boolean throwOnFailure,
-      SqlCallBinding callBinding) {
+      @Nullable SqlCallBinding callBinding) {
+    if (throwOnFailure && callBinding == null) {
+      throw new IllegalArgumentException(
+          "callBinding must be non-null in case throwOnFailure=true");
+    }
     int nOperandsActual = nOperands;
     if (nOperandsActual == -1) {
       nOperandsActual = operatorBinding.getOperandCount();
     }
-    assert !(throwOnFailure && (callBinding == null));
     RelDataType[] types = new RelDataType[nOperandsActual];
     final List<Integer> operandList =
         getOperandList(operatorBinding.getOperandCount());
@@ -98,7 +99,7 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
           // REVIEW jvs 5-June-2005: Why don't we use
           // newValidationSignatureError() here?  It gives more
           // specific diagnostics.
-          throw callBinding.newValidationError(
+          throw requireNonNull(callBinding, "callBinding").newValidationError(
               RESOURCE.needSameTypeParameter());
         }
       }
@@ -117,8 +118,7 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
     return checkOperandTypesImpl(operatorBinding, false, null);
   }
 
-  // implement SqlOperandTypeChecker
-  public SqlOperandCountRange getOperandCountRange() {
+  @Override public SqlOperandCountRange getOperandCountRange() {
     if (nOperands == -1) {
       return SqlOperandCountRanges.any();
     } else {
@@ -126,7 +126,7 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
     }
   }
 
-  public String getAllowedSignatures(SqlOperator op, String opName) {
+  @Override public String getAllowedSignatures(SqlOperator op, String opName) {
     final String typeName = getTypeName();
     return SqlUtil.getAliasedSignature(op, opName,
         nOperands == -1
@@ -140,7 +140,7 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
     return "EQUIVALENT_TYPE";
   }
 
-  public boolean checkSingleOperandType(
+  @Override public boolean checkSingleOperandType(
       SqlCallBinding callBinding,
       SqlNode operand,
       int iFormalOperand,
@@ -148,5 +148,3 @@ public class SameOperandTypeChecker implements SqlSingleOperandTypeChecker {
     throw new UnsupportedOperationException(); // TODO:
   }
 }
-
-// End SameOperandTypeChecker.java

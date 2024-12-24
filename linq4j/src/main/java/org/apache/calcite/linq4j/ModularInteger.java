@@ -16,7 +16,9 @@
  */
 package org.apache.calcite.linq4j;
 
-import com.google.common.base.Preconditions;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * Represents an integer in modular arithmetic.
@@ -30,12 +32,12 @@ class ModularInteger {
 
   /** Creates a ModularInteger. */
   ModularInteger(int value, int modulus) {
-    Preconditions.checkArgument(value >= 0 && value < modulus);
+    checkArgument(value >= 0 && value < modulus);
     this.value = value;
     this.modulus = modulus;
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override public boolean equals(@Nullable Object obj) {
     return obj == this
         || obj instanceof ModularInteger
         && value == ((ModularInteger) obj).value
@@ -71,5 +73,3 @@ class ModularInteger {
     return value + " mod " + modulus;
   }
 }
-
-// End ModularInteger.java

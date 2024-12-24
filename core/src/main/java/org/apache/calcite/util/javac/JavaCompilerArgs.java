@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.StringTokenizer;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * A <code>JavaCompilerArgs</code> holds the arguments for a
  * {@link JavaCompiler}.
@@ -32,15 +34,17 @@ import java.util.StringTokenizer;
 public class JavaCompilerArgs {
   //~ Instance fields --------------------------------------------------------
 
-  List<String> argsList = new ArrayList<>();
-  List<String> fileNameList = new ArrayList<>();
+  final List<String> argsList = new ArrayList<>();
+  final List<String> fileNameList = new ArrayList<>();
 
   ClassLoader classLoader;
 
   //~ Constructors -----------------------------------------------------------
 
   public JavaCompilerArgs() {
-    classLoader = getClass().getClassLoader();
+    classLoader =
+        requireNonNull(getClass().getClassLoader(),
+            () -> "getClassLoader is null for " + getClass());
   }
 
   //~ Methods ----------------------------------------------------------------
@@ -158,5 +162,3 @@ public class JavaCompilerArgs {
     return classLoader;
   }
 }
-
-// End JavaCompilerArgs.java

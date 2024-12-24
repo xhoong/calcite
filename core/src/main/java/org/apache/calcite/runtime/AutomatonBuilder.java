@@ -20,9 +20,7 @@ import org.apache.calcite.runtime.Automaton.EpsilonTransition;
 import org.apache.calcite.runtime.Automaton.State;
 import org.apache.calcite.runtime.Automaton.SymbolTransition;
 import org.apache.calcite.runtime.Automaton.Transition;
-import org.apache.calcite.util.Util;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
@@ -30,14 +28,20 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+
+import static java.util.Objects.requireNonNull;
 
 /** Builds a state-transition graph for deterministic finite automaton. */
 public class AutomatonBuilder {
   private final Map<String, Integer> symbolIds = new HashMap<>();
   private final List<State> stateList = new ArrayList<>();
   private final List<Transition> transitionList = new ArrayList<>();
+  @SuppressWarnings("method.invocation.invalid")
   private final State startState = createState();
+  @SuppressWarnings("method.invocation.invalid")
   private final State endState = createState();
 
   /** Adds a pattern as a start-to-end transition. */
@@ -110,7 +114,7 @@ public class AutomatonBuilder {
         .stream()
         .sorted(Comparator.comparingInt(Map.Entry::getValue))
         .map(Map.Entry::getKey)
-        .collect(Util.toImmutableList());
+        .collect(toImmutableList());
     return new Automaton(stateList.get(0), endState,
         symbolTransitions.build(), epsilonTransitions.build(), symbolNames);
   }
@@ -118,7 +122,7 @@ public class AutomatonBuilder {
   /** Adds a symbol transition. */
   AutomatonBuilder symbol(State fromState, State toState,
       String name) {
-    Objects.requireNonNull(name);
+    requireNonNull(name, "name");
     final int symbolId =
         symbolIds.computeIfAbsent(name, k -> symbolIds.size());
     transitionList.add(new SymbolTransition(fromState, toState, symbolId));
@@ -207,9 +211,9 @@ public class AutomatonBuilder {
     // fromState ---> state0 ---> state1 ---> state2 ---> state3 ---> toState
     //            e        pattern     pattern     pattern        e
     //
-    Preconditions.checkArgument(0 <= minRepeat);
-    Preconditions.checkArgument(minRepeat <= maxRepeat);
-    Preconditions.checkArgument(1 <= maxRepeat);
+    checkArgument(0 <= minRepeat);
+    checkArgument(minRepeat <= maxRepeat);
+    checkArgument(1 <= maxRepeat);
     State prevState = fromState;
     for (int i = 0; i <= maxRepeat; i++) {
       final State s = createState();
@@ -233,5 +237,3 @@ public class AutomatonBuilder {
     return this;
   }
 }
-
-// End AutomatonBuilder.java

@@ -18,31 +18,33 @@ package org.apache.calcite.linq4j.tree;
 
 import org.apache.calcite.linq4j.Ord;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Represents an infinite loop. It can be exited with "break".
  */
 public class ForStatement extends Statement {
   public final List<DeclarationStatement> declarations;
-  public final Expression condition;
-  public final Expression post;
+  public final @Nullable Expression condition;
+  public final @Nullable Expression post;
   public final Statement body;
-  /**
-   * Cache the hash code for the expression
-   */
+  /** Cached hash code for the expression. */
   private int hash;
 
   public ForStatement(List<DeclarationStatement> declarations,
-      Expression condition, Expression post, Statement body) {
+      @Nullable Expression condition, @Nullable Expression post,
+      Statement body) {
     super(ExpressionType.For, Void.TYPE);
-    assert declarations != null;
-    assert body != null;
-    this.declarations = declarations; // may be empty, not null
-    this.condition = condition; // may be null
-    this.post = post; // may be null
-    this.body = body; // may be empty block, not null
+    this.declarations =
+        requireNonNull(declarations, "declarations"); // may be empty
+    this.condition = condition;
+    this.post = post;
+    this.body = requireNonNull(body, "body"); // may be empty block
   }
 
   @Override public ForStatement accept(Shuttle shuttle) {
@@ -56,7 +58,7 @@ public class ForStatement extends Statement {
     return shuttle.visit(this, decls1, condition1, post1, body1);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
@@ -76,7 +78,7 @@ public class ForStatement extends Statement {
     writer.append(") ").append(Blocks.toBlock(body));
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -88,22 +90,10 @@ public class ForStatement extends Statement {
     }
 
     ForStatement that = (ForStatement) o;
-
-    if (!body.equals(that.body)) {
-      return false;
-    }
-    if (condition != null ? !condition.equals(that.condition) : that
-        .condition != null) {
-      return false;
-    }
-    if (!declarations.equals(that.declarations)) {
-      return false;
-    }
-    if (post != null ? !post.equals(that.post) : that.post != null) {
-      return false;
-    }
-
-    return true;
+    return body.equals(that.body)
+        && Objects.equals(condition, that.condition)
+        && declarations.equals(that.declarations)
+        && Objects.equals(post, that.post);
   }
 
   @Override public int hashCode() {
@@ -119,5 +109,3 @@ public class ForStatement extends Statement {
     return result;
   }
 }
-
-// End ForStatement.java

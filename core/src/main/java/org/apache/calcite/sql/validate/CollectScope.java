@@ -19,6 +19,8 @@ package org.apache.calcite.sql.validate;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlNode;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 /**
  * The name-resolution context for expression inside a multiset call. The
  * objects visible are multiset expressions, and those inherited from the parent
@@ -29,25 +31,20 @@ import org.apache.calcite.sql.SqlNode;
 class CollectScope extends ListScope {
   //~ Instance fields --------------------------------------------------------
 
-  private final SqlValidatorScope usingScope;
-  private final SqlCall child;
+  private final SqlCall node;
 
   //~ Constructors -----------------------------------------------------------
 
-  CollectScope(
-      SqlValidatorScope parent,
-      SqlValidatorScope usingScope,
-      SqlCall child) {
+  CollectScope(SqlValidatorScope parent,
+      @Nullable SqlValidatorScope unusedUsingScope,
+      SqlCall node) {
     super(parent);
-    this.usingScope = usingScope;
-    this.child = child;
+    this.node = node;
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  public SqlNode getNode() {
-    return child;
+  @Override public SqlNode getNode() {
+    return node;
   }
 }
-
-// End CollectScope.java

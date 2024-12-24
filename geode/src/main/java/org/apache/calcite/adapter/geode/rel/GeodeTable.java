@@ -44,9 +44,9 @@ import org.apache.geode.cache.query.QueryService;
 import org.apache.geode.cache.query.SelectResults;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.ImmutableMap;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,8 +54,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import static java.util.Objects.requireNonNull;
+
 /**
- * Table based on a Geode Region
+ * Table based on a Geode Region.
  */
 public class GeodeTable extends AbstractQueryableTable implements TranslatableTable {
 
@@ -70,7 +72,7 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     this.rowType = GeodeUtils.autodetectRelTypeFromRegion(region);
   }
 
-  public String toString() {
+  @Override public String toString() {
     return "GeodeTable {" + regionName + "}";
   }
 
@@ -92,7 +94,7 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
       final List<String> groupByFields,
       List<String> predicates,
       List<String> orderByFields,
-      Long limit) {
+      @Nullable Long limit) {
 
     final RelDataTypeFactory typeFactory = new JavaTypeFactoryExtImpl();
     final RelDataTypeFactory.Builder fieldInfo = typeFactory.builder();
@@ -101,13 +103,16 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
       SqlTypeName typeName = typeFactory.createJavaType(field.getValue()).getSqlTypeName();
       RelDataType type;
       if (typeName == SqlTypeName.ARRAY) {
-        type = typeFactory.createArrayType(
-            typeFactory.createSqlType(SqlTypeName.ANY),
-            -1);
+        type =
+            typeFactory.createArrayType(
+                typeFactory.createSqlType(SqlTypeName.ANY), -1);
       } else if (typeName == SqlTypeName.MULTISET) {
-        type = typeFactory.createMultisetType(
-            typeFactory.createSqlType(SqlTypeName.ANY),
-            -1);
+        type =
+            typeFactory.createMultisetType(
+                typeFactory.createSqlType(SqlTypeName.ANY), -1);
+      } else if (typeName == SqlTypeName.MAP) {
+        RelDataType anyType = typeFactory.createSqlType(SqlTypeName.ANY);
+        type = typeFactory.createMapType(anyType, anyType);
       } else {
         type = typeFactory.createSqlType(typeName);
       }
@@ -126,7 +131,7 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     }
 
     // Construct the list of fields to project
-    Builder<String> selectBuilder = ImmutableList.builder();
+    ImmutableList.Builder<String> selectBuilder = ImmutableList.builder();
     if (!groupByFields.isEmpty()) {
       // manually add GROUP BY to select clause (GeodeProjection was not visited)
       for (String groupByField : groupByFields) {
@@ -171,9 +176,10 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
 
     // Build and issue the query and return an Enumerator over the results
     StringBuilder queryBuilder = new StringBuilder("SELECT ");
-    queryBuilder.append(oqlSelectStatement);
-    queryBuilder.append(" FROM /" + regionName);
-    queryBuilder.append(whereClause);
+    queryBuilder.append(oqlSelectStatement)
+        .append(" FROM /")
+        .append(regionName)
+        .append(whereClause);
 
     if (!groupByFields.isEmpty()) {
       queryBuilder.append(Util.toString(groupByFields, " GROUP BY ", ", ", ""));
@@ -183,7 +189,7 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
       queryBuilder.append(Util.toString(orderByFields, " ORDER BY ", ", ", ""));
     }
     if (limit != null) {
-      queryBuilder.append(" LIMIT " + limit);
+      queryBuilder.append(" LIMIT ").append(limit);
     }
 
     final String oqlQuery = queryBuilder.toString();
@@ -192,21 +198,22 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     LOGGER.info("OQL: " + oqlQuery);
 
     return new AbstractEnumerable<Object>() {
-      public Enumerator<Object> enumerator() {
+      @Override public Enumerator<Object> enumerator() {
         final QueryService queryService = clientCache.getQueryService();
         try {
           SelectResults results = (SelectResults) queryService.newQuery(oqlQuery).execute();
           return new GeodeEnumerator(results, resultRowType);
         } catch (Exception e) {
-          String message = String.format(Locale.ROOT, "Failed to execute query [%s] on %s",
-              oqlQuery, clientCache.getName());
+          String message =
+              String.format(Locale.ROOT, "Failed to execute query [%s] on %s",
+                  oqlQuery, clientCache.getName());
           throw new RuntimeException(message, e);
         }
       }
     };
   }
 
-  public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
+  @Override public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
       SchemaPlus schema, String tableName) {
     return new GeodeQueryable<>(queryProvider, schema, this, tableName);
   }
@@ -237,7 +244,7 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     }
 
     // tzolov: this should never be called for queryable tables???
-    public Enumerator<T> enumerator() {
+    @Override public Enumerator<T> enumerator() {
       throw new UnsupportedOperationException("Enumerator on Queryable should never be called");
     }
 
@@ -246,7 +253,9 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     }
 
     private GemFireCache getClientCache() {
-      return schema.unwrap(GeodeSchema.class).cache;
+      final GeodeSchema geodeSchema =
+          requireNonNull(schema.unwrap(GeodeSchema.class));
+      return geodeSchema.cache;
     }
 
     /**
@@ -266,5 +275,3 @@ public class GeodeTable extends AbstractQueryableTable implements TranslatableTa
     }
   }
 }
-
-// End GeodeTable.java

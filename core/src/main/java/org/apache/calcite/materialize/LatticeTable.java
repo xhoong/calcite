@@ -20,24 +20,25 @@ import org.apache.calcite.plan.RelOptTable;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.util.Util;
 
-import java.util.Objects;
-import javax.annotation.Nonnull;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import static java.util.Objects.requireNonNull;
 
 /** Table registered in the graph. */
 public class LatticeTable {
-  @Nonnull public final RelOptTable t;
-  @Nonnull public final String alias;
+  public final RelOptTable t;
+  public final String alias;
 
   LatticeTable(RelOptTable table) {
-    t = Objects.requireNonNull(table);
-    alias = Objects.requireNonNull(Util.last(table.getQualifiedName()));
+    t = requireNonNull(table, "table");
+    alias = requireNonNull(Util.last(table.getQualifiedName()));
   }
 
   @Override public int hashCode() {
     return t.getQualifiedName().hashCode();
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override public boolean equals(@Nullable Object obj) {
     return this == obj
         || obj instanceof LatticeTable
         && t.getQualifiedName().equals(
@@ -52,5 +53,3 @@ public class LatticeTable {
     return t.getRowType().getFieldList().get(i);
   }
 }
-
-// End LatticeTable.java

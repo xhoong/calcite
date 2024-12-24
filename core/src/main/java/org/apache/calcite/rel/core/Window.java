@@ -27,6 +27,8 @@ import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.SingleRel;
+import org.apache.calcite.rel.hint.Hintable;
+import org.apache.calcite.rel.hint.RelHint;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexCall;
@@ -37,6 +39,7 @@ import org.apache.calcite.rex.RexLocalRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexSlot;
 import org.apache.calcite.rex.RexWindowBound;
+import org.apache.calcite.rex.RexWindowExclusion;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.ImmutableIntList;
@@ -45,9 +48,16 @@ import org.apache.calcite.util.Util;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.initialization.qual.UnderInitialization;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.checker.nullness.qual.RequiresNonNull;
+
 import java.util.AbstractList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.hash;
+import static java.util.Objects.requireNonNull;
 
 /**
  * A relational expression representing a set of window aggregates.
@@ -63,9 +73,30 @@ import java.util.Objects;
  *
  * <p>Created by {@link org.apache.calcite.rel.rules.ProjectToWindowRule}.
  */
-public abstract class Window extends SingleRel {
+public abstract class Window extends SingleRel implements Hintable {
   public final ImmutableList<Group> groups;
   public final ImmutableList<RexLiteral> constants;
+  protected final ImmutableList<RelHint> hints;
+
+  /**
+   * Creates a window relational expression.
+   *
+   * @param cluster Cluster
+   * @param traitSet Trait set
+   * @param hints   Hints for this node
+   * @param input   Input relational expression
+   * @param constants List of constants that are additional inputs
+   * @param rowType Output row type
+   * @param groups Windows
+   */
+  protected Window(RelOptCluster cluster, RelTraitSet traitSet, List<RelHint> hints,
+      RelNode input, List<RexLiteral> constants, RelDataType rowType, List<Group> groups) {
+    super(cluster, traitSet, input);
+    this.constants = ImmutableList.copyOf(constants);
+    this.rowType = requireNonNull(rowType, "rowType");
+    this.groups = ImmutableList.copyOf(groups);
+    this.hints = ImmutableList.copyOf(hints);
+  }
 
   /**
    * Creates a window relational expression.
@@ -79,14 +110,18 @@ public abstract class Window extends SingleRel {
    */
   public Window(RelOptCluster cluster, RelTraitSet traitSet, RelNode input,
       List<RexLiteral> constants, RelDataType rowType, List<Group> groups) {
-    super(cluster, traitSet, input);
-    this.constants = ImmutableList.copyOf(constants);
-    assert rowType != null;
-    this.rowType = rowType;
-    this.groups = ImmutableList.copyOf(groups);
+    this(cluster, traitSet, Collections.emptyList(), input, constants, rowType, groups);
   }
 
-  @Override public boolean isValid(Litmus litmus, Context context) {
+  /**
+   * Creates a copy of this {@code Window}.
+   *
+   * @param constants Replaces the list of constants in the returned copy
+   * @return New {@code Window}
+   */
+  public abstract Window copy(List<RexLiteral> constants);
+
+  @Override public boolean isValid(Litmus litmus, @Nullable Context context) {
     // In the window specifications, an aggregate call such as
     // 'SUM(RexInputRef #10)' refers to expression #10 of inputProgram.
     // (Not its projections.)
@@ -123,10 +158,13 @@ public abstract class Window extends SingleRel {
     return litmus.succeed();
   }
 
-  public RelWriter explainTerms(RelWriter pw) {
+  @Override public RelWriter explainTerms(RelWriter pw) {
     super.explainTerms(pw);
     for (Ord<Group> window : Ord.zip(groups)) {
       pw.item("window#" + window.i, window.e.toString());
+    }
+    if (this.constants != null && this.constants.size() > 0) {
+      pw.item("constants", constants);
     }
     return pw;
   }
@@ -134,11 +172,11 @@ public abstract class Window extends SingleRel {
   public static ImmutableIntList getProjectOrdinals(final List<RexNode> exprs) {
     return ImmutableIntList.copyOf(
         new AbstractList<Integer>() {
-          public Integer get(int index) {
+          @Override public Integer get(int index) {
             return ((RexSlot) exprs.get(index)).getIndex();
           }
 
-          public int size() {
+          @Override public int size() {
             return exprs.size();
           }
         });
@@ -148,7 +186,7 @@ public abstract class Window extends SingleRel {
       final List<RexFieldCollation> collations) {
     return RelCollations.of(
         new AbstractList<RelFieldCollation>() {
-          public RelFieldCollation get(int index) {
+          @Override public RelFieldCollation get(int index) {
             final RexFieldCollation collation = collations.get(index);
             return new RelFieldCollation(
                 ((RexLocalRef) collation.left).getIndex(),
@@ -156,7 +194,7 @@ public abstract class Window extends SingleRel {
                 collation.getNullDirection());
           }
 
-          public int size() {
+          @Override public int size() {
             return collations.size();
           }
         });
@@ -164,13 +202,14 @@ public abstract class Window extends SingleRel {
 
   /**
    * Returns constants that are additional inputs of current relation.
+   *
    * @return constants that are additional inputs of current relation
    */
   public List<RexLiteral> getConstants() {
     return constants;
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
     // Cost is proportional to the number of rows and the number of
     // components (groups and aggregate functions). There is
@@ -189,8 +228,8 @@ public abstract class Window extends SingleRel {
   /**
    * Group of windowed aggregate calls that have the same window specification.
    *
-   * <p>The specification is defined by an upper and lower bound, and
-   * also has zero or more partitioning columns.
+   * <p>The specification is defined by an upper and lower bound, exclusion clause,
+   * and also has zero or more partitioning columns.
    *
    * <p>A window is either logical or physical. A physical window is measured
    * in terms of row count. A logical window is measured in terms of rows
@@ -213,6 +252,7 @@ public abstract class Window extends SingleRel {
     public final boolean isRows;
     public final RexWindowBound lowerBound;
     public final RexWindowBound upperBound;
+    public final RexWindowExclusion exclude;
     public final RelCollation orderKeys;
     private final String digest;
 
@@ -228,49 +268,78 @@ public abstract class Window extends SingleRel {
         boolean isRows,
         RexWindowBound lowerBound,
         RexWindowBound upperBound,
+        RexWindowExclusion exclude,
         RelCollation orderKeys,
         List<RexWinAggCall> aggCalls) {
-      assert orderKeys != null : "precondition: ordinals != null";
-      assert keys != null;
-      this.keys = keys;
+      this.keys = requireNonNull(keys, "keys");
       this.isRows = isRows;
-      this.lowerBound = lowerBound;
-      this.upperBound = upperBound;
-      this.orderKeys = orderKeys;
+      this.lowerBound = requireNonNull(lowerBound, "lowerBound");
+      this.upperBound = requireNonNull(upperBound, "upperBound");
+      this.exclude = exclude;
+      this.orderKeys = requireNonNull(orderKeys, "orderKeys");
       this.aggCalls = ImmutableList.copyOf(aggCalls);
       this.digest = computeString();
     }
 
-    public String toString() {
+    @Override public String toString() {
       return digest;
     }
 
-    private String computeString() {
-      final StringBuilder buf = new StringBuilder();
-      buf.append("window(partition ");
-      buf.append(keys);
-      buf.append(" order by ");
-      buf.append(orderKeys);
-      buf.append(isRows ? " rows " : " range ");
-      if (lowerBound != null) {
-        if (upperBound != null) {
-          buf.append("between ");
-          buf.append(lowerBound);
-          buf.append(" and ");
-          buf.append(upperBound);
-        } else {
-          buf.append(lowerBound);
-        }
-      } else if (upperBound != null) {
-        buf.append(upperBound);
+    @RequiresNonNull({"keys", "orderKeys", "lowerBound", "upperBound", "aggCalls"})
+    private String computeString(@UnderInitialization Group this) {
+      final StringBuilder buf = new StringBuilder("window(");
+      final int i = buf.length();
+      if (!keys.isEmpty()) {
+        buf.append("partition ");
+        buf.append(keys);
       }
-      buf.append(" aggs ");
-      buf.append(aggCalls);
+      if (!orderKeys.getFieldCollations().isEmpty()) {
+        if (buf.length() > i) {
+          buf.append(' ');
+        }
+        buf.append("order by ");
+        buf.append(orderKeys);
+      }
+      if (orderKeys.getFieldCollations().isEmpty()
+          && lowerBound.isUnboundedPreceding()
+          && upperBound.isUnboundedFollowing()) {
+        // skip bracket if no ORDER BY, and if bracket is the default,
+        // "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
+        // which is equivalent to
+        // "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
+      } else if (!orderKeys.getFieldCollations().isEmpty()
+          && lowerBound.isUnboundedPreceding()
+          && upperBound.isCurrentRow()
+          && !isRows) {
+        // skip bracket if there is ORDER BY, and if bracket is the default,
+        // "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        // which is NOT equivalent to
+        // "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+      } else {
+        if (buf.length() > i) {
+          buf.append(' ');
+        }
+        buf.append(isRows ? "rows " : "range ");
+        buf.append("between ");
+        buf.append(lowerBound);
+        buf.append(" and ");
+        buf.append(upperBound);
+        if (exclude != RexWindowExclusion.EXCLUDE_NO_OTHER) {
+          buf.append(" ").append(exclude);
+        }
+      }
+      if (!aggCalls.isEmpty()) {
+        if (buf.length() > i) {
+          buf.append(' ');
+        }
+        buf.append("aggs ");
+        buf.append(aggCalls);
+      }
       buf.append(")");
       return buf.toString();
     }
 
-    @Override public boolean equals(Object obj) {
+    @Override public boolean equals(@Nullable Object obj) {
       return this == obj
           || obj instanceof Group
           && this.digest.equals(((Group) obj).digest);
@@ -288,15 +357,18 @@ public abstract class Window extends SingleRel {
      * Returns if the window is guaranteed to have rows.
      * This is useful to refine data type of window aggregates.
      * For instance sum(non-nullable) over (empty window) is NULL.
+     *
      * @return true when the window is non-empty
      * @see org.apache.calcite.sql.SqlWindow#isAlwaysNonEmpty()
      * @see org.apache.calcite.sql.SqlOperatorBinding#getGroupCount()
-     * @see org.apache.calcite.sql.validate.SqlValidatorImpl#resolveWindow(org.apache.calcite.sql.SqlNode, org.apache.calcite.sql.validate.SqlValidatorScope, boolean)
+     * @see org.apache.calcite.sql.validate.SqlValidatorImpl#resolveWindow(org.apache.calcite.sql.SqlNode, org.apache.calcite.sql.validate.SqlValidatorScope)
      */
     public boolean isAlwaysNonEmpty() {
       int lowerKey = lowerBound.getOrderKey();
       int upperKey = upperBound.getOrderKey();
-      return lowerKey > -1 && lowerKey <= upperKey;
+      return lowerKey > -1 && lowerKey <= upperKey
+            && (exclude == RexWindowExclusion.EXCLUDE_NO_OTHER
+               || exclude == RexWindowExclusion.EXCLUDE_TIES);
     }
 
     /**
@@ -308,16 +380,17 @@ public abstract class Window extends SingleRel {
           Util.skip(windowRel.getRowType().getFieldNames(),
               windowRel.getInput().getRowType().getFieldCount());
       return new AbstractList<AggregateCall>() {
-        public int size() {
+        @Override public int size() {
           return aggCalls.size();
         }
 
-        public AggregateCall get(int index) {
+        @Override public AggregateCall get(int index) {
           final RexWinAggCall aggCall = aggCalls.get(index);
           final SqlAggFunction op = (SqlAggFunction) aggCall.getOperator();
-          return AggregateCall.create(op, aggCall.distinct, false,
-              aggCall.ignoreNulls, getProjectOrdinals(aggCall.getOperands()),
-              -1, RelCollations.EMPTY,
+          return AggregateCall.create(aggCall.getParserPosition(), op, aggCall.distinct, false,
+              aggCall.ignoreNulls, ImmutableList.of(),
+              getProjectOrdinals(aggCall.getOperands()),
+              -1, null, RelCollations.EMPTY,
               aggCall.getType(), fieldNames.get(aggCall.ordinal));
         }
       };
@@ -377,22 +450,35 @@ public abstract class Window extends SingleRel {
       this.ignoreNulls = ignoreNulls;
     }
 
-    /** {@inheritDoc}
-     *
-     * <p>Override {@link RexCall}, defining equality based on identity.
-     */
-    @Override public boolean equals(Object obj) {
-      return this == obj;
+    @Override public boolean equals(@Nullable Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+      if (!super.equals(o)) {
+        return false;
+      }
+      RexWinAggCall that = (RexWinAggCall) o;
+      return ordinal == that.ordinal
+          && distinct == that.distinct
+          && ignoreNulls == that.ignoreNulls;
     }
 
     @Override public int hashCode() {
-      return Objects.hash(digest, ordinal, distinct);
+      if (hash == 0) {
+        hash = hash(super.hashCode(), ordinal, distinct, ignoreNulls);
+      }
+      return hash;
     }
 
     @Override public RexCall clone(RelDataType type, List<RexNode> operands) {
-      throw new UnsupportedOperationException();
+      return super.clone(type, operands);
     }
   }
-}
 
-// End Window.java
+  @Override public ImmutableList<RelHint> getHints() {
+    return hints;
+  }
+}

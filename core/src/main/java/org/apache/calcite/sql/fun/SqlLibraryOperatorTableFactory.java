@@ -16,12 +16,9 @@
  */
 package org.apache.calcite.sql.fun;
 
-import org.apache.calcite.prepare.CalciteCatalogReader;
-import org.apache.calcite.runtime.GeoFunctions;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlOperatorTable;
-import org.apache.calcite.sql.util.ChainedSqlOperatorTable;
-import org.apache.calcite.sql.util.ListSqlOperatorTable;
+import org.apache.calcite.sql.util.SqlOperatorTables;
 import org.apache.calcite.util.Util;
 
 import com.google.common.cache.CacheBuilder;
@@ -31,8 +28,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Factory that creates operator tables that consist of functions and operators
@@ -68,6 +70,7 @@ public class SqlLibraryOperatorTableFactory {
 
   /** A cache that returns an operator table for a given library (or set of
    * libraries). */
+  @SuppressWarnings("methodref.receiver.bound.invalid")
   private final LoadingCache<ImmutableSet<SqlLibrary>, SqlOperatorTable> cache =
       CacheBuilder.newBuilder().build(CacheLoader.from(this::create));
 
@@ -76,7 +79,7 @@ public class SqlLibraryOperatorTableFactory {
   /** Creates an operator table that contains operators in the given set of
    * libraries. */
   private SqlOperatorTable create(ImmutableSet<SqlLibrary> librarySet) {
-    final ImmutableList.Builder<SqlOperator> list = ImmutableList.builder();
+    final List<SqlOperator> list = new ArrayList<>();
     boolean custom = false;
     boolean standard = false;
     for (SqlLibrary library : librarySet) {
@@ -85,9 +88,7 @@ public class SqlLibraryOperatorTableFactory {
         standard = true;
         break;
       case SPATIAL:
-        list.addAll(
-            CalciteCatalogReader.operatorTable(GeoFunctions.class.getName())
-                .getOperatorList());
+        list.addAll(SqlOperatorTables.spatialInstance().getOperatorList());
         break;
       default:
         custom = true;
@@ -101,29 +102,30 @@ public class SqlLibraryOperatorTableFactory {
         for (Field field : aClass.getFields()) {
           try {
             if (SqlOperator.class.isAssignableFrom(field.getType())) {
-              final SqlOperator op = (SqlOperator) field.get(this);
+              final SqlOperator op =
+                  (SqlOperator) requireNonNull(field.get(this),
+                      () -> "null value of " + field + " for " + this);
               if (operatorIsInLibrary(op.getName(), field, librarySet)) {
                 list.add(op);
               }
             }
           } catch (IllegalArgumentException | IllegalAccessException e) {
-            Util.throwIfUnchecked(e.getCause());
-            throw new RuntimeException(e.getCause());
+            throw Util.throwAsRuntime(Util.causeOrSelf(e));
           }
         }
       }
     }
-    SqlOperatorTable operatorTable = new ListSqlOperatorTable(list.build());
+    SqlOperatorTable operatorTable = SqlOperatorTables.of(list);
     if (standard) {
       operatorTable =
-          ChainedSqlOperatorTable.of(SqlStdOperatorTable.instance(),
+          SqlOperatorTables.chain(SqlStdOperatorTable.instance(),
               operatorTable);
     }
     return operatorTable;
   }
 
   /** Returns whether an operator is in one or more of the given libraries. */
-  private boolean operatorIsInLibrary(String operatorName, Field field,
+  private static boolean operatorIsInLibrary(String operatorName, Field field,
       Set<SqlLibrary> seekLibrarySet) {
     LibraryOperator libraryOperator =
         field.getAnnotation(LibraryOperator.class);
@@ -140,6 +142,23 @@ public class SqlLibraryOperatorTableFactory {
       if (seekLibrarySet.contains(library)) {
         return true;
       }
+      // Also check inheritor libraries (if any) that are not excluded
+      for (SqlLibrary inheritor : library.inheritors()) {
+        if (seekLibrarySet.contains(inheritor)
+            && !arrayContains(libraryOperator.exceptLibraries(), inheritor)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether an array contains a given element. */
+  private static <E> boolean arrayContains(E[] elements, E seek) {
+    for (E element : elements) {
+      if (Objects.equals(element, seek)) {
+        return true;
+      }
     }
     return false;
   }
@@ -153,14 +172,24 @@ public class SqlLibraryOperatorTableFactory {
   /** Returns a SQL operator table that contains operators in the given set of
    * libraries. */
   public SqlOperatorTable getOperatorTable(Iterable<SqlLibrary> librarySet) {
+    return getOperatorTable(librarySet, true);
+  }
+
+  /** Returns a SQL operator table that contains operators in the given set of
+   * libraries, optionally inheriting in operators in {@link SqlLibrary#ALL}. */
+  public SqlOperatorTable getOperatorTable(Iterable<SqlLibrary> librarySet,
+      boolean includeAll) {
     try {
-      return cache.get(ImmutableSet.copyOf(librarySet));
+      // Expand so that 'hive' becomes 'all,hive';
+      // ensures that operators with library=all get loaded.
+      final List<SqlLibrary> expandedLibrarySet =
+          includeAll
+              ? SqlLibrary.expandUp(librarySet)
+              : ImmutableList.copyOf(librarySet);
+      return cache.get(ImmutableSet.copyOf(expandedLibrarySet));
     } catch (ExecutionException e) {
-      Util.throwIfUnchecked(e.getCause());
-      throw new RuntimeException("populating SqlOperatorTable for library "
-          + librarySet, e);
+      throw Util.throwAsRuntime("populating SqlOperatorTable for library "
+          + librarySet, Util.causeOrSelf(e));
     }
   }
 }
-
-// End SqlLibraryOperatorTableFactory.java

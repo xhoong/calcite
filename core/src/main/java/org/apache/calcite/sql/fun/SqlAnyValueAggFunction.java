@@ -19,11 +19,14 @@ package org.apache.calcite.sql.fun;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlFunctionCategory;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlSplittableAggFunction;
 import org.apache.calcite.sql.type.OperandTypes;
 import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.util.Optionality;
 
-import com.google.common.base.Preconditions;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * Definition of the <code>ANY_VALUE</code> aggregate functions,
@@ -47,10 +50,23 @@ public class SqlAnyValueAggFunction extends SqlAggFunction {
         false,
         false,
         Optionality.FORBIDDEN);
-    Preconditions.checkArgument(kind == SqlKind.ANY_VALUE);
+    checkArgument(kind == SqlKind.ANY_VALUE);
   }
 
   //~ Methods ----------------------------------------------------------------
-}
 
-// End SqlAnyValueAggFunction.java
+  @Override public <T extends Object> @Nullable T unwrap(Class<T> clazz) {
+    if (clazz.isInstance(SqlSplittableAggFunction.SelfSplitter.INSTANCE)) {
+      return clazz.cast(SqlSplittableAggFunction.SelfSplitter.INSTANCE);
+    }
+    return super.unwrap(clazz);
+  }
+
+  @Override public Optionality getDistinctOptionality() {
+    return Optionality.IGNORED;
+  }
+
+  @Override public SqlAggFunction getRollup() {
+    return this;
+  }
+}

@@ -29,7 +29,11 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.TranslatableTable;
 import org.apache.calcite.schema.impl.AbstractTableQueryable;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Table based on Splunk.
@@ -41,11 +45,11 @@ class SplunkTable extends AbstractQueryableTable implements TranslatableTable {
     super(Object[].class);
   }
 
-  public String toString() {
+  @Override public String toString() {
     return "SplunkTable";
   }
 
-  public RelDataType getRowType(RelDataTypeFactory typeFactory) {
+  @Override public RelDataType getRowType(RelDataTypeFactory typeFactory) {
     RelDataType stringType =
         ((JavaTypeFactory) typeFactory).createType(String.class);
     return typeFactory.builder()
@@ -55,12 +59,12 @@ class SplunkTable extends AbstractQueryableTable implements TranslatableTable {
         .build();
   }
 
-  public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
+  @Override public <T> Queryable<T> asQueryable(QueryProvider queryProvider,
       SchemaPlus schema, String tableName) {
     return new SplunkTableQueryable<>(queryProvider, schema, this, tableName);
   }
 
-  public RelNode toRel(
+  @Override public RelNode toRel(
       RelOptTable.ToRelContext context,
       RelOptTable relOptTable) {
     return new SplunkTableScan(
@@ -85,18 +89,17 @@ class SplunkTable extends AbstractQueryableTable implements TranslatableTable {
       super(queryProvider, schema, table, tableName);
     }
 
-    public Enumerator<T> enumerator() {
+    @Override public Enumerator<T> enumerator() {
       final SplunkQuery<T> query = createQuery("search", null, null, null);
       return query.enumerator();
     }
 
-    public SplunkQuery<T> createQuery(String search, String earliest,
-        String latest, List<String> fieldList) {
-      final SplunkSchema splunkSchema = schema.unwrap(SplunkSchema.class);
+    public SplunkQuery<T> createQuery(String search, @Nullable String earliest,
+        @Nullable String latest, @Nullable List<String> fieldList) {
+      final SplunkSchema splunkSchema =
+          requireNonNull(schema.unwrap(SplunkSchema.class));
       return new SplunkQuery<>(splunkSchema.splunkConnection, search,
           earliest, latest, fieldList);
     }
   }
 }
-
-// End SplunkTable.java

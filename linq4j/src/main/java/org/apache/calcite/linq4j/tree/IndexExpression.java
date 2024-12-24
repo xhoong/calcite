@@ -16,8 +16,14 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 import java.util.Objects;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Represents indexing a property or array.
@@ -27,23 +33,25 @@ public class IndexExpression extends Expression {
   public final List<Expression> indexExpressions;
 
   public IndexExpression(Expression array, List<Expression> indexExpressions) {
-    super(ExpressionType.ArrayIndex, Types.getComponentType(array.getType()));
-    assert array != null : "array should not be null";
-    assert indexExpressions != null : "indexExpressions should not be null";
-    assert !indexExpressions.isEmpty() : "indexExpressions should not be empty";
+    super(ExpressionType.ArrayIndex,
+        requireNonNull(Types.getComponentType(array.getType()),
+            () -> "component type for " + array));
     this.array = array;
-    this.indexExpressions = indexExpressions;
+    this.indexExpressions =
+        requireNonNull(indexExpressions, "indexExpressions");
+    checkArgument(!indexExpressions.isEmpty(),
+        "indexExpressions should not be empty");
   }
 
   @Override public Expression accept(Shuttle shuttle) {
     shuttle = shuttle.preVisit(this);
     Expression array = this.array.accept(shuttle);
-    List<Expression> indexExpressions = Expressions.acceptExpressions(
-        this.indexExpressions, shuttle);
+    List<Expression> indexExpressions =
+        Expressions.acceptExpressions(this.indexExpressions, shuttle);
     return shuttle.visit(this, array, indexExpressions);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
@@ -52,7 +60,7 @@ public class IndexExpression extends Expression {
     writer.list("[", ", ", "]", indexExpressions);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -79,5 +87,3 @@ public class IndexExpression extends Expression {
     return Objects.hash(nodeType, type, array, indexExpressions);
   }
 }
-
-// End IndexExpression.java

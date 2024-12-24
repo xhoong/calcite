@@ -18,6 +18,7 @@ package org.apache.calcite.runtime;
 
 import org.apache.calcite.config.CalciteSystemProperty;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,9 +53,10 @@ public class CalciteException extends RuntimeException {
    * @param message error message
    * @param cause   underlying cause
    */
+  @SuppressWarnings({"argument.type.incompatible", "method.invocation.invalid"})
   public CalciteException(
       String message,
-      Throwable cause) {
+      @Nullable Throwable cause) {
     super(message, cause);
 
     // TODO: Force the caller to pass in a Logger as a trace argument for
@@ -65,5 +67,3 @@ public class CalciteException extends RuntimeException {
     }
   }
 }
-
-// End CalciteException.java

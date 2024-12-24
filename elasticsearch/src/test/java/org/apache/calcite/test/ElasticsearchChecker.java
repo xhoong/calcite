@@ -25,16 +25,16 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
-import static org.junit.Assert.assertEquals;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+
+import static java.util.Objects.requireNonNull;
 
 /**
- * Internal util methods for ElasticSearch tests
+ * Internal utility methods for Elasticsearch tests.
  */
 public class ElasticsearchChecker {
 
@@ -48,26 +48,27 @@ public class ElasticsearchChecker {
 
   /** Returns a function that checks that a particular Elasticsearch pipeline is
    * generated to implement a query.
+   *
    * @param strings expected expressions
    * @return validation function
    */
   public static Consumer<List> elasticsearchChecker(final String... strings) {
-    Objects.requireNonNull(strings, "strings");
+    requireNonNull(strings, "strings");
     return a -> {
-      ObjectNode actual = a == null || a.isEmpty() ? null
-            : ((ObjectNode) a.get(0));
+      ObjectNode actual =
+          a == null || a.isEmpty() ? null : (ObjectNode) a.get(0);
 
       actual = expandDots(actual);
       try {
 
-        String json = "{" + Arrays.stream(strings).collect(Collectors.joining(",")) + "}";
+        String json = "{" + String.join(",", strings) + "}";
         ObjectNode expected = (ObjectNode) MAPPER.readTree(json);
         expected = expandDots(expected);
 
         if (!expected.equals(actual)) {
-          assertEquals("expected and actual Elasticsearch queries do not match",
-              MAPPER.writeValueAsString(expected),
-              MAPPER.writeValueAsString(actual));
+          assertThat("expected and actual Elasticsearch queries do not match",
+              MAPPER.writeValueAsString(actual),
+              is(MAPPER.writeValueAsString(expected)));
         }
       } catch (IOException e) {
         throw new UncheckedIOException(e);
@@ -84,13 +85,14 @@ public class ElasticsearchChecker {
    *   expanded to
    *   {a: { b: {c: 1}}}}
    * </pre>
+   *
    * @param parent current node
    * @param <T> type of node (usually JsonNode).
    * @return copy of existing node with field {@code a.b.c} expanded.
    */
   @SuppressWarnings("unchecked")
   private static <T extends JsonNode> T expandDots(T parent) {
-    Objects.requireNonNull(parent, "parent");
+    requireNonNull(parent, "parent");
 
     if (parent.isValueNode()) {
       return parent.deepCopy();
@@ -114,7 +116,7 @@ public class ElasticsearchChecker {
       final String[] names = property.split("\\.");
       ObjectNode copy2 = copy;
       for (int i = 0; i < names.length - 1; i++) {
-        copy2 = copy2.with(names[i]);
+        copy2 = copy2.withObject("/" + names[i]);
       }
       copy2.set(names[names.length - 1], expandDots(node));
     });
@@ -123,5 +125,3 @@ public class ElasticsearchChecker {
   }
 
 }
-
-// End ElasticsearchChecker.java

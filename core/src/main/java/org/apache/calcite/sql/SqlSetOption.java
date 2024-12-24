@@ -21,8 +21,12 @@ import org.apache.calcite.sql.validate.SqlValidator;
 import org.apache.calcite.sql.validate.SqlValidatorScope;
 import org.apache.calcite.util.ImmutableNullableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.ArrayList;
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * SQL parse tree node to represent {@code SET} and {@code RESET} statements,
@@ -60,41 +64,67 @@ import java.util.List;
 public class SqlSetOption extends SqlAlter {
   public static final SqlSpecialOperator OPERATOR =
       new SqlSpecialOperator("SET_OPTION", SqlKind.SET_OPTION) {
-        @Override public SqlCall createCall(SqlLiteral functionQualifier,
-            SqlParserPos pos, SqlNode... operands) {
+        @SuppressWarnings("argument.type.incompatible")
+        @Override public SqlCall createCall(@Nullable SqlLiteral functionQualifier,
+            SqlParserPos pos, @Nullable SqlNode... operands) {
           final SqlNode scopeNode = operands[0];
           return new SqlSetOption(pos,
               scopeNode == null ? null : scopeNode.toString(),
-              (SqlIdentifier) operands[1], operands[2]);
+              operands[1], operands[2]);
         }
       };
 
   /** Name of the option as an {@link org.apache.calcite.sql.SqlIdentifier}
    * with one or more parts.*/
+  @Deprecated // to be removed before 2.0
   SqlIdentifier name;
+
+  /**
+   * Name of the option as an {@link SqlNode}.
+   *
+   * <p>{@link org.apache.calcite.sql.SqlIdentifier} can not be used
+   * as a name parameter. For example, in PostgreSQL, these two SQL commands
+   * have different meanings:
+   * <ul>
+   *   <li><code>RESET ALL</code> resets all settable run-time parameters to default values.</li>
+   *   <li><code>RESET "ALL"</code> resets parameter "ALL".</li>
+   * </ul>
+   * Using only {@link org.apache.calcite.sql.SqlIdentifier} makes
+   * it impossible to distinguish which case is being referred to.
+   *
+   * <p>TODO: Rename to 'name' when deprecated `name` field is removed.
+   */
+  SqlNode nameAsSqlNode;
 
   /** Value of the option. May be a {@link org.apache.calcite.sql.SqlLiteral} or
    * a {@link org.apache.calcite.sql.SqlIdentifier} with one
    * part. Reserved words (currently just 'ON') are converted to
    * identifiers by the parser. */
-  SqlNode value;
+  @Nullable SqlNode value;
 
   /**
    * Creates a node.
    *
    * @param pos Parser position, must not be null.
    * @param scope Scope (generally "SYSTEM" or "SESSION"), may be null.
-   * @param name Name of option, as an identifier, must not be null.
+   * @param name Name of option, must not be null.
    * @param value Value of option, as an identifier or literal, may be null.
    *              If null, assume RESET command, else assume SET command.
    */
-  public SqlSetOption(SqlParserPos pos, String scope, SqlIdentifier name,
-      SqlNode value) {
+  public SqlSetOption(SqlParserPos pos, @Nullable String scope, SqlNode name,
+      @Nullable SqlNode value) {
     super(pos, scope);
     this.scope = scope;
-    this.name = name;
+    this.name = requireNonNull(name, "name") instanceof SqlIdentifier ? (SqlIdentifier) name
+        : new SqlIdentifier(name.toString(), name.getParserPosition());
+    this.nameAsSqlNode = name;
     this.value = value;
-    assert name != null;
+  }
+
+  @Deprecated // to be removed before 2.0
+  public SqlSetOption(SqlParserPos pos, @Nullable String scope, SqlIdentifier name,
+      @Nullable SqlNode value) {
+    this(pos, scope, (SqlNode) name, value);
   }
 
   @Override public SqlKind getKind() {
@@ -105,8 +135,9 @@ public class SqlSetOption extends SqlAlter {
     return OPERATOR;
   }
 
+  @SuppressWarnings("nullness")
   @Override public List<SqlNode> getOperandList() {
-    final List<SqlNode> operandList = new ArrayList<>();
+    final List<@Nullable SqlNode> operandList = new ArrayList<>();
     if (scope == null) {
       operandList.add(null);
     } else {
@@ -117,7 +148,7 @@ public class SqlSetOption extends SqlAlter {
     return ImmutableNullableList.copyOf(operandList);
   }
 
-  @Override public void setOperand(int i, SqlNode operand) {
+  @Override public void setOperand(int i, @Nullable SqlNode operand) {
     switch (i) {
     case 0:
       if (operand != null) {
@@ -127,7 +158,7 @@ public class SqlSetOption extends SqlAlter {
       }
       break;
     case 1:
-      name = (SqlIdentifier) operand;
+      setName(requireNonNull(operand, "operand"));
       break;
     case 2:
       value = operand;
@@ -137,36 +168,44 @@ public class SqlSetOption extends SqlAlter {
     }
   }
 
+  @Override public void unparse(final SqlWriter writer, final int leftPrec, final int rightPrec) {
+    writer.getDialect().unparseSqlSetOption(writer, leftPrec, rightPrec, this);
+  }
+
   @Override protected void unparseAlterOperation(SqlWriter writer, int leftPrec, int rightPrec) {
-    if (value != null) {
-      writer.keyword("SET");
-    } else {
-      writer.keyword("RESET");
-    }
-    final SqlWriter.Frame frame =
-        writer.startList(SqlWriter.FrameTypeEnum.SIMPLE);
-    name.unparse(writer, leftPrec, rightPrec);
-    if (value != null) {
-      writer.sep("=");
-      value.unparse(writer, leftPrec, rightPrec);
-    }
-    writer.endList(frame);
+    throw new UnsupportedOperationException();
   }
 
   @Override public void validate(SqlValidator validator,
       SqlValidatorScope scope) {
-    validator.validate(value);
+    if (value != null) {
+      validator.validate(value);
+    }
   }
 
+  @Deprecated // to be removed before 2.0
   public SqlIdentifier getName() {
     return name;
   }
 
+  // TODO: Rename to 'getName' when deprecated `getName` method is removed.
+  public SqlNode name() {
+    return nameAsSqlNode;
+  }
+
+  @Deprecated // to be removed before 2.0
   public void setName(SqlIdentifier name) {
     this.name = name;
   }
 
-  public SqlNode getValue() {
+  public void setName(SqlNode name) {
+    this.name =
+        name instanceof SqlIdentifier ? (SqlIdentifier) name
+            : new SqlIdentifier(name.toString(), name.getParserPosition());
+    this.nameAsSqlNode = name;
+  }
+
+  public @Nullable SqlNode getValue() {
     return value;
   }
 
@@ -174,5 +213,3 @@ public class SqlSetOption extends SqlAlter {
     this.value = value;
   }
 }
-
-// End SqlSetOption.java

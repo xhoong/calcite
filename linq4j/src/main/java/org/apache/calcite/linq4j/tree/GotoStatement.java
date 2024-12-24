@@ -16,7 +16,13 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Objects;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Represents an unconditional jump. This includes return statements, break and
@@ -24,30 +30,31 @@ import java.util.Objects;
  */
 public class GotoStatement extends Statement {
   public final GotoExpressionKind kind;
-  public final LabelTarget labelTarget;
-  public final Expression expression;
+  public final @Nullable LabelTarget labelTarget;
+  public final @Nullable Expression expression;
 
-  GotoStatement(GotoExpressionKind kind, LabelTarget labelTarget,
-      Expression expression) {
+  GotoStatement(GotoExpressionKind kind, @Nullable LabelTarget labelTarget,
+      @Nullable Expression expression) {
     super(ExpressionType.Goto,
         expression == null ? Void.TYPE : expression.getType());
-    assert kind != null : "kind should not be null";
-    this.kind = kind;
+    this.kind = requireNonNull(kind, "kind");
     this.labelTarget = labelTarget;
     this.expression = expression;
 
     switch (kind) {
     case Break:
     case Continue:
-      assert expression == null;
+      checkArgument(expression == null, "for %s, expression must be null",
+          kind);
       break;
     case Goto:
       assert expression == null;
-      assert labelTarget != null;
+      requireNonNull(labelTarget, "labelTarget");
       break;
     case Return:
     case Sequence:
-      assert labelTarget == null;
+      checkArgument(labelTarget == null, "for %s, labelTarget must be null",
+          kind);
       break;
     default:
       throw new RuntimeException("unexpected: " + kind);
@@ -61,7 +68,7 @@ public class GotoStatement extends Statement {
     return shuttle.visit(this, expression1);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
@@ -88,19 +95,19 @@ public class GotoStatement extends Statement {
     writer.append(';').newlineAndIndent();
   }
 
-  @Override public Object evaluate(Evaluator evaluator) {
+  @Override public @Nullable Object evaluate(Evaluator evaluator) {
     switch (kind) {
     case Return:
     case Sequence:
       // NOTE: We ignore control flow. This is only correct if "return"
       // is the last statement in the block.
-      return expression.evaluate(evaluator);
+      return requireNonNull(expression, "expression").evaluate(evaluator);
     default:
       throw new AssertionError("evaluate not implemented");
     }
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -112,25 +119,12 @@ public class GotoStatement extends Statement {
     }
 
     GotoStatement that = (GotoStatement) o;
-
-    if (expression != null ? !expression.equals(that.expression) : that
-        .expression != null) {
-      return false;
-    }
-    if (kind != that.kind) {
-      return false;
-    }
-    if (labelTarget != null ? !labelTarget.equals(that.labelTarget) : that
-        .labelTarget != null) {
-      return false;
-    }
-
-    return true;
+    return Objects.equals(expression, that.expression)
+        && kind == that.kind
+        && Objects.equals(labelTarget, that.labelTarget);
   }
 
   @Override public int hashCode() {
     return Objects.hash(nodeType, type, kind, labelTarget, expression);
   }
 }
-
-// End GotoStatement.java

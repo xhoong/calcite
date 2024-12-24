@@ -16,8 +16,12 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Modifier;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Declaration of a field.
@@ -25,13 +29,12 @@ import java.util.Objects;
 public class FieldDeclaration extends MemberDeclaration {
   public final int modifier;
   public final ParameterExpression parameter;
-  public final Expression initializer;
+  public final @Nullable Expression initializer;
 
   public FieldDeclaration(int modifier, ParameterExpression parameter,
-      Expression initializer) {
-    assert parameter != null : "parameter should not be null";
+      @Nullable Expression initializer) {
     this.modifier = modifier;
-    this.parameter = parameter;
+    this.parameter = requireNonNull(parameter, "parameter");
     this.initializer = initializer;
   }
 
@@ -43,11 +46,11 @@ public class FieldDeclaration extends MemberDeclaration {
     return shuttle.visit(this, initializer);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
-  public void accept(ExpressionWriter writer) {
+  @Override public void accept(ExpressionWriter writer) {
     String modifiers = Modifier.toString(modifier);
     writer.append(modifiers);
     if (!modifiers.isEmpty()) {
@@ -61,7 +64,7 @@ public class FieldDeclaration extends MemberDeclaration {
     writer.newlineAndIndent();
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -70,24 +73,12 @@ public class FieldDeclaration extends MemberDeclaration {
     }
 
     FieldDeclaration that = (FieldDeclaration) o;
-
-    if (modifier != that.modifier) {
-      return false;
-    }
-    if (initializer != null ? !initializer.equals(that.initializer) : that
-        .initializer != null) {
-      return false;
-    }
-    if (!parameter.equals(that.parameter)) {
-      return false;
-    }
-
-    return true;
+    return modifier == that.modifier
+        && Objects.equals(initializer, that.initializer)
+        && parameter.equals(that.parameter);
   }
 
   @Override public int hashCode() {
     return Objects.hash(modifier, parameter, initializer);
   }
 }
-
-// End FieldDeclaration.java

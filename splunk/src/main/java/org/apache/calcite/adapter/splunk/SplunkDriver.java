@@ -24,6 +24,9 @@ import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.linq4j.Enumerator;
 import org.apache.calcite.schema.SchemaPlus;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import java.net.URI;
 import java.net.URL;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -34,7 +37,7 @@ import java.util.Properties;
 /**
  * JDBC driver for Splunk.
  *
- * <p>It accepts connect strings that start with "jdbc:splunk:".</p>
+ * <p>It accepts connect strings that start with "jdbc:splunk:".
  */
 public class SplunkDriver extends org.apache.calcite.jdbc.Driver {
   protected SplunkDriver() {
@@ -45,11 +48,11 @@ public class SplunkDriver extends org.apache.calcite.jdbc.Driver {
     new SplunkDriver().register();
   }
 
-  protected String getConnectStringPrefix() {
+  @Override protected String getConnectStringPrefix() {
     return "jdbc:splunk:";
   }
 
-  protected DriverVersion createDriverVersion() {
+  @Override protected DriverVersion createDriverVersion() {
     return new SplunkDriverVersion();
   }
 
@@ -77,7 +80,7 @@ public class SplunkDriver extends org.apache.calcite.jdbc.Driver {
           throw new IllegalArgumentException(
               "Must specify 'password' property");
         }
-        URL url2 = new URL(url1);
+        URL url2 = URI.create(url1).toURL();
         splunkConnection = new SplunkConnectionImpl(url2, user, password);
       }
     } catch (Exception e) {
@@ -90,38 +93,37 @@ public class SplunkDriver extends org.apache.calcite.jdbc.Driver {
   }
 
   /** Connection that looks up responses from a static map. */
+  @SuppressWarnings("unused")
   private static class MockSplunkConnection implements SplunkConnection {
-    public Enumerator<Object> getSearchResultEnumerator(String search,
-        Map<String, String> otherArgs, List<String> fieldList) {
-      throw null;
+    @Override public Enumerator<Object> getSearchResultEnumerator(String search,
+        Map<String, String> otherArgs, @Nullable List<String> fieldList) {
+      throw new NullPointerException();
     }
 
-    public void getSearchResults(String search, Map<String, String> otherArgs,
-        List<String> fieldList, SearchResultListener srl) {
+    @Override public void getSearchResults(String search,
+        Map<String, String> otherArgs,
+        @Nullable List<String> fieldList, SearchResultListener srl) {
       throw new UnsupportedOperationException();
     }
   }
 
   /** Connection that records requests and responses. */
+  @SuppressWarnings("unused")
   private static class WrappingSplunkConnection implements SplunkConnection {
-    private final SplunkConnection connection;
-
     WrappingSplunkConnection(SplunkConnection connection) {
-      this.connection = connection;
     }
 
-    public void getSearchResults(String search, Map<String, String> otherArgs,
-        List<String> fieldList, SearchResultListener srl) {
+    @Override public void getSearchResults(String search,
+        Map<String, String> otherArgs,
+        @Nullable List<String> fieldList, SearchResultListener srl) {
       System.out.println("search='" + search
           + "', otherArgs=" + otherArgs
           + ", fieldList='" + fieldList);
     }
 
-    public Enumerator<Object> getSearchResultEnumerator(String search,
-        Map<String, String> otherArgs, List<String> fieldList) {
+    @Override public Enumerator<Object> getSearchResultEnumerator(String search,
+        Map<String, String> otherArgs, @Nullable List<String> fieldList) {
       throw new UnsupportedOperationException();
     }
   }
 }
-
-// End SplunkDriver.java

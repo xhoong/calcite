@@ -21,37 +21,39 @@ import org.apache.geode.cache.CacheFactory;
 import org.apache.geode.distributed.AbstractLauncher;
 import org.apache.geode.distributed.ServerLauncher;
 
-import com.google.common.base.Preconditions;
-
-import org.junit.rules.ExternalResource;
+import org.junit.jupiter.api.extension.AfterAllCallback;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Manages embedded Geode instance using native {@link ServerLauncher}.
  */
-public class GeodeEmbeddedPolicy extends ExternalResource {
+public class GeodeEmbeddedPolicy implements BeforeAllCallback, AfterAllCallback {
 
   private final ServerLauncher launcher;
 
   private GeodeEmbeddedPolicy(final ServerLauncher launcher) {
-    Objects.requireNonNull(launcher, "launcher");
-    Preconditions.checkState(!launcher.isRunning(), "Launcher process is already running");
-    this.launcher = launcher;
+    this.launcher = requireNonNull(launcher, "launcher");
+    checkState(!launcher.isRunning(), "Launcher process is already running");
   }
 
-  @Override protected void before() {
+  @Override public void beforeAll(ExtensionContext context) {
     requireStatus(AbstractLauncher.Status.NOT_RESPONDING);
     launcher.start();
   }
 
-  @Override protected void after() {
+  @Override public void afterAll(ExtensionContext context) {
     if (launcher.status().getStatus() == AbstractLauncher.Status.ONLINE) {
       CacheFactory.getAnyInstance().close();
     }
@@ -72,8 +74,7 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
   /**
    * Allows this instance to be shared by multiple test classes (in parallel). Guarantees that
    * {@code before()} and {@code after()} methods will be called only once. This setup is useful
-   * for maven (surefire) plugin which executes tests in parallel (including {@code @ClassRule}
-   * methods) and may initialize (or destroy) same resource multiple times.
+   * for concurrent test execution which may initialize (or destroy) same resource multiple times.
    */
   GeodeEmbeddedPolicy share() {
     return new RefCountPolicy(this);
@@ -81,6 +82,7 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
 
   /**
    * Returns current cache instance which was initialized for tests.
+   *
    * @throws IllegalStateException if server process didn't start
    */
   Cache cache() {
@@ -90,7 +92,7 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
 
   private void requireStatus(AbstractLauncher.Status expected) {
     final AbstractLauncher.Status current = launcher.status().getStatus();
-    Preconditions.checkState(current == expected,
+    checkState(current == expected,
         "Expected state %s but got %s", expected, current);
   }
 
@@ -110,8 +112,8 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
 
   /**
    * Calls {@code before()} and {@code after()} methods only once (for first and last subscriber
-   * respectively). The implementation counts number of times {@link #before()} was called
-   * which determines number of "clients". Delegate {@link #after()} is called when that count
+   * respectively). The implementation counts number of times {@link #beforeAll(ExtensionContext)} was called
+   * which determines number of "clients". Delegate {@link #afterAll(ExtensionContext)} is called when that count
    * reaches zero again (when last "client" called that method).
    */
   private static class RefCountPolicy extends GeodeEmbeddedPolicy {
@@ -121,7 +123,7 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
     private final GeodeEmbeddedPolicy policy;
 
     RefCountPolicy(final GeodeEmbeddedPolicy policy) {
-      super(Objects.requireNonNull(policy, "policy").launcher);
+      super(requireNonNull(policy, "policy").launcher);
       this.policy = policy;
       this.refCount = new AtomicInteger();
     }
@@ -131,20 +133,18 @@ public class GeodeEmbeddedPolicy extends ExternalResource {
       return this;
     }
 
-    @Override public synchronized void before() {
+    @Override public synchronized void beforeAll(ExtensionContext context) {
       if (refCount.getAndIncrement() == 0) {
         // initialize only once
-        policy.before();
+        policy.beforeAll(context);
       }
     }
 
-    @Override protected void after() {
+    @Override public void afterAll(ExtensionContext context) {
       if (refCount.decrementAndGet() == 0) {
         // destroy only once
-        policy.after();
+        policy.afterAll(context);
       }
     }
   }
 }
-
-// End GeodeEmbeddedPolicy.java

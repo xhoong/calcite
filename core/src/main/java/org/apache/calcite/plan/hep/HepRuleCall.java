@@ -16,11 +16,14 @@
  */
 package org.apache.calcite.plan.hep;
 
+import org.apache.calcite.plan.RelHintsPropagator;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRuleCall;
 import org.apache.calcite.plan.RelOptRuleOperand;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +37,7 @@ import java.util.Map;
 public class HepRuleCall extends RelOptRuleCall {
   //~ Instance fields --------------------------------------------------------
 
-  private List<RelNode> results;
+  private final List<RelNode> results = new ArrayList<>();
 
   //~ Constructors -----------------------------------------------------------
 
@@ -43,25 +46,22 @@ public class HepRuleCall extends RelOptRuleCall {
       RelOptRuleOperand operand,
       RelNode[] rels,
       Map<RelNode, List<RelNode>> nodeChildren,
-      List<RelNode> parents) {
+      @Nullable List<RelNode> parents) {
     super(planner, operand, rels, nodeChildren, parents);
-
-    results = new ArrayList<>();
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  // implement RelOptRuleCall
-  public void transformTo(RelNode rel, Map<RelNode, RelNode> equiv) {
+  @Override public void transformTo(RelNode rel, Map<RelNode, RelNode> equiv,
+      RelHintsPropagator handler) {
     final RelNode rel0 = rels[0];
     RelOptUtil.verifyTypeEquivalence(rel0, rel, rel0);
+    rel = handler.propagate(rel0, rel);
     results.add(rel);
-    rel(0).getCluster().invalidateMetadataQuery();
+    rel0.getCluster().invalidateMetadataQuery();
   }
 
   List<RelNode> getResults() {
     return results;
   }
 }
-
-// End HepRuleCall.java

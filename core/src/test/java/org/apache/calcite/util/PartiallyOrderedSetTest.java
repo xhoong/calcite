@@ -15,40 +15,38 @@
  * limitations under the License.
  */
 package org.apache.calcite.util;
-
-import org.apache.calcite.config.CalciteSystemProperty;
-import org.apache.calcite.test.SlowTests;
-
-import org.junit.Assume;
-import org.junit.Test;
-import org.junit.experimental.categories.Category;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.hasToString;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Unit test for {@link PartiallyOrderedSet}.
  */
-@Category(SlowTests.class)
-public class PartiallyOrderedSetTest {
+class PartiallyOrderedSetTest {
   private static final boolean DEBUG = false;
 
   // 100, 250, 1000, 3000 are reasonable
-  private static final int SCALE = CalciteSystemProperty.TEST_SLOW.value() ? 250 : 50;
+  private static final int SCALE = 250;
 
   final long seed = new Random().nextLong();
   final Random random = new Random(seed);
@@ -87,12 +85,12 @@ public class PartiallyOrderedSetTest {
     return (e2 & e1) == e1;
   }
 
-  @Test public void testPoset() {
+  @Test void testPoset() {
     String empty = "''";
     String abcd = "'abcd'";
     final PartiallyOrderedSet<String> poset =
         new PartiallyOrderedSet<>(STRING_SUBSET_ORDERING);
-    assertEquals(0, poset.size());
+    assertThat(poset, hasSize(0));
 
     final StringBuilder buf = new StringBuilder();
     poset.out(buf);
@@ -107,41 +105,41 @@ public class PartiallyOrderedSetTest {
     printValidate(poset);
 
     poset.clear();
-    assertEquals(0, poset.size());
+    assertThat(poset, hasSize(0));
     poset.add(empty);
     printValidate(poset);
     poset.add(abcd);
     printValidate(poset);
-    assertEquals(2, poset.size());
-    assertEquals("['abcd']", poset.getNonChildren().toString());
-    assertEquals("['']", poset.getNonParents().toString());
+    assertThat(poset, hasSize(2));
+    assertThat(poset.getNonChildren(), hasToString("['abcd']"));
+    assertThat(poset.getNonParents(), hasToString("['']"));
 
     final String ab = "'ab'";
     poset.add(ab);
     printValidate(poset);
-    assertEquals(3, poset.size());
-    assertEquals("[]", poset.getChildren(empty).toString());
-    assertEquals("['ab']", poset.getParents(empty).toString());
-    assertEquals("['ab']", poset.getChildren(abcd).toString());
-    assertEquals("[]", poset.getParents(abcd).toString());
-    assertEquals("['']", poset.getChildren(ab).toString());
-    assertEquals("['abcd']", poset.getParents(ab).toString());
+    assertThat(poset, hasSize(3));
+    assertThat(poset.getChildren(empty), hasToString("[]"));
+    assertThat(poset.getParents(empty), hasToString("['ab']"));
+    assertThat(poset.getChildren(abcd), hasToString("['ab']"));
+    assertThat(poset.getParents(abcd), hasToString("[]"));
+    assertThat(poset.getChildren(ab), hasToString("['']"));
+    assertThat(poset.getParents(ab), hasToString("['abcd']"));
 
     // "bcd" is child of "abcd" and parent of ""
     final String bcd = "'bcd'";
-    assertEquals("['abcd']", poset.getParents(bcd, true).toString());
+    assertThat(poset.getParents(bcd, true), hasToString("['abcd']"));
     assertThat(poset.getParents(bcd, false), nullValue());
     assertThat(poset.getParents(bcd), nullValue());
-    assertEquals("['']", poset.getChildren(bcd, true).toString());
+    assertThat(poset.getChildren(bcd, true), hasToString("['']"));
     assertThat(poset.getChildren(bcd, false), nullValue());
     assertThat(poset.getChildren(bcd), nullValue());
 
     poset.add(bcd);
     printValidate(poset);
     assertTrue(poset.isValid(false));
-    assertEquals("['']", poset.getChildren(bcd).toString());
-    assertEquals("['abcd']", poset.getParents(bcd).toString());
-    assertEquals("['ab', 'bcd']", poset.getChildren(abcd).toString());
+    assertThat(poset.getChildren(bcd), hasToString("['']"));
+    assertThat(poset.getParents(bcd), hasToString("['abcd']"));
+    assertThat(poset.getChildren(abcd), hasToString("['ab', 'bcd']"));
 
     buf.setLength(0);
     poset.out(buf);
@@ -161,18 +159,18 @@ public class PartiallyOrderedSetTest {
 
     poset.add(b);
     printValidate(poset);
-    assertEquals("['abcd']", poset.getNonChildren().toString());
-    assertEquals("['']", poset.getNonParents().toString());
-    assertEquals("['']", poset.getChildren(b).toString());
+    assertThat(poset.getNonChildren(), hasToString("['abcd']"));
+    assertThat(poset.getNonParents(), hasToString("['']"));
+    assertThat(poset.getChildren(b), hasToString("['']"));
     assertEqualsList("['ab', 'bcd']", poset.getParents(b));
-    assertEquals("['']", poset.getChildren(b).toString());
-    assertEquals("['ab', 'bcd']", poset.getChildren(abcd).toString());
-    assertEquals("['b']", poset.getChildren(bcd).toString());
-    assertEquals("['b']", poset.getChildren(ab).toString());
+    assertThat(poset.getChildren(b), hasToString("['']"));
+    assertThat(poset.getChildren(abcd), hasToString("['ab', 'bcd']"));
+    assertThat(poset.getChildren(bcd), hasToString("['b']"));
+    assertThat(poset.getChildren(ab), hasToString("['b']"));
     assertEqualsList("['ab', 'abcd', 'bcd']", poset.getAncestors(b));
 
     // descendants and ancestors of an element with no descendants
-    assertEquals("[]", poset.getDescendants(empty).toString());
+    assertThat(poset.getDescendants(empty), hasToString("[]"));
     assertEqualsList(
         "['ab', 'abcd', 'b', 'bcd']",
         poset.getAncestors(empty));
@@ -183,7 +181,31 @@ public class PartiallyOrderedSetTest {
     assertEqualsList("['ab', 'abcd']", poset.getAncestors("'a'"));
   }
 
-  @Test public void testPosetTricky() {
+  @Test void testGetNonParentsOnLteIntPosetReturnsMinValue() {
+    PartiallyOrderedSet<Integer> poset =
+        new PartiallyOrderedSet<>((i, j) -> i <= j, Arrays.asList(20, 30, 40));
+    assertThat(poset.getNonParents(), hasToString("[20]"));
+  }
+
+  @Test void testGetNonChildrenOnLteIntPosetReturnsMaxValue() {
+    PartiallyOrderedSet<Integer> poset =
+        new PartiallyOrderedSet<>((i, j) -> i <= j, Arrays.asList(20, 30, 40));
+    assertThat(poset.getNonChildren(), hasToString("[40]"));
+  }
+
+  @Test void testGetNonParentsOnGteIntPosetReturnsMaxValue() {
+    PartiallyOrderedSet<Integer> poset =
+        new PartiallyOrderedSet<>((i, j) -> i >= j, Arrays.asList(20, 30, 40));
+    assertThat(poset.getNonParents(), hasToString("[40]"));
+  }
+
+  @Test void testGetNonChildrenOnGteIntPosetReturnsMinValue() {
+    PartiallyOrderedSet<Integer> poset =
+        new PartiallyOrderedSet<>((i, j) -> i >= j, Arrays.asList(20, 30, 40));
+    assertThat(poset.getNonChildren(), hasToString("[20]"));
+  }
+
+  @Test void testPosetTricky() {
     final PartiallyOrderedSet<String> poset =
         new PartiallyOrderedSet<>(STRING_SUBSET_ORDERING);
 
@@ -198,9 +220,11 @@ public class PartiallyOrderedSetTest {
     printValidate(poset);
     poset.add("'ab'");
     printValidate(poset);
+    assertThat(poset.getNonChildren(), hasToString("['ac', 'ab']"));
+    assertThat(poset.getNonParents(), hasToString("['a', 'b']"));
   }
 
-  @Test public void testPosetBits() {
+  @Test void testPosetBits() {
     final PartiallyOrderedSet<Integer> poset =
         new PartiallyOrderedSet<>(PartiallyOrderedSetTest::isBitSuperset);
     poset.add(2112); // {6, 11} i.e. 64 + 2048
@@ -213,22 +237,21 @@ public class PartiallyOrderedSetTest {
     printValidate(poset);
   }
 
-  @Test public void testPosetBitsLarge() {
-    Assume.assumeTrue(
-        "it takes 80 seconds, and the computations are exactly the same every time",
-        CalciteSystemProperty.TEST_SLOW.value());
+  @Tag("slow")
+  @Test void testPosetBitsLarge() {
+    // It takes 80 seconds, and the computations are exactly the same every time
     final PartiallyOrderedSet<Integer> poset =
         new PartiallyOrderedSet<>(PartiallyOrderedSetTest::isBitSuperset);
     checkPosetBitsLarge(poset, 30000, 2921, 164782);
   }
 
-  @Test public void testPosetBitsLarge2() {
-    Assume.assumeTrue("too slow to run every day", CalciteSystemProperty.TEST_SLOW.value());
+  @Tag("slow")
+  @Test void testPosetBitsLarge2() {
     final int n = 30000;
     final PartiallyOrderedSet<Integer> poset =
         new PartiallyOrderedSet<>(PartiallyOrderedSetTest::isBitSuperset,
             (Function<Integer, Iterable<Integer>>) i -> {
-              int r = Objects.requireNonNull(i); // bits not yet cleared
+              int r = requireNonNull(i, "i"); // bits not yet cleared
               final List<Integer> list = new ArrayList<>();
               for (int z = 1; r != 0; z <<= 1) {
                 if ((i & z) != 0) {
@@ -239,7 +262,7 @@ public class PartiallyOrderedSetTest {
               return list;
             },
             i -> {
-              Objects.requireNonNull(i);
+              requireNonNull(i, "i");
               final List<Integer> list = new ArrayList<>();
               for (int z = 1; z <= n; z <<= 1) {
                 if ((i & z) == 0) {
@@ -266,12 +289,12 @@ public class PartiallyOrderedSetTest {
           poset.getParents(random.nextInt(n * 2), true);
       parentCount += parents.size();
     }
-    assertThat(poset.size(), is(count));
-    assertThat(poset.size(), is(expectedSize));
+    assertThat(poset, hasSize(count));
+    assertThat(poset, hasSize(expectedSize));
     assertThat(parentCount, is(expectedParentCount));
   }
 
-  @Test public void testPosetBitsRemoveParent() {
+  @Test void testPosetBitsRemoveParent() {
     final PartiallyOrderedSet<Integer> poset =
         new PartiallyOrderedSet<>(PartiallyOrderedSetTest::isBitSuperset);
     poset.add(66); // {bit 2, bit 6}
@@ -283,29 +306,25 @@ public class PartiallyOrderedSetTest {
     printValidate(poset);
   }
 
-  @Test public void testDivisorPoset() {
+  @Test void testDivisorPoset() {
     PartiallyOrderedSet<Integer> integers =
         new PartiallyOrderedSet<>(PartiallyOrderedSetTest::isDivisor,
             range(1, 1000));
-    assertEquals(
-        "[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60]",
-        new TreeSet<>(integers.getDescendants(120)).toString());
-    assertEquals(
-        "[240, 360, 480, 600, 720, 840, 960]",
-        new TreeSet<>(integers.getAncestors(120)).toString());
-    assertTrue(integers.getDescendants(1).isEmpty());
-    assertEquals(
-        998,
-        integers.getAncestors(1).size());
-    assertTrue(integers.isValid(true));
+    assertThat(new TreeSet<>(integers.getDescendants(120)),
+        hasToString("[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 24, 30, 40, 60]"));
+    assertThat(new TreeSet<>(integers.getAncestors(120)),
+        hasToString("[240, 360, 480, 600, 720, 840, 960]"));
+    assertThat(integers.getDescendants(1), empty());
+    assertThat(integers.getAncestors(1), hasSize(998));
+    assertThat(integers.isValid(true), is(true));
   }
 
-  @Test public void testDivisorSeries() {
+  @Test void testDivisorSeries() {
     checkPoset(PartiallyOrderedSetTest::isDivisor, DEBUG, range(1, SCALE * 3),
         false);
   }
 
-  @Test public void testDivisorRandom() {
+  @Test void testDivisorRandom() {
     boolean ok = false;
     try {
       checkPoset(PartiallyOrderedSetTest::isDivisor, DEBUG,
@@ -318,7 +337,7 @@ public class PartiallyOrderedSetTest {
     }
   }
 
-  @Test public void testDivisorRandomWithRemoval() {
+  @Test void testDivisorRandomWithRemoval() {
     boolean ok = false;
     try {
       checkPoset(PartiallyOrderedSetTest::isDivisor, DEBUG,
@@ -331,12 +350,12 @@ public class PartiallyOrderedSetTest {
     }
   }
 
-  @Test public void testDivisorInverseSeries() {
+  @Test void testDivisorInverseSeries() {
     checkPoset(PartiallyOrderedSetTest::isDivisorInverse, DEBUG,
         range(1, SCALE * 3), false);
   }
 
-  @Test public void testDivisorInverseRandom() {
+  @Test void testDivisorInverseRandom() {
     boolean ok = false;
     try {
       checkPoset(PartiallyOrderedSetTest::isDivisorInverse, DEBUG, random(random, SCALE, SCALE * 3),
@@ -349,7 +368,7 @@ public class PartiallyOrderedSetTest {
     }
   }
 
-  @Test public void testDivisorInverseRandomWithRemoval() {
+  @Test void testDivisorInverseRandomWithRemoval() {
     boolean ok = false;
     try {
       checkPoset(PartiallyOrderedSetTest::isDivisorInverse, DEBUG, random(random, SCALE, SCALE * 3),
@@ -362,11 +381,11 @@ public class PartiallyOrderedSetTest {
     }
   }
 
-  @Test public void testSubsetSeries() {
+  @Test void testSubsetSeries() {
     checkPoset(PartiallyOrderedSetTest::isBitSubset, DEBUG, range(1, SCALE / 2), false);
   }
 
-  @Test public void testSubsetRandom() {
+  @Test void testSubsetRandom() {
     boolean ok = false;
     try {
       checkPoset(PartiallyOrderedSetTest::isBitSubset, DEBUG,
@@ -416,7 +435,7 @@ public class PartiallyOrderedSetTest {
       if (debug) {
         dump(poset);
       }
-      assertEquals(++n, poset.size());
+      assertThat(poset, hasSize(++n));
       if (i < 100) {
         if (!poset.isValid(false)) {
           dump(poset);
@@ -460,9 +479,7 @@ public class PartiallyOrderedSetTest {
   }
 
   private static void assertEqualsList(String expected, List<String> ss) {
-    assertEquals(expected, new TreeSet<>(ss).toString());
+    assertThat(new TreeSet<>(ss), hasToString(expected));
   }
 
 }
-
-// End PartiallyOrderedSetTest.java

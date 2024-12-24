@@ -19,6 +19,8 @@ package org.apache.calcite.sql2rel;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlCall;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 /**
  * SubQueryConverter provides the interface for classes that convert sub-queries
  * into equivalent expressions.
@@ -26,9 +28,7 @@ import org.apache.calcite.sql.SqlCall;
 public interface SubQueryConverter {
   //~ Methods ----------------------------------------------------------------
 
-  /**
-   * @return Whether the sub-query can be converted
-   */
+  /** Returns whether the sub-query can be converted. */
   boolean canConvertSubQuery();
 
   /**
@@ -43,11 +43,9 @@ public interface SubQueryConverter {
    * @return the equivalent expression or null if the sub-query couldn't be
    * converted
    */
-  RexNode convertSubQuery(
+  @Nullable RexNode convertSubQuery(
       SqlCall subQuery,
       SqlToRelConverter parentConverter,
       boolean isExists,
       boolean isExplain);
 }
-
-// End SubQueryConverter.java

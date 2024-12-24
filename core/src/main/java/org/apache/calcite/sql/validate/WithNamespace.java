@@ -22,6 +22,10 @@ import org.apache.calcite.sql.SqlWith;
 import org.apache.calcite.sql.SqlWithItem;
 import org.apache.calcite.util.Util;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import static java.util.Objects.requireNonNull;
+
 /**
  * Namespace for <code>WITH</code> clause.
  */
@@ -48,21 +52,23 @@ public class WithNamespace extends AbstractNamespace {
 
   //~ Methods ----------------------------------------------------------------
 
-  protected RelDataType validateImpl(RelDataType targetRowType) {
+  @Override protected RelDataType validateImpl(RelDataType targetRowType) {
     for (SqlNode withItem : with.withList) {
       validator.validateWithItem((SqlWithItem) withItem);
     }
     final SqlValidatorScope scope2 =
-        validator.getWithScope(Util.last(with.withList.getList()));
+        validator.getWithScope(Util.last(with.withList));
+    final SqlValidatorNamespace bodyNamespace =
+        requireNonNull(validator.getNamespace(with.body), "namespace");
+
     validator.validateQuery(with.body, scope2, targetRowType);
     final RelDataType rowType = validator.getValidatedNodeType(with.body);
     validator.setValidatedNodeType(with, rowType);
+    mustFilterFields = bodyNamespace.getMustFilterFields();
     return rowType;
   }
 
-  public SqlNode getNode() {
+  @Override public @Nullable SqlNode getNode() {
     return with;
   }
 }
-
-// End WithNamespace.java

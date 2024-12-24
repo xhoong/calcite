@@ -24,7 +24,7 @@ import org.apache.calcite.schema.TableFunction;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.TableFunctionImpl;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.sql.Connection;
@@ -32,13 +32,15 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.hasToString;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Unit tests for example user-defined functions.
  */
-public class ExampleFunctionTest {
+class ExampleFunctionTest {
   public static final Method MAZE_METHOD =
       Types.lookupMethod(MazeTable.class, "generate", int.class, int.class,
           int.class);
@@ -47,8 +49,7 @@ public class ExampleFunctionTest {
           int.class);
 
   /** Unit test for {@link MazeTable}. */
-  @Test public void testMazeTableFunction()
-      throws SQLException, ClassNotFoundException {
+  @Test void testMazeTableFunction() throws SQLException {
     final String maze = ""
         + "+--+--+--+--+--+\n"
         + "|        |     |\n"
@@ -61,8 +62,7 @@ public class ExampleFunctionTest {
   }
 
   /** Unit test for {@link MazeTable}. */
-  @Test public void testMazeTableFunctionWithSolution()
-      throws SQLException, ClassNotFoundException {
+  @Test void testMazeTableFunctionWithSolution() throws SQLException {
     final String maze = ""
         + "+--+--+--+--+--+\n"
         + "|*  *    |     |\n"
@@ -75,15 +75,17 @@ public class ExampleFunctionTest {
   }
 
   public void checkMazeTableFunction(Boolean solution, String maze)
-      throws SQLException, ClassNotFoundException {
+      throws SQLException {
     Connection connection = DriverManager.getConnection("jdbc:calcite:");
     CalciteConnection calciteConnection =
         connection.unwrap(CalciteConnection.class);
     SchemaPlus rootSchema = calciteConnection.getRootSchema();
     SchemaPlus schema = rootSchema.add("s", new AbstractSchema());
-    final TableFunction table = TableFunctionImpl.create(MAZE_METHOD);
+    final TableFunction table =
+        requireNonNull(TableFunctionImpl.create(MAZE_METHOD));
     schema.add("Maze", table);
-    final TableFunction table2 = TableFunctionImpl.create(SOLVE_METHOD);
+    final TableFunction table2 =
+        requireNonNull(TableFunctionImpl.create(SOLVE_METHOD));
     schema.add("Solve", table2);
     final String sql;
     if (solution) {
@@ -98,8 +100,6 @@ public class ExampleFunctionTest {
     while (resultSet.next()) {
       b.append(resultSet.getString(1)).append("\n");
     }
-    assertThat(b.toString(), is(maze));
+    assertThat(b, hasToString(maze));
   }
 }
-
-// End ExampleFunctionTest.java

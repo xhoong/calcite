@@ -1,5 +1,4 @@
 @echo off
-:: sqlline.bat - Windows script to launch SQL shell
 ::
 :: Licensed to the Apache Software Foundation (ASF) under one or more
 :: contributor license agreements.  See the NOTICE file distributed with
@@ -16,18 +15,22 @@
 :: See the License for the specific language governing permissions and
 :: limitations under the License.
 ::
+
+:: sqlline.bat - Windows script to launch SQL shell
 :: Example:
 :: > sqlline.bat
-:: sqlline> !connect jdbc:calcite: admin admin 
+:: sqlline> !connect jdbc:calcite: admin admin
 
-:: Copy dependency jars on first call.
-:: (To force jar refresh, remove core\target\dependencies)
-:: We remove slf4j-log4j, otherwise slf4j complains about multiple bindings.
-if not exist core\target\dependencies (
-  call .\mvnw -B dependency:copy-dependencies -DoverWriteReleases=false -DoverWriteSnapshots=false -DoverWriteIfNewer=true -DoutputDirectory=target\dependencies
-  del /q /s slf4j-log4j12-*.jar
+:: The script updates the classpath on each execution,
+:: You might add CACHE_SQLLINE_CLASSPATH environment variable to cache it
+:: To build classpath jar manually use gradlew buildSqllineClasspath
+set DIRNAME=%~dp0
+if "%DIRNAME%" == "" set DIRNAME=.
+set CP=%DIRNAME%\build\libs\sqllineClasspath.jar
+
+if not defined CACHE_SQLLINE_CLASSPATH (
+  if exist "%CP%" del "%CP%"
 )
+if not exist "%CP%" (call "%DIRNAME%\gradlew" --console plain -q :buildSqllineClasspath)
 
-java -Xmx1G -cp ".\target\dependencies\*;core\target\dependencies\*;cassandra\target\dependencies\*;druid\target\dependencies\*;elasticsearch\target\dependencies\*;geode\target\dependencies\*;file\target\dependencies\*;mongodb\target\dependencies\*;server\target\dependencies\*;spark\target\dependencies\*;splunk\target\dependencies\*" sqlline.SqlLine --verbose=true %*
-
-:: End sqlline.bat
+java -Xmx1g -jar "%CP%" %*

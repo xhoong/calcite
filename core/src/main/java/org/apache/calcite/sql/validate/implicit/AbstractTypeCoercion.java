@@ -22,15 +22,23 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeFactoryImpl;
 import org.apache.calcite.rel.type.RelDataTypeField;
+import org.apache.calcite.rel.type.RelDataTypeFieldImpl;
+import org.apache.calcite.runtime.PairList;
 import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlCharStringLiteral;
 import org.apache.calcite.sql.SqlCollation;
+import org.apache.calcite.sql.SqlDynamicParam;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+import org.apache.calcite.sql.parser.SqlParseException;
 import org.apache.calcite.sql.parser.SqlParserPos;
+import org.apache.calcite.sql.parser.SqlParserUtil;
+import org.apache.calcite.sql.type.SqlTypeCoercionRule;
 import org.apache.calcite.sql.type.SqlTypeFamily;
+import org.apache.calcite.sql.type.SqlTypeMappingRule;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.sql.validate.SqlValidator;
@@ -41,11 +49,15 @@ import org.apache.calcite.util.Util;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+
+import static org.apache.calcite.sql.type.NonNullableAccessors.getCollation;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Base class for all the type coercion rules. If you want to have a custom type coercion rules,
@@ -64,33 +76,24 @@ import java.util.Objects;
  * {@link #commonTypeForBinaryComparison} for the detail strategies.
  */
 public abstract class AbstractTypeCoercion implements TypeCoercion {
-  protected SqlValidator validator;
-  protected RelDataTypeFactory factory;
+  protected final SqlValidator validator;
+  protected final RelDataTypeFactory factory;
 
   //~ Constructors -----------------------------------------------------------
 
-  AbstractTypeCoercion(SqlValidator validator) {
-    Objects.requireNonNull(validator);
-    this.validator = validator;
-    this.factory = validator.getTypeFactory();
+  AbstractTypeCoercion(RelDataTypeFactory typeFactory, SqlValidator validator) {
+    this.factory = requireNonNull(typeFactory, "typeFactory");
+    this.validator = requireNonNull(validator, "validator");
   }
 
   //~ Methods ----------------------------------------------------------------
-
-  public RelDataTypeFactory getFactory() {
-    return this.factory;
-  }
-
-  public SqlValidator getValidator() {
-    return this.validator;
-  }
 
   /**
    * Cast operand at index {@code index} to target type.
    * we do this base on the fact that validate happens before type coercion.
    */
   protected boolean coerceOperandType(
-      SqlValidatorScope scope,
+      @Nullable SqlValidatorScope scope,
       SqlCall call,
       int index,
       RelDataType targetType) {
@@ -101,12 +104,23 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
 
     SqlNode operand = call.getOperandList().get(index);
+    if (operand instanceof SqlDynamicParam) {
+      // Do not support implicit type coercion for dynamic param.
+      return false;
+    }
+    requireNonNull(scope, "scope");
+    RelDataType operandType = validator.deriveType(scope, operand);
+    if (coerceStringToArray(call, operand, index, operandType, targetType)) {
+      return true;
+    }
+
     // Check it early.
-    if (!needToCast(scope, operand, targetType)) {
+    if (!needToCast(scope, operand, targetType,
+        SqlTypeCoercionRule.lenientInstance())) {
       return false;
     }
     // Fix up nullable attr.
-    RelDataType targetType1 = syncAttributes(validator.deriveType(scope, operand), targetType);
+    RelDataType targetType1 = syncAttributes(operandType, targetType);
     SqlNode desired = castTo(operand, targetType1);
     call.setOperand(index, desired);
     updateInferredType(desired, targetType1);
@@ -119,10 +133,9 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * @param scope      Validator scope
    * @param call       the call
    * @param commonType common type to coerce to
-   * @return true if any operand is coerced
    */
   protected boolean coerceOperandsType(
-      SqlValidatorScope scope,
+      @Nullable SqlValidatorScope scope,
       SqlCall call,
       RelDataType commonType) {
     boolean coerced = false;
@@ -135,15 +148,13 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
   /**
    * Cast column at index {@code index} to target type.
    *
-   * @param scope      validator scope for the node list
-   * @param nodeList   column node list
-   * @param index      index of column
-   * @param targetType target type to cast to
-   *
-   * @return true if type coercion actually happens.
+   * @param scope      Validator scope for the node list
+   * @param nodeList   Column node list
+   * @param index      Index of column
+   * @param targetType Target type to cast to
    */
   protected boolean coerceColumnType(
-      SqlValidatorScope scope,
+      @Nullable SqlValidatorScope scope,
       SqlNodeList nodeList,
       int index,
       RelDataType targetType) {
@@ -160,13 +171,17 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     // when expanding star/dynamic-star.
 
     // See SqlToRelConverter#convertSelectList for details.
-    if (index >= nodeList.getList().size()) {
+    if (index >= nodeList.size()) {
       // Can only happen when there is a star(*) in the column,
       // just return true.
       return true;
     }
 
     final SqlNode node = nodeList.get(index);
+    if (node instanceof SqlDynamicParam) {
+      // Do not support implicit type coercion for dynamic param.
+      return false;
+    }
     if (node instanceof SqlIdentifier) {
       // Do not expand a star/dynamic table col.
       SqlIdentifier node1 = (SqlIdentifier) node;
@@ -178,6 +193,7 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       }
     }
 
+    requireNonNull(scope, "scope is needed for needToCast(scope, operand, targetType)");
     if (node instanceof SqlCall) {
       SqlCall node2 = (SqlCall) node;
       if (node2.getOperator().kind == SqlKind.AS) {
@@ -215,20 +231,31 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       if (SqlTypeUtil.inCharOrBinaryFamilies(fromType)
           && SqlTypeUtil.inCharOrBinaryFamilies(toType)) {
         Charset charset = fromType.getCharset();
-        SqlCollation collation = fromType.getCollation();
         if (charset != null && SqlTypeUtil.inCharFamily(syncedType)) {
-          syncedType = factory.createTypeWithCharsetAndCollation(syncedType,
-              charset,
-              collation);
+          SqlCollation collation = getCollation(fromType);
+          syncedType =
+              factory.createTypeWithCharsetAndCollation(syncedType, charset,
+                  collation);
         }
       }
     }
     return syncedType;
   }
 
-  /** Decide if a SqlNode should be casted to target type, derived class
-   * can override this strategy. */
-  protected boolean needToCast(SqlValidatorScope scope, SqlNode node, RelDataType toType) {
+  /** Returns whether a SqlNode should be cast to a target type.
+   *
+   * <p>The default implementation uses the scope's validator's type mapping
+   * rule to determine validity; a derived class can override this strategy. */
+  protected boolean needToCast(SqlValidatorScope scope, SqlNode node,
+      RelDataType toType) {
+    return needToCast(scope, node, toType,
+        scope.getValidator().getTypeMappingRule());
+  }
+
+  /** Returns whether a SqlNode should be cast to a target type,
+   * using a type mapping rule to determine casting validity. */
+  protected boolean needToCast(SqlValidatorScope scope, SqlNode node,
+      RelDataType toType, SqlTypeMappingRule mappingRule) {
     RelDataType fromType = validator.deriveType(scope, node);
     // This depends on the fact that type validate happens before coercion.
     // We do not have inferred type for some node, i.e. LOCALTIME.
@@ -237,7 +264,8 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
 
     // This prevents that we cast a JavaType to normal RelDataType.
-    if (toType.getSqlTypeName() == fromType.getSqlTypeName()) {
+    if (fromType instanceof RelDataTypeFactoryImpl.JavaType
+        && toType.getSqlTypeName() == fromType.getSqlTypeName()) {
       return false;
     }
 
@@ -247,20 +275,20 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       return false;
     }
 
-    // No need to cast between char and varchar.
-    if (toType.getSqlTypeName() == SqlTypeName.VARCHAR
-        && fromType.getSqlTypeName() == SqlTypeName.CHAR
-        || toType.getSqlTypeName() == SqlTypeName.CHAR
-        && fromType.getSqlTypeName() == SqlTypeName.VARCHAR) {
+    // No need to cast between char and unlimited varchar.
+    if (SqlTypeUtil.isCharacter(toType)
+        && SqlTypeUtil.isCharacter(fromType)
+        && toType.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
       return false;
     }
 
-    // No need to cast if the source type precedence list
-    // contains target type. i.e. do not cast from
-    // tinyint to int or int to bigint.
-    if (fromType.getPrecedenceList().containsType(toType)
-        && SqlTypeUtil.isIntType(fromType)
-        && SqlTypeUtil.isIntType(toType)) {
+    // No casts to binary except from strings
+    if (SqlTypeUtil.isBinary(fromType) && !SqlTypeUtil.isString(toType)) {
+      return false;
+    }
+
+    // No casts from binary except to strings
+    if (SqlTypeUtil.isBinary(toType) && !SqlTypeUtil.isString(fromType)) {
       return false;
     }
 
@@ -268,8 +296,8 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     if (SqlTypeUtil.equalSansNullability(factory, fromType, toType)) {
       return false;
     }
-    // Should keep sync with rules in SqlTypeAssignmentRules.
-    assert SqlTypeUtil.canCastFrom(toType, fromType, true);
+    // Should keep sync with rules in SqlTypeCoercionRule.
+    assert SqlTypeUtil.canCastFrom(toType, fromType, mappingRule);
     return true;
   }
 
@@ -277,8 +305,8 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * before cast operation, see {@link #coerceColumnType}, {@link #coerceOperandType}.
    *
    * <p>Ignore constant reduction which should happen in RexSimplify.
-   * */
-  private SqlNode castTo(SqlNode node, RelDataType type) {
+   */
+  private static SqlNode castTo(SqlNode node, RelDataType type) {
     return SqlStdOperatorTable.CAST.createCall(SqlParserPos.ZERO, node,
         SqlTypeUtil.convertTypeToSpec(type).withNullable(type.isNullable()));
   }
@@ -286,7 +314,6 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
   /**
    * Update inferred type for a SqlNode.
    */
-  @SuppressWarnings("deprecation")
   protected void updateInferredType(SqlNode node, RelDataType type) {
     validator.setValidatedNodeType(node, type);
     final SqlValidatorNamespace namespace = validator.getNamespace(node);
@@ -299,10 +326,10 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * Update inferred row type for a query, i.e. SqlCall that returns struct type
    * or SqlSelect.
    *
-   * @param scope       validator scope
-   * @param query       node to inferred type
-   * @param columnIndex column index to update
-   * @param desiredType desired column type
+   * @param scope       Validator scope
+   * @param query       Node to inferred type
+   * @param columnIndex Column index to update
+   * @param desiredType Desired column type
    */
   protected void updateInferredColumnType(
       SqlValidatorScope scope,
@@ -313,13 +340,13 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     assert rowType.isStruct();
     assert columnIndex < rowType.getFieldList().size();
 
-    final List<Map.Entry<String, RelDataType>> fieldList = new ArrayList<>();
+    final PairList<String, RelDataType> fieldList = PairList.of();
     for (int i = 0; i < rowType.getFieldCount(); i++) {
       final RelDataTypeField field = rowType.getFieldList().get(i);
       final String name = field.getName();
       final RelDataType type = field.getType();
       final RelDataType targetType = i == columnIndex ? desiredType : type;
-      fieldList.add(Pair.of(name, targetType));
+      fieldList.add(name, targetType);
     }
     updateInferredType(query, factory.createStructType(fieldList));
   }
@@ -328,9 +355,10 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * Case1: type widening with no precision loss.
    * Find the tightest common type of two types that might be used in binary expression.
    *
-   * @return tightest common type i.e. INTEGER + DECIMAL(10, 2) will return DECIMAL(10, 2)
+   * @return tightest common type, i.e. INTEGER + DECIMAL(10, 2) returns DECIMAL(10, 2)
    */
-  public RelDataType getTightestCommonType(RelDataType type1, RelDataType type2) {
+  @Override public @Nullable RelDataType getTightestCommonType(
+      @Nullable RelDataType type1, @Nullable RelDataType type2) {
     if (type1 == null || type2 == null) {
       return null;
     }
@@ -343,10 +371,16 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
     // If one type is with Null type name: returns the other.
     if (SqlTypeUtil.isNull(type1)) {
-      return type2;
+      if (SqlTypeUtil.isMap(type2) || SqlTypeUtil.isRow(type2) || SqlTypeUtil.isArray(type2)) {
+        return type2;
+      }
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
     if (SqlTypeUtil.isNull(type2)) {
-      return type1;
+      if (SqlTypeUtil.isMap(type1) || SqlTypeUtil.isRow(type1) || SqlTypeUtil.isArray(type1)) {
+        return type1;
+      }
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
     RelDataType resultType = null;
     if (SqlTypeUtil.isString(type1)
@@ -354,7 +388,7 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       resultType = factory.leastRestrictive(ImmutableList.of(type1, type2));
     }
     // For numeric types: promote to highest type.
-    // i.e. SQL-SERVER/MYSQL supports numeric types cast from/to each other.
+    // i.e. MS-SQL/MYSQL supports numeric types cast from/to each other.
     if (SqlTypeUtil.isNumeric(type1) && SqlTypeUtil.isNumeric(type2)) {
       // For fixed precision decimals casts from(to) each other or other numeric types,
       // we let the operator decide the precision and scale of the result.
@@ -382,7 +416,7 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
             : Pair.zip(type1.getFieldList(), type2.getFieldList())) {
           RelDataType leftType = pair.left.getType();
           RelDataType rightType = pair.right.getType();
-          RelDataType dataType = getTightestCommonType(leftType, rightType);
+          RelDataType dataType = getTightestCommonTypeOrThrow(leftType, rightType);
           boolean isNullable = leftType.isNullable() || rightType.isNullable();
           fields.add(factory.createTypeWithNullability(dataType, isNullable));
         }
@@ -392,15 +426,18 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
 
     if (SqlTypeUtil.isArray(type1) && SqlTypeUtil.isArray(type2)) {
       if (SqlTypeUtil.equalSansNullability(factory, type1, type2)) {
-        resultType = factory.createTypeWithNullability(type1,
-            type1.isNullable() || type2.isNullable());
+        resultType =
+            factory.createTypeWithNullability(type1,
+                type1.isNullable() || type2.isNullable());
       }
     }
 
     if (SqlTypeUtil.isMap(type1) && SqlTypeUtil.isMap(type2)) {
       if (SqlTypeUtil.equalSansNullability(factory, type1, type2)) {
-        RelDataType keyType = getTightestCommonType(type1.getKeyType(), type2.getKeyType());
-        RelDataType valType = getTightestCommonType(type1.getValueType(), type2.getValueType());
+        RelDataType keyType =
+            getTightestCommonTypeOrThrow(type1.getKeyType(), type2.getKeyType());
+        RelDataType valType =
+            getTightestCommonTypeOrThrow(type1.getValueType(), type2.getValueType());
         resultType = factory.createMapType(keyType, valType);
       }
     }
@@ -408,11 +445,21 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     return resultType;
   }
 
+  private RelDataType getTightestCommonTypeOrThrow(
+      @Nullable RelDataType type1, @Nullable RelDataType type2) {
+    return requireNonNull(getTightestCommonType(type1, type2),
+        () -> "expected non-null getTightestCommonType for " + type1 + " and " + type2);
+  }
+
   /**
    * Promote all the way to VARCHAR.
    */
-  private RelDataType promoteToVarChar(RelDataType type1, RelDataType type2) {
+  private @Nullable RelDataType promoteToVarChar(
+      @Nullable RelDataType type1, @Nullable RelDataType type2) {
     RelDataType resultType = null;
+    if (type1 == null || type2 == null) {
+      return null;
+    }
     // No promotion for char and varchar.
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isCharacter(type2)) {
       return null;
@@ -420,7 +467,7 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     // 1. Do not distinguish CHAR and VARCHAR, i.e. (INTEGER + CHAR(3))
     //    and (INTEGER + VARCHAR(5)) would both deduce VARCHAR type.
     // 2. VARCHAR has 65536 as default precision.
-    // 3. Following SQL-SERVER: BINARY or BOOLEAN can be casted to VARCHAR.
+    // 3. Following MS-SQL: BINARY or BOOLEAN can be casted to VARCHAR.
     if (SqlTypeUtil.isAtomic(type1) && SqlTypeUtil.isCharacter(type2)) {
       resultType = factory.createSqlType(SqlTypeName.VARCHAR);
     }
@@ -428,58 +475,82 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isAtomic(type2)) {
       resultType = factory.createSqlType(SqlTypeName.VARCHAR);
     }
+
+    if (null != resultType) {
+      resultType =
+          factory.createTypeWithNullability(resultType, type1.isNullable() || type2.isNullable());
+    }
+
     return resultType;
   }
 
   /**
-   * Determines common type for a comparison operator when one operand is String type and the
-   * other is not. For date + timestamp operands, use timestamp as common type,
+   * Determines common type for a comparison operator.
+   * For date and timestamp operands, use timestamp as common type,
    * i.e. Timestamp(2017-01-01 00:00 ...) &gt; Date(2018) evaluates to be false.
    */
-  public RelDataType commonTypeForBinaryComparison(RelDataType type1, RelDataType type2) {
+  @Override public @Nullable RelDataType commonTypeForBinaryComparison(
+      @Nullable RelDataType type1, @Nullable RelDataType type2) {
+    if (type1 == null || type2 == null) {
+      return null;
+    }
+
+    boolean anyNullable = type1.isNullable() || type2.isNullable();
+
+    // this prevents the conversion between JavaType and normal RelDataType,
+    // as well as between JavaType and JavaType.
+    if (type1 instanceof RelDataTypeFactoryImpl.JavaType
+        || type2 instanceof RelDataTypeFactoryImpl.JavaType) {
+      return null;
+    }
+
     SqlTypeName typeName1 = type1.getSqlTypeName();
     SqlTypeName typeName2 = type2.getSqlTypeName();
 
+    // The following can never be true, but there is no harm leaving it here.
     if (typeName1 == null || typeName2 == null) {
       return null;
     }
 
-    // DATETIME + CHARACTER -> DATETIME
-    // REVIEW Danny 2019-09-23: There is some legacy redundant code in SqlToRelConverter
-    // that coerce Datetime and CHARACTER comparison.
+    if (SqlTypeUtil.sameNamedType(type1, type2)) {
+      return factory.leastRestrictive(ImmutableList.of(type1, type2));
+    }
+
+    // DATETIME < CHARACTER -> DATETIME
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isDatetime(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, anyNullable);
     }
 
     if (SqlTypeUtil.isDatetime(type1) && SqlTypeUtil.isCharacter(type2)) {
-      return type1;
+      return factory.createTypeWithNullability(type1, anyNullable);
     }
 
-    // DATE + TIMESTAMP -> TIMESTAMP
+    // DATE < TIMESTAMP -> TIMESTAMP
     if (SqlTypeUtil.isDate(type1) && SqlTypeUtil.isTimestamp(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, anyNullable);
     }
 
     if (SqlTypeUtil.isDate(type2) && SqlTypeUtil.isTimestamp(type1)) {
-      return type1;
+      return factory.createTypeWithNullability(type1, anyNullable);
     }
 
     if (SqlTypeUtil.isString(type1) && typeName2 == SqlTypeName.NULL) {
-      return type1;
+      return factory.createTypeWithNullability(type1, true);
     }
 
     if (typeName1 == SqlTypeName.NULL && SqlTypeUtil.isString(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, true);
     }
 
     if (SqlTypeUtil.isDecimal(type1) && SqlTypeUtil.isCharacter(type2)
         || SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isDecimal(type2)) {
       // There is no proper DECIMAL type for VARCHAR, using max precision/scale DECIMAL
       // as the best we can do.
-      return SqlTypeUtil.getMaxPrecisionScaleDecimal(factory);
+      return factory.createTypeWithNullability(
+          SqlTypeUtil.getMaxPrecisionScaleDecimal(factory), anyNullable);
     }
 
-    // Keep sync with SQL-SERVER:
+    // Keep sync with MS-SQL:
     // 1. BINARY/VARBINARY can not cast to FLOAT/REAL/DOUBLE
     // because of precision loss,
     // 2. CHARACTER to TIMESTAMP need explicit cast because of TimeZone.
@@ -491,19 +562,133 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       return null;
     }
 
+    if (SqlTypeUtil.isString(type1) && SqlTypeUtil.isString(type2)) {
+      // Return the string with the larger precision
+      if (type1.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else if (type2.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      } else if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+    }
+
     // 1 > '1' will be coerced to 1 > 1.
     if (SqlTypeUtil.isAtomic(type1) && SqlTypeUtil.isCharacter(type2)) {
       if (SqlTypeUtil.isTimestamp(type1)) {
         return null;
       }
-      return type1;
+      return factory.createTypeWithNullability(type1, anyNullable);
     }
 
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isAtomic(type2)) {
       if (SqlTypeUtil.isTimestamp(type2)) {
         return null;
       }
-      return type2;
+      return factory.createTypeWithNullability(type2, anyNullable);
+    }
+
+    if (validator.config().conformance().allowLenientCoercion()) {
+      if (SqlTypeUtil.isString(type1) && SqlTypeUtil.isArray(type2)) {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+
+      if (SqlTypeUtil.isString(type2) && SqlTypeUtil.isArray(type1)) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      }
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isApproximateNumeric(type2)) {
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      return factory.createTypeWithNullability(type1, anyNullable);
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type2) && SqlTypeUtil.isExactNumeric(type1)) {
+      return factory.createTypeWithNullability(type2, anyNullable);
+    }
+
+    if (SqlTypeUtil.isExactNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      if (SqlTypeUtil.isDecimal(type1) || SqlTypeUtil.isDecimal(type2)) {
+        // Precision used must be large enough to fit either of the types
+        int maxScale = Math.max(type1.getScale(), type2.getScale());
+        RelDataType result =
+            factory.createSqlType(SqlTypeName.DECIMAL,
+                Math.max(type1.getPrecision() - type1.getScale(),
+                         type2.getPrecision() - type2.getScale()) + maxScale,
+                maxScale);
+        return factory.createTypeWithNullability(result, anyNullable);
+      }
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, anyNullable);
+      } else {
+        return factory.createTypeWithNullability(type2, anyNullable);
+      }
+    }
+
+    if (typeName1 == SqlTypeName.ARRAY || typeName1 == SqlTypeName.MULTISET) {
+      if (typeName2 != typeName1) {
+        return null;
+      }
+      RelDataType elementType1 = type1.getComponentType();
+      RelDataType elementType2 = type2.getComponentType();
+      RelDataType type = commonTypeForBinaryComparison(elementType1, elementType2);
+      if (type == null) {
+        return null;
+      }
+      // The only maxCardinality that seems to be supported is -1, i.e., unlimited.
+      RelDataType resultType = factory.createArrayType(type, -1);
+      return factory.createTypeWithNullability(resultType, anyNullable);
+    }
+
+    if (typeName1 == SqlTypeName.MAP) {
+      if (typeName2 != SqlTypeName.MAP) {
+        return null;
+      }
+      RelDataType keyType1 = type1.getKeyType();
+      RelDataType keyType2 = type2.getKeyType();
+      RelDataType keyType = commonTypeForBinaryComparison(keyType1, keyType2);
+      if (keyType == null) {
+        return null;
+      }
+      RelDataType valueType1 = type1.getValueType();
+      RelDataType valueType2 = type2.getValueType();
+      RelDataType valueType = commonTypeForBinaryComparison(valueType1, valueType2);
+      if (valueType == null) {
+        return null;
+      }
+      RelDataType resultType = factory.createMapType(keyType, valueType);
+      return factory.createTypeWithNullability(resultType, anyNullable);
+    }
+
+    if (typeName1 == SqlTypeName.ROW) {
+      if (typeName2 != typeName1) {
+        return null;
+      }
+      if (type1.getFieldCount() != type2.getFieldCount()) {
+        return null;
+      }
+      List<RelDataTypeField> leftFields = type1.getFieldList();
+      List<RelDataTypeField> rightFields = type2.getFieldList();
+      List<RelDataTypeField> resultFields = new ArrayList<>();
+      for (int i = 0; i < leftFields.size(); i++) {
+        RelDataTypeField leftField = leftFields.get(i);
+        RelDataType type =
+            commonTypeForBinaryComparison(leftField.getType(), rightFields.get(i).getType());
+        if (type == null) {
+          return null;
+        }
+        resultFields.add(new RelDataTypeFieldImpl(leftField.getName(), i, type));
+      }
+      return factory.createStructType(resultFields);
     }
 
     return null;
@@ -514,10 +699,13 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * is that we allow some precision loss when widening decimal to fractional,
    * or promote fractional to string type.
    */
-  public RelDataType getWiderTypeForTwo(
-      RelDataType type1,
-      RelDataType type2,
+  @Override public @Nullable RelDataType getWiderTypeForTwo(
+      @Nullable RelDataType type1,
+      @Nullable RelDataType type2,
       boolean stringPromotion) {
+    if (type1 == null || type2 == null) {
+      return null;
+    }
     RelDataType resultType = getTightestCommonType(type1, type2);
     if (null == resultType) {
       resultType = getWiderTypeForDecimal(type1, type2);
@@ -527,8 +715,9 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
     if (null == resultType) {
       if (SqlTypeUtil.isArray(type1) && SqlTypeUtil.isArray(type2)) {
-        RelDataType valType = getWiderTypeForTwo(type1.getComponentType(),
-            type2.getComponentType(), stringPromotion);
+        RelDataType valType =
+            getWiderTypeForTwo(type1.getComponentType(),
+                type2.getComponentType(), stringPromotion);
         if (null != valType) {
           resultType = factory.createArrayType(valType, -1);
         }
@@ -548,7 +737,11 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * you can override it based on the specific system requirement in
    * {@link org.apache.calcite.rel.type.RelDataTypeSystem}.
    */
-  public RelDataType getWiderTypeForDecimal(RelDataType type1, RelDataType type2) {
+  @Override public @Nullable RelDataType getWiderTypeForDecimal(
+      @Nullable RelDataType type1, @Nullable RelDataType type2) {
+    if (type1 == null || type2 == null) {
+      return null;
+    }
     if (!SqlTypeUtil.isDecimal(type1) && !SqlTypeUtil.isDecimal(type2)) {
       return null;
     }
@@ -570,7 +763,8 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * {@link #getWiderTypeForTwo} satisfies the associative law. For instance,
    * (DATE, INTEGER, VARCHAR) should have VARCHAR as the wider common type.
    */
-  public RelDataType getWiderTypeFor(List<RelDataType> typeList, boolean stringPromotion) {
+  @Override public @Nullable RelDataType getWiderTypeFor(List<RelDataType> typeList,
+      boolean stringPromotion) {
     assert typeList.size() > 1;
     RelDataType resultType = typeList.get(0);
 
@@ -584,12 +778,12 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     return resultType;
   }
 
-  private List<RelDataType> partitionByCharacter(List<RelDataType> types) {
+  private static List<RelDataType> partitionByCharacter(List<RelDataType> types) {
     List<RelDataType> withCharacterTypes = new ArrayList<>();
     List<RelDataType> nonCharacterTypes = new ArrayList<>();
 
     for (RelDataType tp : types) {
-      if (SqlTypeUtil.hasCharactor(tp)) {
+      if (SqlTypeUtil.hasCharacter(tp)) {
         withCharacterTypes.add(tp);
       } else {
         nonCharacterTypes.add(tp);
@@ -603,13 +797,12 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
   }
 
   /**
-   * Check if the types and families can have implicit type coercion.
+   * Checks if the types and families can have implicit type coercion.
    * We will check the type one by one, that means the 1th type and 1th family,
    * 2th type and 2th family, and the like.
    *
-   * @param types    data type need to check
-   * @param families desired type families list
-   * @return true if we can do type coercion
+   * @param types    Data type need to check
+   * @param families Desired type families list
    */
   boolean canImplicitTypeCast(List<RelDataType> types, List<SqlTypeFamily> families) {
     boolean needed = false;
@@ -635,19 +828,18 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
    * See <a href="https://docs.google.com/spreadsheets/d/1GhleX5h5W8-kJKh7NMJ4vtoE78pwfaZRJl88ULX_MgU/edit?usp=sharing">CalciteImplicitCasts</a>
    * for the details.
    *
-   * @param in       inferred operand type
-   * @param expected expected {@link SqlTypeFamily} of registered SqlFunction
+   * @param in       Inferred operand type
+   * @param expected Expected {@link SqlTypeFamily} of registered SqlFunction
    * @return common type of implicit cast, null if we do not find any
    */
-  public RelDataType implicitCast(RelDataType in, SqlTypeFamily expected) {
-    List<SqlTypeFamily> numericFamilies = ImmutableList.of(
-        SqlTypeFamily.NUMERIC,
-        SqlTypeFamily.DECIMAL,
-        SqlTypeFamily.APPROXIMATE_NUMERIC,
-        SqlTypeFamily.EXACT_NUMERIC,
-        SqlTypeFamily.INTEGER);
-    List<SqlTypeFamily> dateTimeFamilies = ImmutableList.of(SqlTypeFamily.DATE,
-        SqlTypeFamily.TIME, SqlTypeFamily.TIMESTAMP);
+  public @Nullable RelDataType implicitCast(RelDataType in, SqlTypeFamily expected) {
+    List<SqlTypeFamily> numericFamilies =
+        ImmutableList.of(SqlTypeFamily.NUMERIC, SqlTypeFamily.DECIMAL,
+            SqlTypeFamily.APPROXIMATE_NUMERIC, SqlTypeFamily.EXACT_NUMERIC,
+            SqlTypeFamily.INTEGER);
+    List<SqlTypeFamily> dateTimeFamilies =
+        ImmutableList.of(SqlTypeFamily.DATE, SqlTypeFamily.TIME,
+            SqlTypeFamily.TIMESTAMP);
     // If the expected type is already a parent of the input type, no need to cast.
     if (expected.getTypeNames().contains(in.getSqlTypeName())) {
       return in;
@@ -673,7 +865,7 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
     // If the function accepts any NUMERIC type and the input is a STRING,
     // returns the expected type family's default type.
-    // REVIEW Danny 2018-05-22: same with SQL-SERVER and MYSQL.
+    // REVIEW Danny 2018-05-22: same with MS-SQL and MYSQL.
     if (SqlTypeUtil.isCharacter(in) && numericFamilies.contains(expected)) {
       return expected.getDefaultConcreteType(factory);
     }
@@ -693,8 +885,37 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
         || expected == SqlTypeFamily.CHARACTER)) {
       return expected.getDefaultConcreteType(factory);
     }
+    // CHAR -> GEOMETRY
+    if (SqlTypeUtil.isCharacter(in) && expected == SqlTypeFamily.GEO) {
+      return expected.getDefaultConcreteType(factory);
+    }
     return null;
   }
-}
 
-// End AbstractTypeCoercion.java
+  /**
+   * Coerce STRING type to ARRAY type.
+   */
+  protected Boolean coerceStringToArray(
+      SqlCall call,
+      SqlNode operand,
+      int index,
+      RelDataType fromType,
+      RelDataType targetType) {
+    if (validator.config().conformance().allowLenientCoercion()
+        && SqlTypeUtil.isString(fromType)
+        && SqlTypeUtil.isArray(targetType)
+        && operand instanceof SqlCharStringLiteral) {
+      try {
+        SqlNode arrayValue =
+            SqlParserUtil.parseArrayLiteral(
+                ((SqlCharStringLiteral) operand).getValueAs(String.class));
+        call.setOperand(index, arrayValue);
+        updateInferredType(arrayValue, targetType);
+      } catch (SqlParseException e) {
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+}

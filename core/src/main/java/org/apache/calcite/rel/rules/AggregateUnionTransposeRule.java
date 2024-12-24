@@ -17,8 +17,8 @@
 package org.apache.calcite.rel.rules;
 
 import org.apache.calcite.linq4j.Ord;
-import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
+import org.apache.calcite.plan.RelRule;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Aggregate;
 import org.apache.calcite.rel.core.AggregateCall;
@@ -39,25 +39,33 @@ import org.apache.calcite.sql.fun.SqlSumAggFunction;
 import org.apache.calcite.sql.fun.SqlSumEmptyIsZeroAggFunction;
 import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.tools.RelBuilderFactory;
+import org.apache.calcite.util.ImmutableBitSet;
+import org.apache.calcite.util.mapping.Mapping;
+import org.apache.calcite.util.mapping.MappingType;
+import org.apache.calcite.util.mapping.Mappings;
 
 import com.google.common.collect.ImmutableList;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.immutables.value.Value;
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Planner rule that pushes an
  * {@link org.apache.calcite.rel.core.Aggregate}
  * past a non-distinct {@link org.apache.calcite.rel.core.Union}.
+ *
+ * @see CoreRules#AGGREGATE_UNION_TRANSPOSE
  */
-public class AggregateUnionTransposeRule extends RelOptRule {
-  public static final AggregateUnionTransposeRule INSTANCE =
-      new AggregateUnionTransposeRule(LogicalAggregate.class,
-          LogicalUnion.class, RelFactories.LOGICAL_BUILDER);
+@Value.Enclosing
+public class AggregateUnionTransposeRule
+    extends RelRule<AggregateUnionTransposeRule.Config>
+    implements TransformationRule {
 
-  private static final Map<Class<? extends SqlAggFunction>, Boolean>
+  private static final IdentityHashMap<Class<? extends SqlAggFunction>, Boolean>
       SUPPORTED_AGGREGATES = new IdentityHashMap<>();
 
   static {
@@ -70,12 +78,17 @@ public class AggregateUnionTransposeRule extends RelOptRule {
   }
 
   /** Creates an AggregateUnionTransposeRule. */
+  protected AggregateUnionTransposeRule(Config config) {
+    super(config);
+  }
+
+  @Deprecated // to be removed before 2.0
   public AggregateUnionTransposeRule(Class<? extends Aggregate> aggregateClass,
       Class<? extends Union> unionClass, RelBuilderFactory relBuilderFactory) {
-    super(
-        operand(aggregateClass,
-            operand(unionClass, any())),
-        relBuilderFactory, null);
+    this(Config.DEFAULT
+        .withRelBuilderFactory(relBuilderFactory)
+        .as(Config.class)
+        .withOperandFor(aggregateClass, unionClass));
   }
 
   @Deprecated // to be removed before 2.0
@@ -87,7 +100,7 @@ public class AggregateUnionTransposeRule extends RelOptRule {
         RelBuilder.proto(aggregateFactory, setOpFactory));
   }
 
-  public void onMatch(RelOptRuleCall call) {
+  @Override public void onMatch(RelOptRuleCall call) {
     Aggregate aggRel = call.rel(0);
     Union union = call.rel(1);
 
@@ -117,39 +130,88 @@ public class AggregateUnionTransposeRule extends RelOptRule {
       return;
     }
 
-    // create corresponding aggregates on top of each union child
-    final RelBuilder relBuilder = call.builder();
-    int transformCount = 0;
+    boolean hasUniqueKeyInAllInputs = true;
     final RelMetadataQuery mq = call.getMetadataQuery();
     for (RelNode input : union.getInputs()) {
       boolean alreadyUnique =
           RelMdUtil.areColumnsDefinitelyUnique(mq, input,
               aggRel.getGroupSet());
 
-      relBuilder.push(input);
       if (!alreadyUnique) {
-        ++transformCount;
-        relBuilder.aggregate(relBuilder.groupKey(aggRel.getGroupSet()),
-            aggRel.getAggCallList());
+        hasUniqueKeyInAllInputs = false;
+        break;
       }
     }
 
-    if (transformCount == 0) {
+    if (hasUniqueKeyInAllInputs) {
       // none of the children could benefit from the push-down,
       // so bail out (preventing the infinite loop to which most
       // planners would succumb)
       return;
     }
 
+    // create corresponding aggregates on top of each union child
+    final RelBuilder relBuilder = call.builder();
+    RelDataType origUnionType = union.getRowType();
+    for (RelNode input : union.getInputs()) {
+      List<AggregateCall> childAggCalls = new ArrayList<>(aggRel.getAggCallList());
+      // if the nullability of a specific input column differs from the nullability
+      // of the union'ed column, we need to re-evaluate the nullability of the aggregate
+      RelDataType inputRowType = input.getRowType();
+      for (int i = 0; i < childAggCalls.size(); ++i) {
+        AggregateCall origCall = aggRel.getAggCallList().get(i);
+        if (origCall.getAggregation() == SqlStdOperatorTable.COUNT) {
+          continue;
+        }
+        assert origCall.getArgList().size() == 1;
+        int field = origCall.getArgList().get(0);
+        if (origUnionType.getFieldList().get(field).getType().isNullable()
+            != inputRowType.getFieldList().get(field).getType().isNullable()) {
+          AggregateCall newCall =
+              AggregateCall.create(origCall.getParserPosition(), origCall.getAggregation(),
+                  origCall.isDistinct(), origCall.isApproximate(), origCall.ignoreNulls(),
+                  origCall.rexList, origCall.getArgList(), -1, origCall.distinctKeys,
+                  origCall.collation, groupCount, input, null, origCall.getName());
+          childAggCalls.set(i, newCall);
+        }
+      }
+      relBuilder.push(input);
+      relBuilder.aggregate(relBuilder.groupKey(aggRel.getGroupSet()),
+          childAggCalls);
+    }
+
     // create a new union whose children are the aggregates created above
     relBuilder.union(true, union.getInputs().size());
+
+    // Create the top aggregate. We must adjust group key indexes of the
+    // original aggregate. E.g., if the original tree was:
+    //
+    // Aggregate[groupSet=$1, ...]
+    //   Union[...]
+    //
+    // Then the new tree should be:
+    // Aggregate[groupSet=$0, ...]
+    //   Union[...]
+    //     Aggregate[groupSet=$1, ...]
+    ImmutableBitSet groupSet = aggRel.getGroupSet();
+    Mapping topGroupMapping =
+        Mappings.create(MappingType.INVERSE_SURJECTION,
+            union.getRowType().getFieldCount(), aggRel.getGroupCount());
+    for (int i = 0; i < groupSet.cardinality(); i++) {
+      topGroupMapping.set(groupSet.nth(i), i);
+    }
+
+    ImmutableBitSet topGroupSet = Mappings.apply(topGroupMapping, groupSet);
+    ImmutableList<ImmutableBitSet> topGroupSets =
+        Mappings.apply2(topGroupMapping, aggRel.getGroupSets());
+
     relBuilder.aggregate(
-        relBuilder.groupKey(aggRel.getGroupSet(), aggRel.getGroupSets()),
+        relBuilder.groupKey(topGroupSet, topGroupSets),
         transformedAggCalls);
     call.transformTo(relBuilder.build());
   }
 
-  private List<AggregateCall> transformAggCalls(RelNode input, int groupCount,
+  private static @Nullable List<AggregateCall> transformAggCalls(RelNode input, int groupCount,
       List<AggregateCall> origCalls) {
     final List<AggregateCall> newCalls = new ArrayList<>();
     for (Ord<AggregateCall> ord : Ord.zip(origCalls)) {
@@ -173,14 +235,33 @@ public class AggregateUnionTransposeRule extends RelOptRule {
         aggType = origCall.getType();
       }
       AggregateCall newCall =
-          AggregateCall.create(aggFun, origCall.isDistinct(),
+          AggregateCall.create(ord.e.getParserPosition(), aggFun, origCall.isDistinct(),
               origCall.isApproximate(), origCall.ignoreNulls(),
-              ImmutableList.of(groupCount + ord.i), -1, origCall.collation,
+              origCall.rexList, ImmutableList.of(groupCount + ord.i), -1,
+              origCall.distinctKeys, origCall.collation,
               groupCount, input, aggType, origCall.getName());
       newCalls.add(newCall);
     }
     return newCalls;
   }
-}
 
-// End AggregateUnionTransposeRule.java
+  /** Rule configuration. */
+  @Value.Immutable
+  public interface Config extends RelRule.Config {
+    Config DEFAULT = ImmutableAggregateUnionTransposeRule.Config.of()
+        .withOperandFor(LogicalAggregate.class, LogicalUnion.class);
+
+    @Override default AggregateUnionTransposeRule toRule() {
+      return new AggregateUnionTransposeRule(this);
+    }
+
+    /** Defines an operand tree for the given classes. */
+    default Config withOperandFor(Class<? extends Aggregate> aggregateClass,
+        Class<? extends Union> unionClass) {
+      return withOperandSupplier(b0 ->
+          b0.operand(aggregateClass).oneInput(b1 ->
+              b1.operand(unionClass).anyInputs()))
+          .as(Config.class);
+    }
+  }
+}

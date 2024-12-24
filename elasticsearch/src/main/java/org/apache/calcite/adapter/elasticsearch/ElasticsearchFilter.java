@@ -23,15 +23,21 @@ import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.sql.SqlKind;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
-import java.util.Objects;
+import java.util.Iterator;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implementation of a {@link org.apache.calcite.rel.core.Filter}
@@ -45,8 +51,10 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
     assert getConvention() == child.getConvention();
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
-    return super.computeSelfCost(planner, mq).multiplyBy(0.1);
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
+      RelMetadataQuery mq) {
+    final RelOptCost cost = requireNonNull(super.computeSelfCost(planner, mq));
+    return cost.multiplyBy(0.1);
   }
 
   @Override public Filter copy(RelTraitSet relTraitSet, RelNode input, RexNode condition) {
@@ -74,7 +82,7 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
     private final ObjectMapper mapper;
 
     PredicateAnalyzerTranslator(final ObjectMapper mapper) {
-      this.mapper = Objects.requireNonNull(mapper, "mapper");
+      this.mapper = requireNonNull(mapper, "mapper");
     }
 
     String translateMatch(RexNode condition) throws IOException,
@@ -82,7 +90,19 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
 
       StringWriter writer = new StringWriter();
       JsonGenerator generator = mapper.getFactory().createGenerator(writer);
-      QueryBuilders.constantScoreQuery(PredicateAnalyzer.analyze(condition)).writeJson(generator);
+      boolean disMax = condition.isA(SqlKind.OR);
+      Iterator<RexNode> operands = ((RexCall) condition).getOperands().iterator();
+      while (operands.hasNext() && !disMax) {
+        if (operands.next().isA(SqlKind.OR)) {
+          disMax = true;
+          break;
+        }
+      }
+      if (disMax) {
+        QueryBuilders.disMaxQueryBuilder(PredicateAnalyzer.analyze(condition)).writeJson(generator);
+      } else {
+        QueryBuilders.constantScoreQuery(PredicateAnalyzer.analyze(condition)).writeJson(generator);
+      }
       generator.flush();
       generator.close();
       return "{\"query\" : " + writer.toString() + "}";
@@ -90,5 +110,3 @@ public class ElasticsearchFilter extends Filter implements ElasticsearchRel {
   }
 
 }
-
-// End ElasticsearchFilter.java

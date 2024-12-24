@@ -19,9 +19,12 @@ package org.apache.calcite.plan;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Ordering;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A trait that consists of a list of traits, all of the same type.
@@ -40,7 +43,7 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
   // Must remain private. Does not copy the array.
   private RelCompositeTrait(RelTraitDef traitDef, T[] traits) {
     this.traitDef = traitDef;
-    this.traits = Objects.requireNonNull(traits);
+    this.traits = requireNonNull(traits, "traits");
     //noinspection unchecked
     assert Ordering.natural()
         .isStrictlyOrdered(Arrays.asList((Comparable[]) traits))
@@ -70,7 +73,7 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
     return def.canonize(compositeTrait);
   }
 
-  public RelTraitDef getTraitDef() {
+  @Override public RelTraitDef getTraitDef() {
     return traitDef;
   }
 
@@ -78,7 +81,7 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
     return Arrays.hashCode(traits);
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override public boolean equals(@Nullable Object obj) {
     return this == obj
         || obj instanceof RelCompositeTrait
         && Arrays.equals(traits, ((RelCompositeTrait) obj).traits);
@@ -88,7 +91,7 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
     return Arrays.toString(traits);
   }
 
-  public boolean satisfies(RelTrait trait) {
+  @Override public boolean satisfies(RelTrait trait) {
     for (T t : traits) {
       if (t.satisfies(trait)) {
         return true;
@@ -97,7 +100,7 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
     return false;
   }
 
-  public void register(RelOptPlanner planner) {
+  @Override public void register(RelOptPlanner planner) {
   }
 
   /** Returns an immutable list of the traits in this composite trait. */
@@ -115,5 +118,3 @@ class RelCompositeTrait<T extends RelMultipleTrait> implements RelTrait {
     return traits.length;
   }
 }
-
-// End RelCompositeTrait.java

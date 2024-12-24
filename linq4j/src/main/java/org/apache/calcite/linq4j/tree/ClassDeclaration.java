@@ -16,10 +16,14 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Declaration of a class.
@@ -29,20 +33,19 @@ public class ClassDeclaration extends MemberDeclaration {
   public final String classClass = "class";
   public final String name;
   public final List<MemberDeclaration> memberDeclarations;
-  public final Type extended;
+  public final @Nullable Type extended;
   public final List<Type> implemented;
 
-  public ClassDeclaration(int modifier, String name, Type extended,
+  public ClassDeclaration(int modifier, String name, @Nullable Type extended,
       List<Type> implemented, List<MemberDeclaration> memberDeclarations) {
-    assert name != null : "name should not be null";
     this.modifier = modifier;
-    this.name = name;
+    this.name = requireNonNull(name, "name");
     this.memberDeclarations = memberDeclarations;
     this.extended = extended;
     this.implemented = implemented;
   }
 
-  public void accept(ExpressionWriter writer) {
+  @Override public void accept(ExpressionWriter writer) {
     String modifiers = Modifier.toString(modifier);
     writer.append(modifiers);
     if (!modifiers.isEmpty()) {
@@ -59,18 +62,18 @@ public class ClassDeclaration extends MemberDeclaration {
     writer.newlineAndIndent();
   }
 
-  public ClassDeclaration accept(Shuttle shuttle) {
+  @Override public ClassDeclaration accept(Shuttle shuttle) {
     shuttle = shuttle.preVisit(this);
     final List<MemberDeclaration> members1 =
         Expressions.acceptMemberDeclarations(memberDeclarations, shuttle);
     return shuttle.visit(this, members1);
   }
 
-  public <R> R accept(Visitor<R> visitor) {
+  @Override public <R> R accept(Visitor<R> visitor) {
     return visitor.visit(this);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -86,23 +89,10 @@ public class ClassDeclaration extends MemberDeclaration {
     if (!classClass.equals(that.classClass)) {
       return false;
     }
-    if (extended != null ? !extended.equals(that.extended) : that.extended
-        != null) {
-      return false;
-    }
-    if (implemented != null ? !implemented.equals(that.implemented) : that
-        .implemented != null) {
-      return false;
-    }
-    if (memberDeclarations != null ? !memberDeclarations.equals(that
-        .memberDeclarations) : that.memberDeclarations != null) {
-      return false;
-    }
-    if (!name.equals(that.name)) {
-      return false;
-    }
-
-    return true;
+    return Objects.equals(extended, that.extended)
+        && implemented.equals(that.implemented)
+        && memberDeclarations.equals(that.memberDeclarations)
+        && name.equals(that.name);
   }
 
   @Override public int hashCode() {
@@ -110,5 +100,3 @@ public class ClassDeclaration extends MemberDeclaration {
         extended, implemented);
   }
 }
-
-// End ClassDeclaration.java

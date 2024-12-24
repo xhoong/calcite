@@ -16,6 +16,7 @@
  */
 package org.apache.calcite.adapter.spark;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
@@ -31,13 +32,12 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
-import java.util.Enumeration;
-import java.util.Iterator;
+import java.util.Collections;
 
 /**
  * An HTTP server for static content used to allow worker nodes to access JARs.
  *
- * <p>Based on Spark HttpServer, wraps a Jetty server.</p>
+ * <p>Based on Spark HttpServer, wraps a Jetty server.
  */
 class HttpServer {
   private static String localIpAddress;
@@ -48,7 +48,7 @@ class HttpServer {
     this.resourceBase = resourceBase;
   }
 
-  private Server server;
+  private @Nullable Server server;
   private int port = -1;
 
   void start() {
@@ -62,7 +62,6 @@ class HttpServer {
 
       final ServerConnector connector = new ServerConnector(server);
       connector.setIdleTimeout(60 * 1000);
-      connector.setSoLingerTime(-1);
       connector.setPort(0);
       server.setConnectors(new Connector[] { connector });
 
@@ -135,7 +134,7 @@ class HttpServer {
         // Debian; try to find a better address using the local network
         // interfaces.
         for (NetworkInterface ni
-            : iterable(NetworkInterface.getNetworkInterfaces())) {
+            : Collections.list(NetworkInterface.getNetworkInterfaces())) {
           for (InterfaceAddress interfaceAddress : ni.getInterfaceAddresses()) {
             final InetAddress addr = interfaceAddress.getAddress();
             if (!addr.isLinkLocalAddress()
@@ -164,25 +163,7 @@ class HttpServer {
     }
   }
 
-  private static <E> Iterable<E> iterable(final Enumeration<E> enumeration) {
-    return () -> new Iterator<E>() {
-      public boolean hasNext() {
-        return enumeration.hasMoreElements();
-      }
-
-      public E next() {
-        return enumeration.nextElement();
-      }
-
-      public void remove() {
-        throw new UnsupportedOperationException();
-      }
-    };
-  }
-
   private static void logWarning(String s) {
     System.out.println(s);
   }
 }
-
-// End HttpServer.java

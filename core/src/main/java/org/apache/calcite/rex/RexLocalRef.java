@@ -19,8 +19,12 @@ package org.apache.calcite.rex;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.SqlKind;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 import java.util.Objects;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * Local variable.
@@ -50,8 +54,7 @@ public class RexLocalRef extends RexSlot {
    */
   public RexLocalRef(int index, RelDataType type) {
     super(createName(index), index, type);
-    assert type != null;
-    assert index >= 0;
+    checkArgument(index >= 0);
   }
 
   //~ Methods ----------------------------------------------------------------
@@ -60,22 +63,22 @@ public class RexLocalRef extends RexSlot {
     return SqlKind.LOCAL_REF;
   }
 
-  public boolean equals(Object obj) {
+  @Override public boolean equals(@Nullable Object obj) {
     return this == obj
         || obj instanceof RexLocalRef
-        && this.type == ((RexLocalRef) obj).type
+        && Objects.equals(this.type, ((RexLocalRef) obj).type)
         && this.index == ((RexLocalRef) obj).index;
   }
 
-  public int hashCode() {
+  @Override public int hashCode() {
     return Objects.hash(type, index);
   }
 
-  public <R> R accept(RexVisitor<R> visitor) {
+  @Override public <R> R accept(RexVisitor<R> visitor) {
     return visitor.visitLocalRef(this);
   }
 
-  public <R, P> R accept(RexBiVisitor<R, P> visitor, P arg) {
+  @Override public <R, P> R accept(RexBiVisitor<R, P> visitor, P arg) {
     return visitor.visitLocalRef(this, arg);
   }
 
@@ -83,5 +86,3 @@ public class RexLocalRef extends RexSlot {
     return NAMES.get(index);
   }
 }
-
-// End RexLocalRef.java

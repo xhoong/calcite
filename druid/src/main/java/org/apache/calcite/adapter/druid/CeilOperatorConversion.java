@@ -26,26 +26,27 @@ import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.TimeZone;
-import javax.annotation.Nullable;
+
+import static java.util.Objects.requireNonNull;
 
 /**
- * DruidSqlOperatorConverter implementation that handles Ceil operations conversions
+ * DruidSqlOperatorConverter implementation that handles Ceil operations
+ * conversions.
  */
 public class CeilOperatorConversion implements DruidSqlOperatorConverter {
   @Override public SqlOperator calciteOperator() {
     return SqlStdOperatorTable.CEIL;
   }
 
-  @Nullable
-  @Override public String toDruidExpression(RexNode rexNode, RelDataType rowType,
+  @Override public @Nullable String toDruidExpression(RexNode rexNode, RelDataType rowType,
       DruidQuery query) {
     final RexCall call = (RexCall) rexNode;
     final RexNode arg = call.getOperands().get(0);
-    final String druidExpression = DruidExpressions.toDruidExpression(
-        arg,
-        rowType,
-        query);
+    final String druidExpression =
+        DruidExpressions.toDruidExpression(arg, rowType, query);
     if (druidExpression == null) {
       return null;
     } else if (call.getOperands().size() == 1) {
@@ -54,7 +55,8 @@ public class CeilOperatorConversion implements DruidSqlOperatorConverter {
     } else if (call.getOperands().size() == 2) {
       // CEIL(expr TO timeUnit)
       final RexLiteral flag = (RexLiteral) call.getOperands().get(1);
-      final TimeUnitRange timeUnit = (TimeUnitRange) flag.getValue();
+      final TimeUnitRange timeUnit =
+          requireNonNull((TimeUnitRange) flag.getValue());
       final Granularity.Type type = DruidDateTimeUtils.toDruidGranularity(timeUnit);
       if (type == null) {
         // Unknown Granularity bail out
@@ -77,5 +79,3 @@ public class CeilOperatorConversion implements DruidSqlOperatorConverter {
     }
   }
 }
-
-// End CeilOperatorConversion.java

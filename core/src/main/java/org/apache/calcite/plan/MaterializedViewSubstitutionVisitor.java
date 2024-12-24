@@ -22,7 +22,7 @@ import org.apache.calcite.tools.RelBuilderFactory;
 /**
  * Extension to {@link SubstitutionVisitor}.
  */
-@Deprecated // Kept for backward compatibility and to be removed before 2.0
+@Deprecated // to be removed before 2.0
 public class MaterializedViewSubstitutionVisitor extends SubstitutionVisitor {
 
   public MaterializedViewSubstitutionVisitor(RelNode target_, RelNode query_) {
@@ -34,5 +34,3 @@ public class MaterializedViewSubstitutionVisitor extends SubstitutionVisitor {
     super(target_, query_, DEFAULT_RULES, relBuilderFactory);
   }
 }
-
-// End MaterializedViewSubstitutionVisitor.java

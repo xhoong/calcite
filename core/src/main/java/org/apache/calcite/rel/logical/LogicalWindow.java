@@ -23,6 +23,7 @@ import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Window;
+import org.apache.calcite.rel.hint.RelHint;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
@@ -33,6 +34,7 @@ import org.apache.calcite.rex.RexProgram;
 import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexWindow;
 import org.apache.calcite.rex.RexWindowBound;
+import org.apache.calcite.rex.RexWindowExclusion;
 import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Litmus;
@@ -43,14 +45,19 @@ import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Sub-class of {@link org.apache.calcite.rel.core.Window}
@@ -64,21 +71,44 @@ public final class LogicalWindow extends Window {
    *
    * @param cluster Cluster
    * @param traitSet Trait set
-   * @param input   Input relational expression
+   * @param hints Hints for this node
+   * @param input Input relational expression
    * @param constants List of constants that are additional inputs
    * @param rowType Output row type
    * @param groups Window groups
    */
   public LogicalWindow(RelOptCluster cluster, RelTraitSet traitSet,
-      RelNode input, List<RexLiteral> constants, RelDataType rowType,
-      List<Group> groups) {
-    super(cluster, traitSet, input, constants, rowType, groups);
+      List<RelHint> hints, RelNode input, List<RexLiteral> constants,
+      RelDataType rowType, List<Group> groups) {
+    super(cluster, traitSet, hints, input, constants, rowType, groups);
+  }
+
+  /**
+   * Creates a LogicalWindow.
+   *
+   * <p>Use {@link #create} unless you know what you're doing.
+   *
+   * @param cluster Cluster
+   * @param traitSet Trait set
+   * @param input   Input relational expression
+   * @param constants List of constants that are additional inputs
+   * @param rowType Output row type
+   * @param groups Window groups
+   */
+  public LogicalWindow(RelOptCluster cluster, RelTraitSet traitSet, RelNode input,
+      List<RexLiteral> constants, RelDataType rowType, List<Group> groups) {
+    this(cluster, traitSet, Collections.emptyList(), input, constants, rowType, groups);
   }
 
   @Override public LogicalWindow copy(RelTraitSet traitSet,
       List<RelNode> inputs) {
     return new LogicalWindow(getCluster(), traitSet, sole(inputs), constants,
-      rowType, groups);
+      getRowType(), groups);
+  }
+
+  @Override public Window copy(List<RexLiteral> constants) {
+    return new LogicalWindow(getCluster(), getTraitSet(), getInput(),
+        constants, getRowType(), groups);
   }
 
   /**
@@ -122,8 +152,9 @@ public final class LogicalWindow extends Window {
           return ref;
         }
         constants.add(literal);
-        ref = new RexInputRef(constantPool.size() + inputFieldCount,
-            literal.getType());
+        ref =
+            new RexInputRef(constantPool.size() + inputFieldCount,
+                literal.getType());
         constantPool.put(literal, ref);
         return ref;
       }
@@ -132,7 +163,7 @@ public final class LogicalWindow extends Window {
     // Build a list of groups, partitions, and aggregate functions. Each
     // aggregate function will add its arguments as outputs of the input
     // program.
-    final Map<RexOver, RexOver> origToNewOver = new IdentityHashMap<>();
+    final IdentityHashMap<RexOver, RexOver> origToNewOver = new IdentityHashMap<>();
     for (RexNode agg : program.getExprList()) {
       if (agg instanceof RexOver) {
         final RexOver origOver = (RexOver) agg;
@@ -171,6 +202,7 @@ public final class LogicalWindow extends Window {
               windowKey.isRows,
               windowKey.lowerBound.accept(toInputRefs),
               windowKey.upperBound.accept(toInputRefs),
+              windowKey.exclude,
               windowKey.orderKeys,
               aggCalls));
     }
@@ -212,11 +244,10 @@ public final class LogicalWindow extends Window {
     // the output calc (if it exists).
     RexShuttle shuttle =
         new RexShuttle() {
-          public RexNode visitOver(RexOver over) {
+          @Override public RexNode visitOver(RexOver over) {
             // Look up the aggCall which this expr was translated to.
             final Window.RexWinAggCall aggCall =
-                aggMap.get(origToNewOver.get(over));
-            assert aggCall != null;
+                requireNonNull(aggMap.get(origToNewOver.get(over)));
             assert RelOptUtil.eq(
                 "over",
                 over.getType(),
@@ -243,7 +274,7 @@ public final class LogicalWindow extends Window {
                 over.getType());
           }
 
-          public RexNode visitLocalRef(RexLocalRef localRef) {
+          @Override public RexNode visitLocalRef(RexLocalRef localRef) {
             final int index = localRef.getIndex();
             if (index < inputFieldCount) {
               // Reference to input field.
@@ -263,11 +294,8 @@ public final class LogicalWindow extends Window {
     // partitions may not match the order in which they occurred in the
     // original expression.
     // Add a project to permute them.
-    final List<RexNode> rexNodesWindow = new ArrayList<>();
-    for (RexNode rexNode : program.getExprList()) {
-      rexNodesWindow.add(rexNode.accept(shuttle));
-    }
-    final List<RexNode> refToWindow = toInputRefs(rexNodesWindow);
+    final List<RexNode> refToWindow =
+        toInputRefs(shuttle.visitList(program.getExprList()));
 
     final List<RexNode> projectList = new ArrayList<>();
     for (RexLocalRef inputRef : program.getProjectList()) {
@@ -284,11 +312,11 @@ public final class LogicalWindow extends Window {
   private static List<RexNode> toInputRefs(
       final List<? extends RexNode> operands) {
     return new AbstractList<RexNode>() {
-      public int size() {
+      @Override public int size() {
         return operands.size();
       }
 
-      public RexNode get(int index) {
+      @Override public RexNode get(int index) {
         final RexNode operand = operands.get(index);
         if (operand instanceof RexInputRef) {
           return operand;
@@ -309,31 +337,35 @@ public final class LogicalWindow extends Window {
     private final boolean isRows;
     private final RexWindowBound lowerBound;
     private final RexWindowBound upperBound;
+    private final RexWindowExclusion exclude;
 
     WindowKey(
         ImmutableBitSet groupSet,
         RelCollation orderKeys,
         boolean isRows,
         RexWindowBound lowerBound,
-        RexWindowBound upperBound) {
+        RexWindowBound upperBound,
+        RexWindowExclusion exclude) {
       this.groupSet = groupSet;
       this.orderKeys = orderKeys;
       this.isRows = isRows;
       this.lowerBound = lowerBound;
       this.upperBound = upperBound;
+      this.exclude = exclude;
     }
 
     @Override public int hashCode() {
-      return Objects.hash(groupSet, orderKeys, isRows, lowerBound, upperBound);
+      return Objects.hash(groupSet, orderKeys, isRows, lowerBound, upperBound, exclude);
     }
 
-    @Override public boolean equals(Object obj) {
+    @Override public boolean equals(@Nullable Object obj) {
       return obj == this
           || obj instanceof WindowKey
           && groupSet.equals(((WindowKey) obj).groupSet)
           && orderKeys.equals(((WindowKey) obj).orderKeys)
           && Objects.equals(lowerBound, ((WindowKey) obj).lowerBound)
           && Objects.equals(upperBound, ((WindowKey) obj).upperBound)
+          && exclude == ((WindowKey) obj).exclude
           && isRows == ((WindowKey) obj).isRows;
     }
   }
@@ -344,13 +376,14 @@ public final class LogicalWindow extends Window {
     final RexWindow aggWindow = over.getWindow();
 
     // Look up or create a window.
-    RelCollation orderKeys = getCollation(
-        Lists.newArrayList(
-            Util.filter(aggWindow.orderKeys,
-                rexFieldCollation ->
-                    // If ORDER BY references constant (i.e. RexInputRef),
-                    // then we can ignore such ORDER BY key.
-                    rexFieldCollation.left instanceof RexLocalRef)));
+    RelCollation orderKeys =
+        getCollation(
+            Lists.newArrayList(
+                Util.filter(aggWindow.orderKeys,
+                    rexFieldCollation ->
+                        // If ORDER BY references constant (i.e. RexInputRef),
+                        // then we can ignore such ORDER BY key.
+                        rexFieldCollation.left instanceof RexLocalRef)));
     ImmutableBitSet groupSet =
         ImmutableBitSet.of(getProjectOrdinals(aggWindow.partitionKeys));
     final int groupLength = groupSet.length();
@@ -364,9 +397,12 @@ public final class LogicalWindow extends Window {
     WindowKey windowKey =
         new WindowKey(
             groupSet, orderKeys, aggWindow.isRows(),
-            aggWindow.getLowerBound(), aggWindow.getUpperBound());
+            aggWindow.getLowerBound(), aggWindow.getUpperBound(), aggWindow.getExclude());
     windowMap.put(windowKey, over);
   }
-}
 
-// End LogicalWindow.java
+  @Override public RelNode withHints(List<RelHint> hintList) {
+    return new LogicalWindow(getCluster(), traitSet, hintList,
+        input, constants, getRowType(), groups);
+  }
+}

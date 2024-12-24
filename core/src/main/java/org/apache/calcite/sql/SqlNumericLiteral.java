@@ -22,7 +22,12 @@ import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Util;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.dataflow.qual.Pure;
+
 import java.math.BigDecimal;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * A numeric SQL literal.
@@ -30,91 +35,99 @@ import java.math.BigDecimal;
 public class SqlNumericLiteral extends SqlLiteral {
   //~ Instance fields --------------------------------------------------------
 
-  private Integer prec;
-  private Integer scale;
-  private boolean isExact;
+  private final @Nullable Integer prec;
+  private final @Nullable Integer scale;
+  private final boolean exact;
 
   //~ Constructors -----------------------------------------------------------
 
   protected SqlNumericLiteral(
       BigDecimal value,
-      Integer prec,
-      Integer scale,
-      boolean isExact,
+      @Nullable Integer prec,
+      @Nullable Integer scale,
+      boolean exact,
       SqlParserPos pos) {
     super(
         value,
-        isExact ? SqlTypeName.DECIMAL : SqlTypeName.DOUBLE,
+        exact ? SqlTypeName.DECIMAL : SqlTypeName.DOUBLE,
         pos);
     this.prec = prec;
     this.scale = scale;
-    this.isExact = isExact;
+    this.exact = exact;
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  public Integer getPrec() {
+  private BigDecimal getValueNonNull() {
+    return (BigDecimal) requireNonNull(value, "value");
+  }
+
+  public @Nullable Integer getPrec() {
     return prec;
   }
 
-  public Integer getScale() {
+  @Pure
+  public @Nullable Integer getScale() {
     return scale;
   }
 
   public boolean isExact() {
-    return isExact;
+    return exact;
   }
 
   @Override public SqlNumericLiteral clone(SqlParserPos pos) {
-    return new SqlNumericLiteral((BigDecimal) value, getPrec(), getScale(),
-        isExact, pos);
+    return new SqlNumericLiteral(getValueNonNull(), getPrec(), getScale(),
+        exact, pos);
   }
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       int leftPrec,
       int rightPrec) {
-    writer.literal(toValue());
+    writer.getDialect().unparseNumericLiteral(writer, toValue(), leftPrec, rightPrec);
   }
 
-  public String toValue() {
-    BigDecimal bd = (BigDecimal) value;
-    if (isExact) {
-      return value.toString();
+  @Override public String toValue() {
+    final BigDecimal bd = getValueNonNull();
+    if (exact) {
+      return bd.toPlainString();
     }
     return Util.toScientificNotation(bd);
   }
 
-  public RelDataType createSqlType(RelDataTypeFactory typeFactory) {
-    if (isExact) {
-      int scaleValue = scale.intValue();
+  @Override public RelDataType createSqlType(RelDataTypeFactory typeFactory) {
+    if (exact) {
+      int scaleValue = requireNonNull(scale, "scale");
       if (0 == scaleValue) {
-        BigDecimal bd = (BigDecimal) value;
-        SqlTypeName result;
-        long l = bd.longValue();
-        if ((l >= Integer.MIN_VALUE) && (l <= Integer.MAX_VALUE)) {
-          result = SqlTypeName.INTEGER;
-        } else {
-          result = SqlTypeName.BIGINT;
+        try {
+          BigDecimal bd = getValueNonNull();
+          SqlTypeName result;
+          // Will throw if the number cannot be represented as a long.
+          long l = bd.longValueExact();
+          if ((l >= Integer.MIN_VALUE) && (l <= Integer.MAX_VALUE)) {
+            result = SqlTypeName.INTEGER;
+          } else {
+            result = SqlTypeName.BIGINT;
+          }
+          return typeFactory.createSqlType(result);
+        } catch (ArithmeticException ex) {
+          // This indicates that the value does not fit in any integer type.
+          // Fallback to DECIMAL.
         }
-        return typeFactory.createSqlType(result);
       }
-
       // else we have a decimal
       return typeFactory.createSqlType(
           SqlTypeName.DECIMAL,
-          prec.intValue(),
+          requireNonNull(prec, "prec"),
           scaleValue);
     }
 
-    // else we have a a float, real or double.  make them all double for
+    // else we have a FLOAT, REAL or DOUBLE.  make them all DOUBLE for
     // now.
     return typeFactory.createSqlType(SqlTypeName.DOUBLE);
   }
 
   public boolean isInteger() {
-    return 0 == scale.intValue();
+    return scale != null && 0 == scale.intValue();
   }
 }
-
-// End SqlNumericLiteral.java

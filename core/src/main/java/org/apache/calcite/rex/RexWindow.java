@@ -16,11 +16,17 @@
  */
 package org.apache.calcite.rex;
 
+import org.apache.calcite.util.Pair;
+
 import com.google.common.collect.ImmutableList;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Specification of the window of rows over which a {@link RexOver} windowed
@@ -35,8 +41,10 @@ public class RexWindow {
   public final ImmutableList<RexFieldCollation> orderKeys;
   private final RexWindowBound lowerBound;
   private final RexWindowBound upperBound;
+  private final RexWindowExclusion exclude;
   private final boolean isRows;
   private final String digest;
+  public final int nodeCount;
 
   //~ Constructors -----------------------------------------------------------
 
@@ -45,34 +53,59 @@ public class RexWindow {
    *
    * <p>If you need to create a window from outside this package, use
    * {@link RexBuilder#makeOver}.
+   *
+   * <p>If {@code orderKeys} is empty the bracket will usually be
+   * "BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING".
+   *
+   * <p>The digest assumes 'default' brackets, and does not print brackets or
+   * bounds that are the default.
+   *
+   * <p>If {@code orderKeys} is empty, assumes the bracket is "RANGE BETWEEN
+   * UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" and does not print the
+   * bracket.
+   *
+   *<li>If {@code orderKeys} is not empty, the default top is "CURRENT ROW".
+   * The default bracket is "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+   * which will be printed as blank.
+   * "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" is different, and is
+   * printed as "ROWS UNBOUNDED PRECEDING".
+   * "ROWS BETWEEN 5 PRECEDING AND CURRENT ROW" is printed as
+   * "ROWS 5 PRECEDING".
    */
+  @SuppressWarnings("method.invocation.invalid")
   RexWindow(
       List<RexNode> partitionKeys,
       List<RexFieldCollation> orderKeys,
       RexWindowBound lowerBound,
       RexWindowBound upperBound,
-      boolean isRows) {
-    assert partitionKeys != null;
-    assert orderKeys != null;
+      boolean isRows,
+      RexWindowExclusion exclude) {
     this.partitionKeys = ImmutableList.copyOf(partitionKeys);
     this.orderKeys = ImmutableList.copyOf(orderKeys);
-    this.lowerBound = lowerBound;
-    this.upperBound = upperBound;
+    this.lowerBound = requireNonNull(lowerBound, "lowerBound");
+    this.upperBound = requireNonNull(upperBound, "upperBound");
+    this.exclude = exclude;
     this.isRows = isRows;
+    this.nodeCount = computeCodeCount();
     this.digest = computeDigest();
+    checkArgument(
+        !(lowerBound.isUnboundedPreceding()
+            && upperBound.isUnboundedFollowing()
+            && isRows),
+        "use RANGE for unbounded, not ROWS");
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  public String toString() {
+  @Override public String toString() {
     return digest;
   }
 
-  public int hashCode() {
+  @Override public int hashCode() {
     return digest.hashCode();
   }
 
-  public boolean equals(Object that) {
+  @Override public boolean equals(@Nullable Object that) {
     if (that instanceof RexWindow) {
       RexWindow window = (RexWindow) that;
       return digest.equals(window.digest);
@@ -81,61 +114,88 @@ public class RexWindow {
   }
 
   private String computeDigest() {
-    StringWriter sw = new StringWriter();
-    PrintWriter pw = new PrintWriter(sw);
-    int clauseCount = 0;
-    if (partitionKeys.size() > 0) {
-      if (clauseCount++ > 0) {
-        pw.print(' ');
-      }
-      pw.print("PARTITION BY ");
+    return appendDigest_(new StringBuilder(), true).toString();
+  }
+
+  StringBuilder appendDigest(StringBuilder sb, boolean allowFraming) {
+    if (allowFraming) {
+      // digest was calculated with allowFraming=true; reuse it
+      return sb.append(digest);
+    } else {
+      return appendDigest_(sb, allowFraming);
+    }
+  }
+
+  private StringBuilder appendDigest_(StringBuilder sb, boolean allowFraming) {
+    final int initialLength = sb.length();
+    if (!partitionKeys.isEmpty()) {
+      sb.append("PARTITION BY ");
       for (int i = 0; i < partitionKeys.size(); i++) {
         if (i > 0) {
-          pw.print(", ");
+          sb.append(", ");
         }
-        RexNode partitionKey = partitionKeys.get(i);
-        pw.print(partitionKey.toString());
+        sb.append(partitionKeys.get(i));
       }
     }
-    if (orderKeys.size() > 0) {
-      if (clauseCount++ > 0) {
-        pw.print(' ');
-      }
-      pw.print("ORDER BY ");
+    if (!orderKeys.isEmpty()) {
+      sb.append(sb.length() > initialLength ? " ORDER BY " : "ORDER BY ");
       for (int i = 0; i < orderKeys.size(); i++) {
         if (i > 0) {
-          pw.print(", ");
+          sb.append(", ");
         }
-        RexFieldCollation orderKey = orderKeys.get(i);
-        pw.print(orderKey.toString());
+        sb.append(orderKeys.get(i));
       }
     }
-    if (lowerBound == null) {
-      // No ROWS or RANGE clause
-    } else if (upperBound == null) {
-      if (clauseCount++ > 0) {
-        pw.print(' ');
-      }
-      if (isRows) {
-        pw.print("ROWS ");
+    // There are 3 reasons to skip the ROWS/RANGE clause.
+    // 1. If this window is being used with a RANK-style function that does not
+    //    allow framing, or
+    // 2. If it is RANGE without ORDER BY (in which case all frames yield all
+    //    rows),
+    // 3. If it is an unbounded range
+    //    ("RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
+    //    or "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING")
+    //    with no ORDER BY.
+    if (!allowFraming // 1
+        || (!isRows && orderKeys.isEmpty()) // 2
+        || (orderKeys.isEmpty()
+            && lowerBound.isUnboundedPreceding() // 3
+            && upperBound.isUnboundedFollowing())) {
+      // Don't print a ROWS or RANGE clause
+    } else if (upperBound.isCurrentRow()) {
+      // Per MSSQL: If ROWS/RANGE is specified and <window frame preceding>
+      // is used for <window frame extent> (short syntax) then this
+      // specification is used for the window frame boundary starting point and
+      // CURRENT ROW is used for the boundary ending point. For example
+      // "ROWS 5 PRECEDING" is equal to "ROWS BETWEEN 5 PRECEDING AND CURRENT
+      // ROW".
+      //
+      // We print the shorter option if it is
+      // the default. If the RexWindow is, say, "ROWS BETWEEN 5 PRECEDING AND
+      // CURRENT ROW", we output "ROWS 5 PRECEDING" because it is equivalent and
+      // is shorter.
+      if (!isRows && lowerBound.isUnboundedPreceding()) {
+        // OVER (ORDER BY x)
+        // OVER (ORDER BY x RANGE UNBOUNDED PRECEDING)
+        // OVER (ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        // are equivalent, so print the first (i.e. nothing).
       } else {
-        pw.print("RANGE ");
+        sb.append(sb.length() > initialLength ? " " : "")
+            .append(isRows ? "ROWS" : "RANGE")
+            .append(' ')
+            .append(lowerBound);
       }
-      pw.print(lowerBound.toString());
     } else {
-      if (clauseCount++ > 0) {
-        pw.print(' ');
-      }
-      if (isRows) {
-        pw.print("ROWS BETWEEN ");
-      } else {
-        pw.print("RANGE BETWEEN ");
-      }
-      pw.print(lowerBound.toString());
-      pw.print(" AND ");
-      pw.print(upperBound.toString());
+      sb.append(sb.length() > initialLength ? " " : "")
+          .append(isRows ? "ROWS" : "RANGE")
+          .append(" BETWEEN ")
+          .append(lowerBound)
+          .append(" AND ")
+          .append(upperBound);
     }
-    return sw.toString();
+    if (exclude != RexWindowExclusion.EXCLUDE_NO_OTHER) {
+      sb.append(" ").append(exclude).append(" ");
+    }
+    return sb;
   }
 
   public RexWindowBound getLowerBound() {
@@ -146,9 +206,18 @@ public class RexWindow {
     return upperBound;
   }
 
+  public RexWindowExclusion getExclude() {
+    return exclude;
+  }
+
   public boolean isRows() {
     return isRows;
   }
-}
 
-// End RexWindow.java
+  private int computeCodeCount() {
+    return RexUtil.nodeCount(partitionKeys)
+        + RexUtil.nodeCount(Pair.left(orderKeys))
+        + (lowerBound == null ? 0 : lowerBound.nodeCount())
+        + (upperBound == null ? 0 : upperBound.nodeCount());
+  }
+}

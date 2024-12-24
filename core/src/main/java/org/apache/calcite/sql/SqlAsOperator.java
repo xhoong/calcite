@@ -34,6 +34,8 @@ import java.util.List;
 
 import static org.apache.calcite.util.Static.RESOURCE;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * The <code>AS</code> operator associates an expression with an alias.
  */
@@ -51,7 +53,7 @@ public class SqlAsOperator extends SqlSpecialOperator {
         true,
         ReturnTypes.ARG0,
         InferTypes.RETURN_TYPE,
-        OperandTypes.ANY_ANY);
+        OperandTypes.ANY_IGNORE);
   }
 
   protected SqlAsOperator(String name, SqlKind kind, int prec,
@@ -64,7 +66,7 @@ public class SqlAsOperator extends SqlSpecialOperator {
 
   //~ Methods ----------------------------------------------------------------
 
-  public void unparse(
+  @Override public void unparse(
       SqlWriter writer,
       SqlCall call,
       int leftPrec,
@@ -72,12 +74,18 @@ public class SqlAsOperator extends SqlSpecialOperator {
     assert call.operandCount() >= 2;
     final SqlWriter.Frame frame =
         writer.startList(
-            SqlWriter.FrameTypeEnum.SIMPLE);
-    call.operand(0).unparse(writer, leftPrec, getLeftPrec());
+            SqlWriter.FrameTypeEnum.AS);
+    final SqlNode op0 = call.operand(0);
+    final boolean measure = op0.getKind() == SqlKind.MEASURE;
+    final SqlNode op01 = measure ? ((SqlCall) op0).operand(0) : op0;
+    op01.unparse(writer, leftPrec, getLeftPrec());
     final boolean needsSpace = true;
     writer.setNeedWhitespace(needsSpace);
     if (writer.getDialect().allowsAs()) {
       writer.sep("AS");
+      if (measure) {
+        writer.sep("MEASURE");
+      }
       writer.setNeedWhitespace(needsSpace);
     }
     call.operand(1).unparse(writer, getRightPrec(), rightPrec);
@@ -93,7 +101,7 @@ public class SqlAsOperator extends SqlSpecialOperator {
     writer.endList(frame);
   }
 
-  public void validateCall(
+  @Override public void validateCall(
       SqlCall call,
       SqlValidator validator,
       SqlValidatorScope scope,
@@ -111,7 +119,7 @@ public class SqlAsOperator extends SqlSpecialOperator {
     }
   }
 
-  public <R> void acceptCall(
+  @Override public <R> void acceptCall(
       SqlVisitor<R> visitor,
       SqlCall call,
       boolean onlyExpressions,
@@ -124,14 +132,14 @@ public class SqlAsOperator extends SqlSpecialOperator {
     }
   }
 
-  public RelDataType deriveType(
+  @Override public RelDataType deriveType(
       SqlValidator validator,
       SqlValidatorScope scope,
       SqlCall call) {
     // special case for AS:  never try to derive type for alias
     RelDataType nodeType =
         validator.deriveType(scope, call.operand(0));
-    assert nodeType != null;
+    requireNonNull(nodeType, "nodeType");
     return validateOperands(validator, scope, call);
   }
 
@@ -139,5 +147,3 @@ public class SqlAsOperator extends SqlSpecialOperator {
     return call.getOperandMonotonicity(0);
   }
 }
-
-// End SqlAsOperator.java

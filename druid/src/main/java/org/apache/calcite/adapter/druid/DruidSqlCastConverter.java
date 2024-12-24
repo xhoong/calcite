@@ -26,12 +26,14 @@ import org.apache.calcite.sql.type.SqlTypeName;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.joda.time.Period;
 
 import java.util.TimeZone;
 
 /**
- * Druid cast converter operator used to translates calcite casts to Druid expression cast
+ * Druid cast converter operator; used to translates Calcite casts to Druid
+ * expression casts.
  */
 public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
 
@@ -39,12 +41,12 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
     return SqlStdOperatorTable.CAST;
   }
 
-  @Override public String toDruidExpression(RexNode rexNode, RelDataType topRel,
-      DruidQuery druidQuery) {
+  @Override public @Nullable String toDruidExpression(RexNode rexNode,
+      RelDataType topRel, DruidQuery druidQuery) {
 
     final RexNode operand = ((RexCall) rexNode).getOperands().get(0);
-    final String operandExpression = DruidExpressions.toDruidExpression(operand,
-        topRel, druidQuery);
+    final String operandExpression =
+        DruidExpressions.toDruidExpression(operand, topRel, druidQuery);
 
     if (operandExpression == null) {
       return null;
@@ -54,7 +56,7 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
     String fromTypeString = dateTimeFormatString(fromType);
     final SqlTypeName toType = rexNode.getType().getSqlTypeName();
     final String timeZoneConf = druidQuery.getConnectionConfig().timeZone();
-    final TimeZone timeZone = TimeZone.getTimeZone(timeZoneConf == null ? "UTC" : timeZoneConf);
+    final TimeZone timeZone = TimeZone.getTimeZone(timeZoneConf);
     final boolean nullEqualToEmpty = druidQuery.getConnectionConfig().nullEqualToEmpty();
 
     if (fromTypeString == null) {
@@ -63,13 +65,13 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
 
     if (SqlTypeName.CHAR_TYPES.contains(fromType)
         && SqlTypeName.DATETIME_TYPES.contains(toType)) {
-      //case chars to dates
+      // case chars to dates
       return castCharToDateTime(toType == SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE
               ? timeZone : DateTimeUtils.UTC_ZONE,
           operandExpression, toType, fromTypeString);
     } else if (SqlTypeName.DATETIME_TYPES.contains(fromType)
         && SqlTypeName.CHAR_TYPES.contains(toType)) {
-      //case dates to chars
+      // case dates to chars
       return castDateTimeToChar(fromType == SqlTypeName.TIMESTAMP_WITH_LOCAL_TIME_ZONE
           ? timeZone : DateTimeUtils.UTC_ZONE, operandExpression, fromType);
     } else if (SqlTypeName.DATETIME_TYPES.contains(fromType)
@@ -109,9 +111,9 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
       }
       final String typeCastExpression;
       if (fromExprType != toExprType) {
-        typeCastExpression = DruidQuery.format("CAST(%s, '%s')", operandExpression,
-            toExprType
-            .toString());
+        typeCastExpression =
+            DruidQuery.format("CAST(%s, '%s')", operandExpression,
+                toExprType.toString());
       } else {
         // case it is the same type it is ok to skip CAST
         typeCastExpression = operandExpression;
@@ -136,12 +138,11 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
       String operand,
       final SqlTypeName toType, String format) {
     // Cast strings to date times by parsing them from SQL format.
-    final String timestampExpression = DruidExpressions.functionCall(
-        "timestamp_parse",
-        ImmutableList.of(
-            operand,
-            DruidExpressions.stringLiteral(format),
-            DruidExpressions.stringLiteral(timeZone.getID())));
+    final String timestampExpression =
+        DruidExpressions.functionCall("timestamp_parse",
+            ImmutableList.of(operand,
+                DruidExpressions.stringLiteral(format),
+                DruidExpressions.stringLiteral(timeZone.getID())));
 
     if (toType == SqlTypeName.DATE) {
       // case to date we need to floor to day first
@@ -171,7 +172,7 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
             DruidExpressions.stringLiteral(timeZone.getID())));
   }
 
-  public static String dateTimeFormatString(final SqlTypeName sqlTypeName) {
+  public static @Nullable String dateTimeFormatString(SqlTypeName sqlTypeName) {
     if (sqlTypeName == SqlTypeName.DATE) {
       return "yyyy-MM-dd";
     } else if (sqlTypeName == SqlTypeName.TIMESTAMP) {
@@ -183,5 +184,3 @@ public class DruidSqlCastConverter implements DruidSqlOperatorConverter {
     }
   }
 }
-
-// End DruidSqlCastConverter.java

@@ -30,23 +30,30 @@ import org.apache.calcite.model.JsonView;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URL;
 import java.util.List;
 
 import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.anEmptyMap;
+import static org.hamcrest.Matchers.hasSize;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Unit test for data models.
  */
-public class ModelTest {
+class ModelTest {
   private ObjectMapper mapper() {
     final ObjectMapper mapper = new ObjectMapper();
     mapper.configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true);
@@ -55,10 +62,9 @@ public class ModelTest {
   }
 
   /** Reads a simple schema from a string into objects. */
-  @Test public void testRead() throws IOException {
+  @Test void testRead() throws IOException {
     final ObjectMapper mapper = mapper();
-    JsonRoot root = mapper.readValue(
-        "{\n"
+    final String json = "{\n"
         + "  version: '1.0',\n"
         + "   schemas: [\n"
         + "     {\n"
@@ -77,6 +83,7 @@ public class ModelTest {
         + "       tables: [\n"
         + "         {\n"
         + "           name: 'time_by_day',\n"
+        + "           factory: 'com.test',\n"
         + "           columns: [\n"
         + "             {\n"
         + "               name: 'time_id'\n"
@@ -85,6 +92,7 @@ public class ModelTest {
         + "         },\n"
         + "         {\n"
         + "           name: 'sales_fact_1997',\n"
+        + "           factory: 'com.test',\n"
         + "           columns: [\n"
         + "             {\n"
         + "               name: 'time_id'\n"
@@ -94,31 +102,30 @@ public class ModelTest {
         + "       ]\n"
         + "     }\n"
         + "   ]\n"
-        + "}",
-        JsonRoot.class);
-    assertEquals("1.0", root.version);
-    assertEquals(1, root.schemas.size());
+        + "}";
+    JsonRoot root = mapper.readValue(json, JsonRoot.class);
+    assertThat(root.version, is("1.0"));
+    assertThat(root.schemas, hasSize(1));
     final JsonMapSchema schema = (JsonMapSchema) root.schemas.get(0);
-    assertEquals("FoodMart", schema.name);
-    assertEquals(1, schema.types.size());
+    assertThat(schema.name, is("FoodMart"));
+    assertThat(schema.types, hasSize(1));
     final List<JsonTypeAttribute> attributes = schema.types.get(0).attributes;
-    assertEquals("f1", attributes.get(0).name);
-    assertEquals("BIGINT", attributes.get(0).type);
-    assertEquals(2, schema.tables.size());
+    assertThat(attributes.get(0).name, is("f1"));
+    assertThat(attributes.get(0).type, is("BIGINT"));
+    assertThat(schema.tables, hasSize(2));
     final JsonTable table0 = schema.tables.get(0);
-    assertEquals("time_by_day", table0.name);
+    assertThat(table0.name, is("time_by_day"));
     final JsonTable table1 = schema.tables.get(1);
-    assertEquals("sales_fact_1997", table1.name);
-    assertEquals(1, table0.columns.size());
+    assertThat(table1.name, is("sales_fact_1997"));
+    assertThat(table0.columns, hasSize(1));
     final JsonColumn column = table0.columns.get(0);
-    assertEquals("time_id", column.name);
+    assertThat(column.name, is("time_id"));
   }
 
   /** Reads a simple schema containing JdbcSchema, a sub-type of Schema. */
-  @Test public void testSubtype() throws IOException {
+  @Test void testSubtype() throws IOException {
     final ObjectMapper mapper = mapper();
-    JsonRoot root = mapper.readValue(
-        "{\n"
+    final String json = "{\n"
         + "  version: '1.0',\n"
         + "   schemas: [\n"
         + "     {\n"
@@ -131,16 +138,16 @@ public class ModelTest {
         + "       jdbcSchema: ''\n"
         + "     }\n"
         + "   ]\n"
-        + "}",
-        JsonRoot.class);
-    assertEquals("1.0", root.version);
-    assertEquals(1, root.schemas.size());
+        + "}";
+    JsonRoot root = mapper.readValue(json, JsonRoot.class);
+    assertThat(root.version, is("1.0"));
+    assertThat(root.schemas, hasSize(1));
     final JsonJdbcSchema schema = (JsonJdbcSchema) root.schemas.get(0);
-    assertEquals("FoodMart", schema.name);
+    assertThat(schema.name, is("FoodMart"));
   }
 
   /** Reads a custom schema. */
-  @Test public void testCustomSchema() throws IOException {
+  @Test void testCustomSchema() throws IOException {
     final ObjectMapper mapper = mapper();
     JsonRoot root = mapper.readValue("{\n"
             + "  version: '1.0',\n"
@@ -151,40 +158,44 @@ public class ModelTest {
             + "       factory: 'com.acme.MySchemaFactory',\n"
             + "       operand: {a: 'foo', b: [1, 3.5] },\n"
             + "       tables: [\n"
-            + "         { type: 'custom', name: 'T1' },\n"
-            + "         { type: 'custom', name: 'T2', operand: {} },\n"
-            + "         { type: 'custom', name: 'T3', operand: {a: 'foo'} }\n"
+            + "         { type: 'custom', name: 'T1', factory: 'com.test' },\n"
+            + "         { type: 'custom', name: 'T2', factory: 'com.test', operand: {} },\n"
+            + "         { type: 'custom', name: 'T3', factory: 'com.test', operand: {a: 'foo'} }\n"
             + "       ]\n"
             + "     },\n"
             + "     {\n"
             + "       type: 'custom',\n"
+            + "       factory: 'com.acme.MySchemaFactory',\n"
             + "       name: 'has-no-operand'\n"
             + "     }\n"
             + "   ]\n"
             + "}",
         JsonRoot.class);
-    assertEquals("1.0", root.version);
-    assertEquals(2, root.schemas.size());
+    assertThat(root.version, is("1.0"));
+    assertThat(root.schemas, hasSize(2));
     final JsonCustomSchema schema = (JsonCustomSchema) root.schemas.get(0);
-    assertEquals("My Custom Schema", schema.name);
-    assertEquals("com.acme.MySchemaFactory", schema.factory);
-    assertEquals("foo", schema.operand.get("a"));
+    assertThat(schema.name, is("My Custom Schema"));
+    assertThat(schema.factory, is("com.acme.MySchemaFactory"));
+    assertThat(schema.operand, notNullValue());
+    assertThat(schema.operand.get("a"), is("foo"));
     assertNull(schema.operand.get("c"));
-    assertTrue(schema.operand.get("b") instanceof List);
-    final List list = (List) schema.operand.get("b");
-    assertEquals(2, list.size());
-    assertEquals(1, list.get(0));
-    assertEquals(3.5, list.get(1));
+    assertThat(schema.operand.get("b"), instanceOf(List.class));
+    final List<Object> list = (List<Object>) schema.operand.get("b");
+    assertThat(list, hasSize(2));
+    assertThat(list.get(0), is(1));
+    assertThat(list.get(1), is(3.5));
 
-    assertEquals(3, schema.tables.size());
-    assertNull(((JsonCustomTable) schema.tables.get(0)).operand);
-    assertTrue(((JsonCustomTable) schema.tables.get(1)).operand.isEmpty());
+    assertThat(schema.tables, hasSize(3));
+    final JsonCustomTable table0 = (JsonCustomTable) schema.tables.get(0);
+    assertThat(table0.operand, nullValue());
+    final JsonCustomTable table1 = (JsonCustomTable) schema.tables.get(1);
+    assertThat(table1.operand, notNullValue());
+    assertThat(table1.operand, anEmptyMap());
   }
 
   /** Tests that an immutable schema in a model cannot contain a
    * materialization. */
-  @Test public void testModelImmutableSchemaCannotContainMaterialization()
-      throws Exception {
+  @Test void testModelImmutableSchemaCannotContainMaterialization() {
     CalciteAssert.model("{\n"
         + "  version: '1.0',\n"
         + "  defaultSchema: 'adhoc',\n"
@@ -222,7 +233,7 @@ public class ModelTest {
    *
    * <p>Schema without name should give useful error, not
    * NullPointerException. */
-  @Test public void testSchemaWithoutName() throws Exception {
+  @Test void testSchemaWithoutName() {
     final String model = "{\n"
         + "  version: '1.0',\n"
         + "  defaultSchema: 'adhoc',\n"
@@ -230,10 +241,10 @@ public class ModelTest {
         + "  } ]\n"
         + "}";
     CalciteAssert.model(model)
-        .connectThrows("Field 'name' is required in JsonMapSchema");
+        .connectThrows("Missing required creator property 'name'");
   }
 
-  @Test public void testCustomSchemaWithoutFactory() throws Exception {
+  @Test void testCustomSchemaWithoutFactory() {
     final String model = "{\n"
         + "  version: '1.0',\n"
         + "  defaultSchema: 'adhoc',\n"
@@ -243,11 +254,11 @@ public class ModelTest {
         + "  } ]\n"
         + "}";
     CalciteAssert.model(model)
-        .connectThrows("Field 'factory' is required in JsonCustomSchema");
+        .connectThrows("Missing required creator property 'factory'");
   }
 
   /** Tests a model containing a lattice and some views. */
-  @Test public void testReadLattice() throws IOException {
+  @Test void testReadLattice() throws IOException {
     final ObjectMapper mapper = mapper();
     JsonRoot root = mapper.readValue("{\n"
             + "  version: '1.0',\n"
@@ -257,6 +268,7 @@ public class ModelTest {
             + "       tables: [\n"
             + "         {\n"
             + "           name: 'time_by_day',\n"
+            + "           factory: 'com.test',\n"
             + "           columns: [\n"
             + "             {\n"
             + "               name: 'time_id'\n"
@@ -265,6 +277,7 @@ public class ModelTest {
             + "         },\n"
             + "         {\n"
             + "           name: 'sales_fact_1997',\n"
+            + "           factory: 'com.test',\n"
             + "           columns: [\n"
             + "             {\n"
             + "               name: 'time_id'\n"
@@ -296,30 +309,30 @@ public class ModelTest {
             + "   ]\n"
             + "}",
         JsonRoot.class);
-    assertEquals("1.0", root.version);
-    assertEquals(1, root.schemas.size());
+    assertThat(root.version, is("1.0"));
+    assertThat(root.schemas, hasSize(1));
     final JsonMapSchema schema = (JsonMapSchema) root.schemas.get(0);
-    assertEquals("FoodMart", schema.name);
-    assertEquals(2, schema.lattices.size());
+    assertThat(schema.name, is("FoodMart"));
+    assertThat(schema.lattices, hasSize(2));
     final JsonLattice lattice0 = schema.lattices.get(0);
-    assertEquals("SalesStar", lattice0.name);
-    assertEquals("select * from sales_fact_1997", lattice0.getSql());
+    assertThat(lattice0.name, is("SalesStar"));
+    assertThat(lattice0.getSql(), is("select * from sales_fact_1997"));
     final JsonLattice lattice1 = schema.lattices.get(1);
-    assertEquals("SalesStar2", lattice1.name);
-    assertEquals("select *\nfrom sales_fact_1997\n", lattice1.getSql());
-    assertEquals(4, schema.tables.size());
+    assertThat(lattice1.name, is("SalesStar2"));
+    assertThat(lattice1.getSql(), is("select *\nfrom sales_fact_1997\n"));
+    assertThat(schema.tables, hasSize(4));
     final JsonTable table1 = schema.tables.get(1);
     assertTrue(!(table1 instanceof JsonView));
     final JsonTable table2 = schema.tables.get(2);
-    assertTrue(table2 instanceof JsonView);
+    assertThat(table2, instanceOf(JsonView.class));
     assertThat(((JsonView) table2).getSql(), equalTo("values (1)"));
     final JsonTable table3 = schema.tables.get(3);
-    assertTrue(table3 instanceof JsonView);
+    assertThat(table3, instanceOf(JsonView.class));
     assertThat(((JsonView) table3).getSql(), equalTo("values (1)\n(2)\n"));
   }
 
   /** Tests a model with bad multi-line SQL. */
-  @Test public void testReadBadMultiLineSql() throws IOException {
+  @Test void testReadBadMultiLineSql() throws IOException {
     final ObjectMapper mapper = mapper();
     JsonRoot root = mapper.readValue("{\n"
             + "  version: '1.0',\n"
@@ -337,9 +350,9 @@ public class ModelTest {
             + "   ]\n"
             + "}",
         JsonRoot.class);
-    assertEquals(1, root.schemas.size());
+    assertThat(root.schemas, hasSize(1));
     final JsonMapSchema schema = (JsonMapSchema) root.schemas.get(0);
-    assertEquals(1, schema.tables.size());
+    assertThat(schema.tables, hasSize(1));
     final JsonView table1 = (JsonView) schema.tables.get(0);
     try {
       String s = table1.getSql();
@@ -350,10 +363,10 @@ public class ModelTest {
     }
   }
 
-  @Test public void testYamlInlineDetection() throws Exception {
+  @Test void testYamlInlineDetection() throws Exception {
     // yaml model with different line endings
     final String yamlModel = "version: 1.0\r\n"
-        + "schemas: \n"
+        + "schemas:\n"
         + "- type: custom\r\n"
         + "  name: 'MyCustomSchema'\n"
         + "  factory: " + JdbcTest.MySchemaFactory.class.getName() + "\r\n";
@@ -370,12 +383,11 @@ public class ModelTest {
         .connectThrows("Unexpected end-of-input in a comment");
   }
 
-  @Test public void testYamlFileDetection() throws Exception {
-    final URL inUrl = ModelTest.class.getResource("/empty-model.yaml");
+  @Test void testYamlFileDetection() throws Exception {
+    final URL inUrl =
+        requireNonNull(ModelTest.class.getResource("/empty-model.yaml"), "url");
     CalciteAssert.that()
         .withModel(inUrl)
         .doWithConnection(calciteConnection -> null);
   }
 }
-
-// End ModelTest.java

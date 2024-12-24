@@ -19,18 +19,17 @@ package org.apache.calcite.test.fuzzer;
 import org.apache.calcite.plan.Strong;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexProgramBuilderBase;
 import org.apache.calcite.rex.RexUnknownAs;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
-import org.apache.calcite.test.RexProgramBuilderBase;
 import org.apache.calcite.util.ImmutableBitSet;
 
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,21 +44,20 @@ import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.Set;
-import javax.annotation.Nonnull;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Validates that {@link org.apache.calcite.rex.RexSimplify} is able to deal with
- * randomized {@link RexNode}.
- * Note: the default fuzzing time is 5 seconds to keep overall test duration reasonable.
- * The test starts from a random point every time, so the longer it runs the more errors it detects.
+ * Validates that {@link org.apache.calcite.rex.RexSimplify} is able to deal
+ * with a randomized {@link RexNode}.
  *
- * <p>Note: The test is not included to {@link org.apache.calcite.test.CalciteSuite} since it would
- * fail every build (there are lots of issues with {@link org.apache.calcite.rex.RexSimplify})
+ * <p>The default fuzzing time is 5 seconds to keep overall test duration
+ * reasonable. The test starts from a random point every time, so the longer it
+ * runs the more errors it detects.
  */
-public class RexProgramFuzzyTest extends RexProgramBuilderBase {
+class RexProgramFuzzyTest extends RexProgramBuilderBase {
   protected static final Logger LOGGER =
       LoggerFactory.getLogger(RexProgramFuzzyTest.class);
 
@@ -93,7 +91,7 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
   private static final Strong STRONG = Strong.of(ImmutableBitSet.of());
 
   /**
-   * A bounded variation of {@link PriorityQueue}
+   * A bounded variation of {@link PriorityQueue}.
    *
    * @param <E> the type of elements held in this collection
    */
@@ -123,14 +121,10 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
     }
   }
 
-  @Before public void setUp() {
-    super.setUp();
-  }
-
   /**
    * Verifies {@code IS TRUE(IS NULL(null))} kind of expressions up to 4 level deep.
    */
-  @Test public void testNestedCalls() {
+  @Test void testNestedCalls() {
     nestedCalls(trueLiteral);
     nestedCalls(falseLiteral);
     nestedCalls(nullBool);
@@ -169,9 +163,45 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
   }
 
   private void checkUnknownAs(RexNode node) {
-    checkUnknownAs(node, RexUnknownAs.FALSE);
-    checkUnknownAs(node, RexUnknownAs.UNKNOWN);
-    checkUnknownAs(node, RexUnknownAs.TRUE);
+    checkUnknownAsAndShrink(node, RexUnknownAs.FALSE);
+    checkUnknownAsAndShrink(node, RexUnknownAs.UNKNOWN);
+    checkUnknownAsAndShrink(node, RexUnknownAs.TRUE);
+  }
+
+  private void checkUnknownAsAndShrink(RexNode node, RexUnknownAs unknownAs) {
+    try {
+      checkUnknownAs(node, unknownAs);
+    } catch (Exception e) {
+      // Try shrink the example so human can understand it better
+      Random rnd = new Random();
+      rnd.setSeed(currentSeed);
+      long deadline = System.currentTimeMillis() + 20000;
+      RexNode original = node;
+      int len = Integer.MAX_VALUE;
+      for (int i = 0; i < 100000 && System.currentTimeMillis() < deadline; i++) {
+        RexShrinker shrinker = new RexShrinker(rnd, rexBuilder);
+        RexNode newNode = node.accept(shrinker);
+        try {
+          checkUnknownAs(newNode, unknownAs);
+          // bad shrink
+        } catch (Exception ex) {
+          // Good shrink
+          node = newNode;
+          String str = nodeToString(node);
+          int newLen = str.length();
+          if (newLen < len) {
+            long remaining = deadline - System.currentTimeMillis();
+            System.out.println("Shrinked to " + newLen + " chars, time remaining " + remaining);
+            len = newLen;
+          }
+        }
+      }
+      if (original.toString().equals(node.toString())) {
+        // Bad luck, throw original exception
+        throw e;
+      }
+      checkUnknownAs(node, unknownAs);
+    }
   }
 
   private void checkUnknownAs(RexNode node, RexUnknownAs unknownAs) {
@@ -219,16 +249,16 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
     }
     if (node.isAlwaysTrue()) {
       if (!trueLiteral.equals(opt)) {
-        assertEquals(nodeToString(node) + " isAlwaysTrue, so it should simplify to TRUE "
-                + uaf,
-            trueLiteral, opt);
+        assertThat(nodeToString(node)
+                + " isAlwaysTrue, so it should simplify to TRUE " + uaf,
+            opt, is(trueLiteral));
       }
     }
     if (node.isAlwaysFalse()) {
       if (!falseLiteral.equals(opt)) {
-        assertEquals(nodeToString(node) + " isAlwaysFalse, so it should simplify to FALSE "
-                + uaf,
-            falseLiteral, opt);
+        assertThat(nodeToString(node)
+            + " isAlwaysFalse, so it should simplify to FALSE " + uaf,
+            opt, is(falseLiteral));
       }
     }
     if (STRONG.isNull(node)) {
@@ -236,38 +266,42 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
       case FALSE:
         if (node.getType().getSqlTypeName() == SqlTypeName.BOOLEAN) {
           if (!falseLiteral.equals(opt)) {
-            assertEquals(nodeToString(node)
-                    + " is always null boolean, so it should simplify to FALSE " + uaf,
-                falseLiteral, opt);
+            assertThat(nodeToString(node)
+                    + " is always null boolean, so it should simplify to FALSE "
+                    + uaf,
+                opt, is(falseLiteral));
           }
         } else {
           if (!RexLiteral.isNullLiteral(opt)) {
-            assertEquals(nodeToString(node)
-                    + " is always null (non boolean), so it should simplify to NULL " + uaf,
-                rexBuilder.makeNullLiteral(node.getType()), opt);
+            assertThat(nodeToString(node)
+                    + " is always null (non boolean), so it should simplify to NULL "
+                    + uaf,
+                opt, is(rexBuilder.makeNullLiteral(node.getType())));
           }
         }
         break;
       case TRUE:
         if (node.getType().getSqlTypeName() == SqlTypeName.BOOLEAN) {
           if (!trueLiteral.equals(opt)) {
-            assertEquals(nodeToString(node)
-                    + " is always null boolean, so it should simplify to TRUE " + uaf,
-                trueLiteral, opt);
+            assertThat(nodeToString(node)
+                    + " is always null boolean, so it should simplify to TRUE "
+                    + uaf,
+                opt, is(trueLiteral));
           }
         } else {
           if (!RexLiteral.isNullLiteral(opt)) {
-            assertEquals(nodeToString(node)
-                    + " is always null (non boolean), so it should simplify to NULL " + uaf,
-                rexBuilder.makeNullLiteral(node.getType()), opt);
+            assertThat(nodeToString(node)
+                    + " is always null (non boolean), so it should simplify to NULL "
+                    + uaf,
+                opt, is(rexBuilder.makeNullLiteral(node.getType())));
           }
         }
         break;
       case UNKNOWN:
         if (!RexUtil.isNull(opt)) {
-          assertEquals(nodeToString(node)
+          assertThat(nodeToString(node)
                   + " is always null, so it should simplify to NULL " + uaf,
-              nullBool, opt);
+              opt, is(nullBool));
         }
       }
     }
@@ -279,12 +313,14 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
           + " that has nullable type " + opt.getType());
     }
     if (!SqlTypeUtil.equalSansNullability(typeFactory, node.getType(), opt.getType())) {
-      assertEquals(nodeToString(node) + " has different type after simplification to "
-          + nodeToString(opt), node.getType(), opt.getType());
+      assertThat(nodeToString(node)
+              + " has different type after simplification to "
+              + nodeToString(opt),
+          opt.getType(), is(node.getType()));
     }
   }
 
-  @Nonnull private String unknownAsString(RexUnknownAs unknownAs) {
+  private String unknownAsString(RexUnknownAs unknownAs) {
     switch (unknownAs) {
     case UNKNOWN:
     default:
@@ -310,7 +346,7 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
     t.setStackTrace(stackTrace);
   }
 
-  @Test public void defaultFuzzTest() {
+  @Test void defaultFuzzTest() {
     try {
       runRexFuzzer(DEFAULT_FUZZ_TEST_SEED, DEFAULT_FUZZ_TEST_DURATION, 1,
           DEFAULT_FUZZ_TEST_ITERATIONS, 0);
@@ -325,7 +361,8 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
     }
   }
 
-  @Test public void testFuzzy() {
+  @Disabled("Ignore for now: CALCITE-3457")
+  @Test void testFuzzy() {
     runRexFuzzer(SEED, TEST_DURATION, MAX_FAILURES, TEST_ITERATIONS, TOPN_SLOWEST);
   }
 
@@ -426,13 +463,11 @@ public class RexProgramFuzzyTest extends RexProgramBuilderBase {
     checkUnknownAs(expression);
   }
 
-  @Ignore("This is just a scaffold for quick investigation of a single fuzz test")
-  @Test public void singleFuzzyTest() {
+  @Disabled("This is just a scaffold for quick investigation of a single fuzz test")
+  @Test void singleFuzzyTest() {
     Random r = new Random();
-    r.setSeed(-179916965778405462L);
+    r.setSeed(4887662474363391810L);
     RexFuzzer fuzzer = new RexFuzzer(rexBuilder, typeFactory);
     generateRexAndCheckTrueFalse(fuzzer, r);
   }
 }
-
-// End RexProgramFuzzyTest.java

@@ -16,14 +16,12 @@
  */
 package org.apache.calcite.sql;
 
-import org.apache.calcite.sql.parser.SqlParserPos;
-
 import java.util.Locale;
 
 /**
  * Enumerates the types of join.
  */
-public enum JoinType {
+public enum JoinType implements Symbolizable {
   /**
    * Inner join.
    */
@@ -57,11 +55,39 @@ public enum JoinType {
   LEFT_SEMI_JOIN,
 
   /**
+   * Left anti join.
+   *
+   * <p>Not used by Calcite; only in Babel's Spark dialect.
+   */
+  LEFT_ANTI_JOIN,
+
+  /**
    * Comma join: the good old-fashioned SQL <code>FROM</code> clause,
    * where table expressions are specified with commas between them, and
    * join conditions are specified in the <code>WHERE</code> clause.
    */
-  COMMA;
+  COMMA,
+
+  /**
+   * An ASOF JOIN operation combines rows from two tables based on comparable timestamp values.
+   * For each row in the left table, the join finds at most one row in the right table that has the
+   * "closest" timestamp value. The matched row on the right side is the closest match,
+   * which could less than or equal or greater than or equal in the timestamp column,
+   * as specified by the comparison operator.
+   *
+   * <p>Example:
+   * <blockquote><pre>
+   * FROM left_table ASOF JOIN right_table
+   *   MATCH_CONDITION ( left_table.timecol &le; right_table.timecol )
+   *   ON left_table.col = right_table.col</pre>
+   * </blockquote>
+   */
+  ASOF,
+
+  /**
+   * The left version of an ASOF join, where each row from the left table is part of the output.
+   */
+  LEFT_ASOF;
 
   /** Lower-case name. */
   public final String lowerName = name().toLowerCase(Locale.ROOT);
@@ -81,15 +107,4 @@ public enum JoinType {
   public boolean generatesNullsOnRight() {
     return this == LEFT || this == FULL;
   }
-
-  /**
-   * Creates a parse-tree node representing an occurrence of this
-   * condition type keyword at a particular position in the parsed
-   * text.
-   */
-  public SqlLiteral symbol(SqlParserPos pos) {
-    return SqlLiteral.createSymbol(this, pos);
-  }
 }
-
-// End JoinType.java

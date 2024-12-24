@@ -22,9 +22,12 @@ import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rel.type.RelDataTypeImpl;
 import org.apache.calcite.rel.type.RelDataTypePrecedenceList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.io.Serializable;
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Abstract base class for SQL implementations of {@link RelDataType}.
@@ -35,7 +38,7 @@ public abstract class AbstractSqlType
   //~ Instance fields --------------------------------------------------------
 
   protected final SqlTypeName typeName;
-  protected boolean isNullable;
+  protected final boolean isNullable;
 
   //~ Constructors -----------------------------------------------------------
 
@@ -49,31 +52,29 @@ public abstract class AbstractSqlType
   protected AbstractSqlType(
       SqlTypeName typeName,
       boolean isNullable,
-      List<? extends RelDataTypeField> fields) {
+      @Nullable List<? extends RelDataTypeField> fields) {
     super(fields);
-    this.typeName = Objects.requireNonNull(typeName);
+    this.typeName = requireNonNull(typeName, "typeName");
     this.isNullable = isNullable || (typeName == SqlTypeName.NULL);
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  // implement RelDataType
-  public SqlTypeName getSqlTypeName() {
+  @Override public SqlTypeName getSqlTypeName() {
     return typeName;
   }
 
-  // implement RelDataType
-  public boolean isNullable() {
+  @Override public boolean isNullable() {
     return isNullable;
   }
 
-  // implement RelDataType
-  public RelDataTypeFamily getFamily() {
-    return typeName.getFamily();
+  @Override public RelDataTypeFamily getFamily() {
+    SqlTypeFamily family = typeName.getFamily();
+    // If typename does not have family, treat the current type as the only member its family
+    return family != null ? family : this;
   }
 
-  // implement RelDataType
-  public RelDataTypePrecedenceList getPrecedenceList() {
+  @Override public RelDataTypePrecedenceList getPrecedenceList() {
     RelDataTypePrecedenceList list =
         SqlTypeExplicitPrecedenceList.getListForType(this);
     if (list != null) {
@@ -82,5 +83,3 @@ public abstract class AbstractSqlType
     return super.getPrecedenceList();
   }
 }
-
-// End AbstractSqlType.java

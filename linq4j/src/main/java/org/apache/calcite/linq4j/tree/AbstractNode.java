@@ -16,8 +16,12 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Type;
 import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Abstract implementation of {@link Node}.
@@ -27,8 +31,8 @@ public abstract class AbstractNode implements Node {
   public final Type type;
 
   AbstractNode(ExpressionType nodeType, Type type) {
-    this.type = type;
-    this.nodeType = nodeType;
+    this.type = requireNonNull(type, "type");
+    this.nodeType = requireNonNull(nodeType, "nodeType");
   }
 
   /**
@@ -52,7 +56,7 @@ public abstract class AbstractNode implements Node {
     return writer.toString();
   }
 
-  public void accept(ExpressionWriter writer) {
+  @Override public void accept(ExpressionWriter writer) {
     accept(writer, 0, 0);
   }
 
@@ -65,17 +69,17 @@ public abstract class AbstractNode implements Node {
         "un-parse not supported: " + getClass() + ":" + nodeType);
   }
 
-  public Node accept(Shuttle shuttle) {
+  @Override public Node accept(Shuttle shuttle) {
     throw new RuntimeException(
         "visit not supported: " + getClass() + ":" + nodeType);
   }
 
-  public Object evaluate(Evaluator evaluator) {
+  public @Nullable Object evaluate(Evaluator evaluator) {
     throw new RuntimeException(
         "evaluation not supported: " + getClass() + ":" + nodeType);
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -84,20 +88,11 @@ public abstract class AbstractNode implements Node {
     }
 
     AbstractNode that = (AbstractNode) o;
-
-    if (nodeType != that.nodeType) {
-      return false;
-    }
-    if (type != null ? !type.equals(that.type) : that.type != null) {
-      return false;
-    }
-
-    return true;
+    return nodeType == that.nodeType
+        && type.equals(that.type);
   }
 
   @Override public int hashCode() {
     return Objects.hash(nodeType, type);
   }
 }
-
-// End AbstractNode.java

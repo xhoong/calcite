@@ -20,6 +20,11 @@ import org.apache.calcite.sql.SqlDialect;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.dataflow.qual.Pure;
+
+import static java.util.Objects.requireNonNull;
+
 /**
  * String that represents a kocher SQL statement, expression, or fragment.
  *
@@ -31,8 +36,8 @@ import com.google.common.collect.ImmutableList;
  */
 public class SqlString {
   private final String sql;
-  private SqlDialect dialect;
-  private ImmutableList<Integer> dynamicParameters;
+  private final SqlDialect dialect;
+  private final @Nullable ImmutableList<Integer> dynamicParameters;
 
   /**
    * Creates a SqlString.
@@ -48,19 +53,18 @@ public class SqlString {
    * @param sql text
    * @param dynamicParameters indices
    */
-  public SqlString(SqlDialect dialect, String sql, ImmutableList<Integer> dynamicParameters) {
-    this.dialect = dialect;
-    this.sql = sql;
+  public SqlString(SqlDialect dialect, String sql,
+      @Nullable ImmutableList<Integer> dynamicParameters) {
+    this.dialect = requireNonNull(dialect, "dialect");
+    this.sql = requireNonNull(sql, "sql");
     this.dynamicParameters = dynamicParameters;
-    assert sql != null : "sql must be NOT null";
-    assert dialect != null : "dialect must be NOT null";
   }
 
   @Override public int hashCode() {
     return sql.hashCode();
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override public boolean equals(@Nullable Object obj) {
     return obj == this
         || obj instanceof SqlString
         && sql.equals(((SqlString) obj).sql);
@@ -92,7 +96,8 @@ public class SqlString {
    *
    * @return indices of dynamic parameters
    */
-  public ImmutableList<Integer> getDynamicParameters() {
+  @Pure
+  public @Nullable ImmutableList<Integer> getDynamicParameters() {
     return dynamicParameters;
   }
 
@@ -103,5 +108,3 @@ public class SqlString {
     return dialect;
   }
 }
-
-// End SqlString.java

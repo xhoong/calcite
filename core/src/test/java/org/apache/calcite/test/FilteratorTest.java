@@ -19,7 +19,7 @@ package org.apache.calcite.test;
 import org.apache.calcite.util.Filterator;
 import org.apache.calcite.util.Util;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,17 +28,19 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.hasToString;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit test for {@link Filterator}.
  */
-public class FilteratorTest {
+class FilteratorTest {
   //~ Methods ----------------------------------------------------------------
 
-  @Test public void testOne() {
+  @Test void testOne() {
     final List<String> tomDickHarry = Arrays.asList("tom", "dick", "harry");
     final Filterator<String> filterator =
         new Filterator<String>(tomDickHarry.iterator(), String.class);
@@ -46,28 +48,28 @@ public class FilteratorTest {
     // call hasNext twice
     assertTrue(filterator.hasNext());
     assertTrue(filterator.hasNext());
-    assertEquals("tom", filterator.next());
+    assertThat(filterator.next(), is("tom"));
 
     // call next without calling hasNext
-    assertEquals("dick", filterator.next());
+    assertThat(filterator.next(), is("dick"));
     assertTrue(filterator.hasNext());
-    assertEquals("harry", filterator.next());
+    assertThat(filterator.next(), is("harry"));
     assertFalse(filterator.hasNext());
     assertFalse(filterator.hasNext());
   }
 
-  @Test public void testNulls() {
+  @Test void testNulls() {
     // Nulls don't cause an error - but are not emitted, because they
     // fail the instanceof test.
     final List<String> tomDickHarry = Arrays.asList("paul", null, "ringo");
     final Filterator<String> filterator =
         new Filterator<String>(tomDickHarry.iterator(), String.class);
-    assertEquals("paul", filterator.next());
-    assertEquals("ringo", filterator.next());
+    assertThat(filterator.next(), is("paul"));
+    assertThat(filterator.next(), is("ringo"));
     assertFalse(filterator.hasNext());
   }
 
-  @Test public void testSubtypes() {
+  @Test void testSubtypes() {
     final ArrayList arrayList = new ArrayList();
     final HashSet hashSet = new HashSet();
     final LinkedList linkedList = new LinkedList();
@@ -85,21 +87,19 @@ public class FilteratorTest {
     assertTrue(filterator.hasNext());
 
     // skips null
-    assertTrue(arrayList == filterator.next());
+    assertThat(arrayList, is(filterator.next()));
 
     // skips the HashSet
-    assertTrue(linkedList == filterator.next());
+    assertThat(linkedList, is(filterator.next()));
     assertFalse(filterator.hasNext());
   }
 
-  @Test public void testBox() {
+  @Test void testBox() {
     final Number[] numbers = {1, 2, 3.14, 4, null, 6E23};
     List<Integer> result = new ArrayList<Integer>();
     for (int i : Util.filter(Arrays.asList(numbers), Integer.class)) {
       result.add(i);
     }
-    assertEquals("[1, 2, 4]", result.toString());
+    assertThat(result, hasToString("[1, 2, 4]"));
   }
 }
-
-// End FilteratorTest.java

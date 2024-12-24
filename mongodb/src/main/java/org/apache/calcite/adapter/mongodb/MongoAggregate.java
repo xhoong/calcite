@@ -29,6 +29,10 @@ import org.apache.calcite.sql.fun.SqlSumEmptyIsZeroAggFunction;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Util;
 
+import com.google.common.collect.ImmutableList;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
@@ -46,10 +50,10 @@ public class MongoAggregate
       RelTraitSet traitSet,
       RelNode input,
       ImmutableBitSet groupSet,
-      List<ImmutableBitSet> groupSets,
+      @Nullable List<ImmutableBitSet> groupSets,
       List<AggregateCall> aggCalls)
       throws InvalidRelException {
-    super(cluster, traitSet, input, groupSet, groupSets, aggCalls);
+    super(cluster, traitSet, ImmutableList.of(), input, groupSet, groupSets, aggCalls);
     assert getConvention() == MongoRel.CONVENTION;
     assert getConvention() == input.getConvention();
 
@@ -78,7 +82,7 @@ public class MongoAggregate
   }
 
   @Override public Aggregate copy(RelTraitSet traitSet, RelNode input,
-      ImmutableBitSet groupSet, List<ImmutableBitSet> groupSets,
+      ImmutableBitSet groupSet, @Nullable List<ImmutableBitSet> groupSets,
       List<AggregateCall> aggCalls) {
     try {
       return new MongoAggregate(getCluster(), traitSet, input,
@@ -90,7 +94,7 @@ public class MongoAggregate
     }
   }
 
-  public void implement(Implementor implementor) {
+  @Override public void implement(Implementor implementor) {
     implementor.visitChild(0, getInput());
     List<String> list = new ArrayList<>();
     final List<String> inNames =
@@ -154,10 +158,10 @@ public class MongoAggregate
     }
   }
 
-  private String toMongo(SqlAggFunction aggregation, List<String> inNames,
+  private static String toMongo(SqlAggFunction aggregation, List<String> inNames,
       List<Integer> args) {
     if (aggregation == SqlStdOperatorTable.COUNT) {
-      if (args.size() == 0) {
+      if (args.isEmpty()) {
         return "{$sum: 1}";
       } else {
         assert args.size() == 1;
@@ -188,5 +192,3 @@ public class MongoAggregate
     }
   }
 }
-
-// End MongoAggregate.java

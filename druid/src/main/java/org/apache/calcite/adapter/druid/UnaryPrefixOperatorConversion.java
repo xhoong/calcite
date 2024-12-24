@@ -23,10 +23,13 @@ import org.apache.calcite.sql.SqlOperator;
 
 import com.google.common.collect.Iterables;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
 
 /**
- * Unary prefix Operator conversion class used to convert expression like Unary NOT and Minus
+ * Unary prefix Operator conversion class; used to convert expressions like
+ * Unary NOT and Minus.
  */
 public class UnaryPrefixOperatorConversion implements DruidSqlOperatorConverter {
 
@@ -42,14 +45,14 @@ public class UnaryPrefixOperatorConversion implements DruidSqlOperatorConverter 
     return operator;
   }
 
-  @Override public String toDruidExpression(RexNode rexNode, RelDataType rowType,
-      DruidQuery druidQuery) {
+  @Override public @Nullable String toDruidExpression(RexNode rexNode,
+      RelDataType rowType, DruidQuery druidQuery) {
 
     final RexCall call = (RexCall) rexNode;
 
-    final List<String> druidExpressions = DruidExpressions.toDruidExpressions(
-        druidQuery, rowType,
-        call.getOperands());
+    final List<String> druidExpressions =
+        DruidExpressions.toDruidExpressions(druidQuery, rowType,
+            call.getOperands());
 
     if (druidExpressions == null) {
       return null;
@@ -59,5 +62,3 @@ public class UnaryPrefixOperatorConversion implements DruidSqlOperatorConverter 
         .format("(%s %s)", druidOperator, Iterables.getOnlyElement(druidExpressions));
   }
 }
-
-// End UnaryPrefixOperatorConversion.java

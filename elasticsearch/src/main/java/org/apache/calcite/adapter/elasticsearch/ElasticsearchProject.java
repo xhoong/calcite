@@ -28,9 +28,16 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.Pair;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implementation of {@link org.apache.calcite.rel.core.Project}
@@ -39,7 +46,7 @@ import java.util.stream.Collectors;
 public class ElasticsearchProject extends Project implements ElasticsearchRel {
   ElasticsearchProject(RelOptCluster cluster, RelTraitSet traitSet, RelNode input,
       List<? extends RexNode> projects, RelDataType rowType) {
-    super(cluster, traitSet, input, projects, rowType);
+    super(cluster, traitSet, ImmutableList.of(), input, projects, rowType, ImmutableSet.of());
     assert getConvention() == ElasticsearchRel.CONVENTION;
     assert getConvention() == input.getConvention();
   }
@@ -49,8 +56,10 @@ public class ElasticsearchProject extends Project implements ElasticsearchRel {
     return new ElasticsearchProject(getCluster(), traitSet, input, projects, relDataType);
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
-    return super.computeSelfCost(planner, mq).multiplyBy(0.1);
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
+      RelMetadataQuery mq) {
+    final RelOptCost cost = requireNonNull(super.computeSelfCost(planner, mq));
+    return cost.multiplyBy(0.1);
   }
 
   @Override public void implement(Implementor implementor) {
@@ -66,7 +75,7 @@ public class ElasticsearchProject extends Project implements ElasticsearchRel {
     final List<String> scriptFields = new ArrayList<>();
     // registers wherever "select *" is present
     boolean hasSelectStar = false;
-    for (Pair<RexNode, String> pair: getNamedProjects()) {
+    for (Pair<RexNode, String> pair : getNamedProjects()) {
       final String name = pair.right;
       final String expr = pair.left.accept(translator);
 
@@ -87,7 +96,7 @@ public class ElasticsearchProject extends Project implements ElasticsearchRel {
                 + ":{\"script\":"
                 // _source (ES2) vs params._source (ES5)
                 + "\"" + implementor.elasticsearchTable.scriptedFieldPrefix() + "."
-                + expr.replaceAll("\"", "") + "\"}");
+                + expr.replace("\"", "") + "\"}");
       }
     }
 
@@ -109,18 +118,18 @@ public class ElasticsearchProject extends Project implements ElasticsearchRel {
       query.append("\"_source\" : [").append(findString).append("]");
     } else {
       // if scripted fields are present, ES ignores _source attribute
-      for (String field: fields) {
+      for (String field : fields) {
         scriptFields.add(ElasticsearchRules.quote(field) + ":{\"script\": "
                 // _source (ES2) vs params._source (ES5)
                 + "\"" + implementor.elasticsearchTable.scriptedFieldPrefix() + "."
                 + field + "\"}");
       }
-      query.append("\"script_fields\": {" + String.join(", ", scriptFields) + "}");
+      query.append("\"script_fields\": {")
+          .append(String.join(", ", scriptFields))
+          .append("}");
     }
 
     implementor.list.removeIf(l -> l.startsWith("\"_source\""));
-    implementor.add("{" + query.toString() + "}");
+    implementor.add("{" + query + "}");
   }
 }
-
-// End ElasticsearchProject.java

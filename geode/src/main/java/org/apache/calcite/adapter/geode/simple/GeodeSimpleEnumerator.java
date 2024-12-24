@@ -22,6 +22,8 @@ import org.apache.geode.cache.client.ClientCache;
 import org.apache.geode.cache.query.QueryService;
 import org.apache.geode.cache.query.SelectResults;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Iterator;
 
 /**
@@ -31,13 +33,11 @@ import java.util.Iterator;
  */
 public abstract class GeodeSimpleEnumerator<E> implements Enumerator<E> {
 
-  private Iterator results;
+  private @Nullable Iterator results;
 
   private E current;
-  private ClientCache clientCache;
 
-  public GeodeSimpleEnumerator(ClientCache clientCache, String regionName) {
-    this.clientCache = clientCache;
+  protected GeodeSimpleEnumerator(ClientCache clientCache, String regionName) {
     QueryService queryService = clientCache.getQueryService();
     String oql = "select * from /" + regionName.trim();
     try {
@@ -53,7 +53,9 @@ public abstract class GeodeSimpleEnumerator<E> implements Enumerator<E> {
   }
 
   @Override public boolean moveNext() {
-
+    if (results == null) {
+      throw new IllegalStateException();
+    }
     if (results.hasNext()) {
       current = convert(results.next());
       return true;
@@ -72,5 +74,3 @@ public abstract class GeodeSimpleEnumerator<E> implements Enumerator<E> {
 
   public abstract E convert(Object obj);
 }
-
-// End GeodeSimpleEnumerator.java

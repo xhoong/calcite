@@ -16,23 +16,26 @@
  */
 package org.apache.calcite.adapter.kafka;
 
+import org.apache.calcite.config.CalciteConnectionProperty;
 import org.apache.calcite.test.CalciteAssert;
 
 import com.google.common.io.Resources;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Unit test cases for Kafka adapter.
  */
-public class KafkaAdapterTest {
-  protected static final URL MODEL = KafkaAdapterTest.class.getResource("/kafka.model.json");
+class KafkaAdapterTest {
+  protected static final URL MODEL =
+      requireNonNull(KafkaAdapterTest.class.getResource("/kafka.model.json"));
 
   private CalciteAssert.AssertThat assertModel(String model) {
     // ensure that Schema from this instance is being used
@@ -43,7 +46,7 @@ public class KafkaAdapterTest {
   }
 
   private CalciteAssert.AssertThat assertModel(URL url) {
-    Objects.requireNonNull(url, "url");
+    requireNonNull(url, "url");
     try {
       return assertModel(Resources.toString(url, StandardCharsets.UTF_8));
     } catch (IOException e) {
@@ -51,7 +54,7 @@ public class KafkaAdapterTest {
     }
   }
 
-  @Test public void testSelect() {
+  @Test void testSelect() {
     assertModel(MODEL)
         .query("SELECT STREAM * FROM KAFKA.MOCKTABLE")
         .limit(2)
@@ -71,8 +74,9 @@ public class KafkaAdapterTest {
             + "  BindableTableScan(table=[[KAFKA, MOCKTABLE, (STREAM)]])\n");
   }
 
-  @Test public void testFilterWithProject() {
+  @Test void testFilterWithProject() {
     assertModel(MODEL)
+        .with(CalciteConnectionProperty.TOPDOWN_OPT.camelName(), false)
         .query("SELECT STREAM MSG_PARTITION,MSG_OFFSET,MSG_VALUE_BYTES FROM KAFKA.MOCKTABLE"
             + " WHERE MSG_OFFSET>0")
         .limit(1)
@@ -80,12 +84,12 @@ public class KafkaAdapterTest {
         .returnsUnordered(
             "MSG_PARTITION=0; MSG_OFFSET=1; MSG_VALUE_BYTES=myvalue1")
         .explainContains(
-            "PLAN=EnumerableCalc(expr#0..4=[{inputs}], expr#5=[0], expr#6=[>($t2, $t5)], MSG_PARTITION=[$t0], MSG_OFFSET=[$t2], MSG_VALUE_BYTES=[$t4], $condition=[$t6])\n"
+            "PLAN=EnumerableCalc(expr#0..4=[{inputs}], expr#5=[0:BIGINT], expr#6=[>($t2, $t5)], MSG_PARTITION=[$t0], MSG_OFFSET=[$t2], MSG_VALUE_BYTES=[$t4], $condition=[$t6])\n"
                 + "  EnumerableInterpreter\n"
                 + "    BindableTableScan(table=[[KAFKA, MOCKTABLE, (STREAM)]])");
   }
 
-  @Test public void testCustRowConverter() {
+  @Test void testCustRowConverter() {
     assertModel(MODEL)
         .query("SELECT STREAM * FROM KAFKA.MOCKTABLE_CUST_ROW_CONVERTER")
         .limit(2)
@@ -103,11 +107,9 @@ public class KafkaAdapterTest {
   }
 
 
-  @Test public void testAsBatch() {
+  @Test void testAsBatch() {
     assertModel(MODEL)
         .query("SELECT * FROM KAFKA.MOCKTABLE")
         .failsAtValidation("Cannot convert stream 'MOCKTABLE' to relation");
   }
 }
-
-// End KafkaAdapterTest.java

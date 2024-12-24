@@ -52,7 +52,7 @@ public class DruidSchemaFactory implements SchemaFactory {
   /** Default Druid URL. */
   public static final String DEFAULT_URL = "http://localhost:8082";
 
-  public Schema create(SchemaPlus parentSchema, String name,
+  @Override public Schema create(SchemaPlus parentSchema, String name,
       Map<String, Object> operand) {
     final String url = operand.get("url") instanceof String
         ? (String) operand.get("url")
@@ -62,10 +62,9 @@ public class DruidSchemaFactory implements SchemaFactory {
         : url.replace(":8082", ":8081");
     // "tables" is a hidden attribute, copied in from the enclosing custom
     // schema
-    final boolean containsTables = operand.get("tables") instanceof List
-        && ((List) operand.get("tables")).size() > 0;
+    final boolean containsTables =
+        operand.get("tables") instanceof List
+            && !((List) operand.get("tables")).isEmpty();
     return new DruidSchema(url, coordinatorUrl, !containsTables);
   }
 }
-
-// End DruidSchemaFactory.java

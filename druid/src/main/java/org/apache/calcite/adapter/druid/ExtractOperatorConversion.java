@@ -28,15 +28,19 @@ import org.apache.calcite.sql.type.SqlTypeName;
 
 import com.google.common.collect.ImmutableMap;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.Map;
 import java.util.TimeZone;
 
 /**
- * Time extract operator conversion for expressions like EXTRACT(timeUnit FROM arg)
- * Unit can be SECOND, MINUTE, HOUR, DAY (day of month),
- * DOW (day of week), DOY (day of year), WEEK (week of week year),
- * MONTH (1 through 12), QUARTER (1 through 4), or YEAR
- **/
+ * Time extract operator conversion for expressions like
+ * {@code EXTRACT(timeUnit FROM arg)}.
+ *
+ * <p>Unit can be SECOND, MINUTE, HOUR, DAY (day of month), DOW (day of week),
+ * DOY (day of year), WEEK (week of week year), MONTH (1 through 12), QUARTER (1
+ * through 4), or YEAR.
+ */
 public class ExtractOperatorConversion implements DruidSqlOperatorConverter {
   private static final Map<TimeUnitRange, String> EXTRACT_UNIT_MAP =
       ImmutableMap.<TimeUnitRange, String>builder()
@@ -56,7 +60,7 @@ public class ExtractOperatorConversion implements DruidSqlOperatorConverter {
     return SqlStdOperatorTable.EXTRACT;
   }
 
-  @Override public String toDruidExpression(
+  @Override public @Nullable String toDruidExpression(
       RexNode rexNode, RelDataType rowType, DruidQuery query) {
 
     final RexCall call = (RexCall) rexNode;
@@ -81,5 +85,3 @@ public class ExtractOperatorConversion implements DruidSqlOperatorConverter {
     return DruidExpressions.applyTimeExtract(input, druidUnit, tz);
   }
 }
-
-// End ExtractOperatorConversion.java

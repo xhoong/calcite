@@ -26,10 +26,11 @@ import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.Optionality;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * <code>FIRST_VALUE</code> and <code>LAST_VALUE</code> aggregate functions
@@ -51,8 +52,7 @@ public class SqlFirstLastValueAggFunction extends SqlAggFunction {
         false,
         true,
         Optionality.FORBIDDEN);
-    Preconditions.checkArgument(kind == SqlKind.FIRST_VALUE
-        || kind == SqlKind.LAST_VALUE);
+    checkArgument(kind == SqlKind.FIRST_VALUE || kind == SqlKind.LAST_VALUE);
   }
 
   @Deprecated // to be removed before 2.0
@@ -63,14 +63,14 @@ public class SqlFirstLastValueAggFunction extends SqlAggFunction {
   //~ Methods ----------------------------------------------------------------
 
   @SuppressWarnings("deprecation")
-  public List<RelDataType> getParameterTypes(RelDataTypeFactory typeFactory) {
+  @Override public List<RelDataType> getParameterTypes(RelDataTypeFactory typeFactory) {
     return ImmutableList.of(
         typeFactory.createTypeWithNullability(
             typeFactory.createSqlType(SqlTypeName.ANY), true));
   }
 
   @SuppressWarnings("deprecation")
-  public RelDataType getReturnType(RelDataTypeFactory typeFactory) {
+  @Override public RelDataType getReturnType(RelDataTypeFactory typeFactory) {
     return typeFactory.createTypeWithNullability(
         typeFactory.createSqlType(SqlTypeName.ANY), true);
   }
@@ -79,5 +79,3 @@ public class SqlFirstLastValueAggFunction extends SqlAggFunction {
     return true;
   }
 }
-
-// End SqlFirstLastValueAggFunction.java

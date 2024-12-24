@@ -28,8 +28,12 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexNode;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.ArrayList;
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implementation of {@link org.apache.calcite.rel.core.Sort}
@@ -44,9 +48,9 @@ public class CassandraSort extends Sort implements CassandraRel {
     assert getConvention() == child.getConvention();
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
-    RelOptCost cost = super.computeSelfCost(planner, mq);
+    RelOptCost cost = requireNonNull(super.computeSelfCost(planner, mq));
     if (!collation.getFieldCollations().isEmpty()) {
       return cost.multiplyBy(0.05);
     } else {
@@ -55,11 +59,11 @@ public class CassandraSort extends Sort implements CassandraRel {
   }
 
   @Override public Sort copy(RelTraitSet traitSet, RelNode input,
-      RelCollation newCollation, RexNode offset, RexNode fetch) {
+      RelCollation newCollation, @Nullable RexNode offset, @Nullable RexNode fetch) {
     return new CassandraSort(getCluster(), traitSet, input, collation);
   }
 
-  public void implement(Implementor implementor) {
+  @Override public void implement(Implementor implementor) {
     implementor.visitChild(0, getInput());
 
     List<RelFieldCollation> sortCollations = collation.getFieldCollations();
@@ -85,5 +89,3 @@ public class CassandraSort extends Sort implements CassandraRel {
     }
   }
 }
-
-// End CassandraSort.java

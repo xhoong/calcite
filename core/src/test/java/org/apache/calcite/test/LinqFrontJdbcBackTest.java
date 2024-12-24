@@ -16,6 +16,7 @@
  */
 package org.apache.calcite.test;
 
+import org.apache.calcite.DataContexts;
 import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.linq4j.tree.Expressions;
 import org.apache.calcite.linq4j.tree.ParameterExpression;
@@ -23,17 +24,18 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Schemas;
 import org.apache.calcite.util.Util;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.SQLException;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * Tests for a linq4j front-end and JDBC back-end.
  */
-public class LinqFrontJdbcBackTest {
-  @Test public void testTableWhere() throws SQLException,
-      ClassNotFoundException {
+class LinqFrontJdbcBackTest {
+  @Test void testTableWhere() throws SQLException {
     final Connection connection =
         CalciteAssert.that(CalciteAssert.Config.JDBC_FOODMART).connect();
     final CalciteConnection calciteConnection =
@@ -42,8 +44,8 @@ public class LinqFrontJdbcBackTest {
     ParameterExpression c =
         Expressions.parameter(JdbcTest.Customer.class, "c");
     String s =
-        Schemas.queryable(Schemas.createDataContext(connection, rootSchema),
-            rootSchema.getSubSchema("foodmart"),
+        Schemas.queryable(DataContexts.of(calciteConnection, rootSchema),
+            requireNonNull(rootSchema.getSubSchema("foodmart")),
             JdbcTest.Customer.class, "customer")
             .where(
                 Expressions.lambda(
@@ -56,5 +58,3 @@ public class LinqFrontJdbcBackTest {
     Util.discard(s);
   }
 }
-
-// End LinqFrontJdbcBackTest.java

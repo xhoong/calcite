@@ -19,7 +19,11 @@ package org.apache.calcite.sql.validate;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.util.Util;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static java.util.Objects.hash;
 
 /**
  * Fully-qualified identifier.
@@ -33,23 +37,46 @@ import java.util.List;
  */
 public class SqlQualified {
   public final int prefixLength;
-  public final SqlValidatorNamespace namespace;
+  public final @Nullable SqlValidatorNamespace namespace;
   public final SqlIdentifier identifier;
 
-  private SqlQualified(SqlValidatorScope scope, int prefixLength,
-      SqlValidatorNamespace namespace, SqlIdentifier identifier) {
+  private SqlQualified(@Nullable SqlValidatorScope scope, int prefixLength,
+      @Nullable SqlValidatorNamespace namespace, SqlIdentifier identifier) {
     Util.discard(scope);
     this.prefixLength = prefixLength;
     this.namespace = namespace;
     this.identifier = identifier;
   }
 
-  @Override public String toString() {
-    return "{id: " + identifier.toString() + ", prefix: " + prefixLength + "}";
+  @Override public int hashCode() {
+    return hash(identifier.names, prefixLength);
   }
 
-  public static SqlQualified create(SqlValidatorScope scope, int prefixLength,
-      SqlValidatorNamespace namespace, SqlIdentifier identifier) {
+  @Override public boolean equals(@Nullable Object obj) {
+    // Two SqlQualified instances are equivalent if they are of the same
+    // identifier and same prefix length. Thus, in
+    //
+    //  SELECT e.address, e.address.zipcode
+    //  FROM employees AS e
+    //
+    // "e.address" is {identifier=[e, address], prefixLength=1}
+    // and is distinct from "e.address.zipcode".
+    //
+    // We assume that all SqlQualified instances being compared are resolved
+    // from the same SqlValidatorScope, and therefore we do not need to look
+    // at namespace to distinguish them.
+    return this == obj
+        || obj instanceof SqlQualified
+        && prefixLength == ((SqlQualified) obj).prefixLength
+        && identifier.names.equals(((SqlQualified) obj).identifier.names);
+  }
+
+  @Override public String toString() {
+    return "{id: " + identifier + ", prefix: " + prefixLength + "}";
+  }
+
+  public static SqlQualified create(@Nullable SqlValidatorScope scope, int prefixLength,
+      @Nullable SqlValidatorNamespace namespace, SqlIdentifier identifier) {
     return new SqlQualified(scope, prefixLength, namespace, identifier);
   }
 
@@ -61,5 +88,3 @@ public class SqlQualified {
     return Util.skip(identifier.names, prefixLength);
   }
 }
-
-// End SqlQualified.java

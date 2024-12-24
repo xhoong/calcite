@@ -18,10 +18,12 @@ package org.apache.calcite.adapter.druid;
 
 import org.apache.calcite.sql.type.SqlTypeName;
 
+import static java.util.Objects.requireNonNull;
+
 /** Druid type. */
 public enum DruidType {
   LONG(SqlTypeName.BIGINT),
-  FLOAT(SqlTypeName.FLOAT),
+  FLOAT(SqlTypeName.REAL),
   DOUBLE(SqlTypeName.DOUBLE),
   STRING(SqlTypeName.VARCHAR),
   COMPLEX(SqlTypeName.OTHER),
@@ -35,18 +37,15 @@ public enum DruidType {
     this.sqlType = sqlType;
   }
 
-  /**
-   * Returns true if and only if this enum should be used inside of a {@link ComplexMetric}
-   * */
+  /** Returns whether this type should be used inside a
+   * {@link ComplexMetric}. */
   public boolean isComplex() {
     return this == THETA_SKETCH || this == HYPER_UNIQUE || this == COMPLEX;
   }
 
-  /**
-   * Returns a DruidType matching the given String type from a Druid metric
-   * */
-  protected static DruidType getTypeFromMetric(String type) {
-    assert type != null;
+  /** Returns a DruidType matching the given String type from a Druid metric. */
+  static DruidType getTypeFromMetric(String type) {
+    requireNonNull(type, "type");
     if (type.equals("hyperUnique")) {
       return HYPER_UNIQUE;
     } else if (type.equals("thetaSketch")) {
@@ -61,11 +60,9 @@ public enum DruidType {
     throw new AssertionError("Unknown type: " + type);
   }
 
-  /**
-   * Returns a DruidType matching the String from a meta data query
-   * */
-  protected static DruidType getTypeFromMetaData(String type) {
-    assert type != null;
+  /** Returns a DruidType matching the String from a metadata query. */
+  static DruidType getTypeFromMetaData(String type) {
+    requireNonNull(type, "type");
     switch (type) {
     case "LONG":
       return LONG;
@@ -81,5 +78,3 @@ public enum DruidType {
     }
   }
 }
-
-// End DruidType.java

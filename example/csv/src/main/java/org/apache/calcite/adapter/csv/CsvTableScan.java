@@ -37,12 +37,18 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
 
+import com.google.common.collect.ImmutableList;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Relational expression representing a scan of a CSV file.
  *
- * <p>Like any table scan, it serves as a leaf node of a query tree.</p>
+ * <p>Like any table scan, it serves as a leaf node of a query tree.
  */
 public class CsvTableScan extends TableScan implements EnumerableRel {
   final CsvTranslatableTable csvTable;
@@ -50,11 +56,9 @@ public class CsvTableScan extends TableScan implements EnumerableRel {
 
   protected CsvTableScan(RelOptCluster cluster, RelOptTable table,
       CsvTranslatableTable csvTable, int[] fields) {
-    super(cluster, cluster.traitSetOf(EnumerableConvention.INSTANCE), table);
-    this.csvTable = csvTable;
+    super(cluster, cluster.traitSetOf(EnumerableConvention.INSTANCE), ImmutableList.of(), table);
+    this.csvTable = requireNonNull(csvTable, "csvTable");
     this.fields = fields;
-
-    assert csvTable != null;
   }
 
   @Override public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
@@ -78,10 +82,10 @@ public class CsvTableScan extends TableScan implements EnumerableRel {
   }
 
   @Override public void register(RelOptPlanner planner) {
-    planner.addRule(CsvProjectTableScanRule.INSTANCE);
+    planner.addRule(CsvRules.PROJECT_SCAN);
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
     // Multiply the cost by a factor that makes a scan more attractive if it
     // has significantly fewer fields than the original scan.
@@ -90,32 +94,25 @@ public class CsvTableScan extends TableScan implements EnumerableRel {
     //
     // For example, if table has 3 fields, project has 1 field,
     // then factor = (1 + 2) / (3 + 2) = 0.6
-    return super.computeSelfCost(planner, mq)
+    final RelOptCost cost = requireNonNull(super.computeSelfCost(planner, mq));
+    return cost
         .multiplyBy(((double) fields.length + 2D)
             / ((double) table.getRowType().getFieldCount() + 2D));
   }
 
-  public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
+  @Override public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
     PhysType physType =
         PhysTypeImpl.of(
             implementor.getTypeFactory(),
             getRowType(),
             pref.preferArray());
 
-    if (table instanceof JsonTable) {
-      return implementor.result(
-          physType,
-          Blocks.toBlock(
-              Expressions.call(table.getExpression(JsonTable.class),
-                  "enumerable")));
-    }
     return implementor.result(
         physType,
         Blocks.toBlock(
-            Expressions.call(table.getExpression(CsvTranslatableTable.class),
+            Expressions.call(
+                requireNonNull(table.getExpression(CsvTranslatableTable.class)),
                 "project", implementor.getRootExpression(),
                 Expressions.constant(fields))));
   }
 }
-
-// End CsvTableScan.java

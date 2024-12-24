@@ -18,7 +18,7 @@ package org.apache.calcite.sql;
 
 import org.apache.calcite.sql.parser.SqlParserPos;
 
-import java.util.Objects;
+import static java.util.Objects.requireNonNull;
 
 /** Base class for CREATE, DROP and other DDL statements. */
 public abstract class SqlDdl extends SqlCall {
@@ -29,14 +29,12 @@ public abstract class SqlDdl extends SqlCall {
   private final SqlOperator operator;
 
   /** Creates a SqlDdl. */
-  public SqlDdl(SqlOperator operator, SqlParserPos pos) {
+  protected SqlDdl(SqlOperator operator, SqlParserPos pos) {
     super(pos);
-    this.operator = Objects.requireNonNull(operator);
+    this.operator = requireNonNull(operator, "operator");
   }
 
-  public SqlOperator getOperator() {
+  @Override public SqlOperator getOperator() {
     return operator;
   }
 }
-
-// End SqlDdl.java

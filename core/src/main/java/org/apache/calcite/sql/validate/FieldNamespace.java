@@ -17,7 +17,12 @@
 package org.apache.calcite.sql.validate;
 
 import org.apache.calcite.rel.type.RelDataType;
+import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.sql.SqlNode;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implementation of {@link SqlValidatorNamespace} for a field of a record.
@@ -39,26 +44,25 @@ class FieldNamespace extends AbstractNamespace {
       SqlValidatorImpl validator,
       RelDataType dataType) {
     super(validator, null);
-    assert dataType != null;
-    this.rowType = dataType;
+    this.rowType = requireNonNull(dataType, "dataType");
   }
 
   //~ Methods ----------------------------------------------------------------
 
-  public void setType(RelDataType type) {
+  @Override public void setType(RelDataType type) {
     throw new UnsupportedOperationException();
   }
 
-  protected RelDataType validateImpl(RelDataType targetRowType) {
-    return rowType;
+  @Override protected RelDataType validateImpl(RelDataType targetRowType) {
+    return requireNonNull(rowType, "rowType");
   }
 
-  public SqlNode getNode() {
+  @Override public @Nullable SqlNode getNode() {
     return null;
   }
 
-  public SqlValidatorNamespace lookupChild(String name) {
-    if (rowType.isStruct()) {
+  @Override public @Nullable SqlValidatorNamespace lookupChild(String name) {
+    if (requireNonNull(rowType, "rowType").isStruct()) {
       return validator.lookupFieldNamespace(
           rowType,
           name);
@@ -66,9 +70,7 @@ class FieldNamespace extends AbstractNamespace {
     return null;
   }
 
-  public boolean fieldExists(String name) {
-    return false;
+  @Override public @Nullable RelDataTypeField field(String name) {
+    return null;
   }
 }
-
-// End FieldNamespace.java

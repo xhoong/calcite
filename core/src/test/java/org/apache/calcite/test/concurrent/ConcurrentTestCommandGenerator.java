@@ -21,6 +21,8 @@ import org.apache.calcite.util.Util;
 
 import com.google.common.collect.ImmutableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -39,6 +41,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * ConcurrentTestCommandGenerator creates instances of
  * {@link ConcurrentTestCommand} that perform specific actions in a specific
@@ -46,28 +50,25 @@ import java.util.regex.Pattern;
  * ({@link ConcurrentTestCommandExecutor}).
  *
  * <p>Typical actions include preparing a SQL statement for execution, executing
- * the statement and verifying its result set, and closing the statement.</p>
+ * the statement and verifying its result set, and closing the statement.
  *
  * <p>A single ConcurrentTestCommandGenerator creates commands for
  * multiple threads. Each thread is represented by an integer "thread ID".
  * Thread IDs may take on any positive integer value and may be a sparse set
- * (e.g. 1, 2, 5).</p>
+ * (e.g. 1, 2, 5).
  *
  * <p>When each command is created, it is associated with a thread and given an
  * execution order. Execution order values are positive integers, must be unique
- * within a thread, and may be a sparse set.</p>
+ * within a thread, and may be a sparse set.
  *
- * <p>There are no restrictions on the order of command creation.</p>
+ * <p>There are no restrictions on the order of command creation.
  */
 public class ConcurrentTestCommandGenerator {
-  //~ Static fields/initializers ---------------------------------------------
-
   private static final char APOS = '\'';
   private static final char COMMA = ',';
   private static final char LEFT_BRACKET = '{';
   private static final char RIGHT_BRACKET = '}';
 
-  //~ Instance fields --------------------------------------------------------
   protected boolean debug = false;
   protected PrintStream debugStream = System.out;
   protected String jdbcURL;
@@ -75,25 +76,25 @@ public class ConcurrentTestCommandGenerator {
 
 
   /**
-   * Maps Integer thread IDs to a TreeMap. The TreeMap vaules map an Integer
+   * Maps Integer thread IDs to a TreeMap. The TreeMap values map an Integer
    * execution order to a {@link ConcurrentTestCommand}.
    */
-  private TreeMap<Integer, TreeMap<Integer, ConcurrentTestCommand>> threadMap;
+  private final Map<Integer, TreeMap<Integer, ConcurrentTestCommand>> threadMap;
 
   /**
    * Maps Integer thread IDs to thread names.
    */
-  private TreeMap<Integer, String> threadNameMap;
+  private final Map<Integer, String> threadNameMap;
 
   /**
-   * Describes a thread that failed
+   * Describes a thread that failed.
    */
-  public static class FailedThread {
+  static class FailedThread {
     public final String name;
     public final String location;
     public final Throwable failure;
 
-    public FailedThread(String name, String location, Throwable failure) {
+    FailedThread(String name, String location, Throwable failure) {
       this.name = name;
       this.location = location;
       this.failure = failure;
@@ -105,10 +106,7 @@ public class ConcurrentTestCommandGenerator {
    * execution has ended. Only failed threads appear in the list, so after a
    * successful test the list is empty.
    */
-  private List<FailedThread> failedThreads;
-
-
-  //~ Constructors -----------------------------------------------------------
+  private final List<FailedThread> failedThreads;
 
   /**
    * Constructs a new ConcurrentTestCommandGenerator.
@@ -177,7 +175,7 @@ public class ConcurrentTestCommandGenerator {
       int threadId,
       int order,
       String sql) {
-    assert sql != null;
+    requireNonNull(sql, "sql");
 
     ConcurrentTestCommand command = new ExplainCommand(sql);
 
@@ -199,7 +197,7 @@ public class ConcurrentTestCommandGenerator {
       int threadId,
       int order,
       String sql) {
-    assert sql != null;
+    requireNonNull(sql, "sql");
 
     ConcurrentTestCommand command = new PrepareCommand(sql);
 
@@ -213,7 +211,7 @@ public class ConcurrentTestCommandGenerator {
    *
    * <p><b>Expected data format:</b> <code>{ 'row1, col1 value', 'row1, col2
    * value', ... }, { 'row2, col1 value', 'row2, col2 value', ... },
-   * ...</code></p>
+   * ...</code>
    *
    * <ul>
    * <li>For string data: enclose value in apostrophes, use doubled apostrophe
@@ -440,8 +438,7 @@ public class ConcurrentTestCommandGenerator {
     return threads;
   }
 
-  protected void postExecute(ConcurrentTestCommandExecutor[] threads)
-      throws Exception {
+  protected void postExecute(ConcurrentTestCommandExecutor[] threads) {
     // check for failures
     if (requiresCustomErrorHandling()) {
       for (ConcurrentTestCommandExecutor executor : threads) {
@@ -472,9 +469,7 @@ public class ConcurrentTestCommandGenerator {
     return !failedThreads.isEmpty();
   }
 
-  /**
-   * @return the list of failed threads (unmodifiable)
-   */
+  /** Returns the list of failed threads (unmodifiable). */
   public List<FailedThread> getFailedThreads() {
     return ImmutableList.copyOf(failedThreads);
   }
@@ -633,14 +628,12 @@ public class ConcurrentTestCommandGenerator {
 
   //~ Inner Classes ----------------------------------------------------------
 
-  /**
-   * abstract base to handle SQLExceptions
-   */
+  /** Abstract base to handle {@link SQLException}s. */
   protected abstract static class AbstractCommand
       implements ConcurrentTestCommand {
     private boolean shouldFail = false;
-    private String failComment = null; // describes an expected error
-    private Pattern failPattern = null; // an expected error message
+    private @Nullable String failComment = null; // describes an expected error
+    private @Nullable Pattern failPattern = null; // an expected error message
     private boolean failureExpected = false; // failure expected, no pattern
 
     // implement ConcurrentTestCommand
@@ -725,7 +718,6 @@ public class ConcurrentTestCommandGenerator {
    */
   static class AutoSynchronizationCommand extends SynchronizationCommand {
     private AutoSynchronizationCommand() {
-      super();
     }
   }
 
@@ -734,7 +726,7 @@ public class ConcurrentTestCommandGenerator {
    * the test before continuing.
    */
   private static class SleepCommand extends AbstractCommand {
-    private long millis;
+    private final long millis;
 
     private SleepCommand(long millis) {
       this.millis = millis;
@@ -752,7 +744,7 @@ public class ConcurrentTestCommandGenerator {
    * {@link #execute(ConcurrentTestCommandExecutor)}.
    */
   private static class ExplainCommand extends AbstractCommand {
-    private String sql;
+    private final String sql;
 
     private ExplainCommand(String sql) {
       this.sql = sql;
@@ -788,7 +780,7 @@ public class ConcurrentTestCommandGenerator {
    * statement in the ConcurrentTestCommandExecutor.
    */
   private static class PrepareCommand extends AbstractCommand {
-    private String sql;
+    private final String sql;
 
     private PrepareCommand(String sql) {
       this.sql = sql;
@@ -822,7 +814,7 @@ public class ConcurrentTestCommandGenerator {
 
   /** Command that executes statements with a given timeout. */
   private abstract static class CommandWithTimeout extends AbstractCommand {
-    private int timeout;
+    private final int timeout;
 
     private CommandWithTimeout(int timeout) {
       this.timeout = timeout;
@@ -1059,7 +1051,7 @@ public class ConcurrentTestCommandGenerator {
 
       int colNum = 1;
       while (expectedIter.hasNext() && resultIter.hasNext()) {
-        Object expectedValue = expectedIter.next();
+        @Nullable Object expectedValue = expectedIter.next();
         Object resultValue = resultIter.next();
 
         if ((expectedValue == null)
@@ -1123,8 +1115,8 @@ public class ConcurrentTestCommandGenerator {
     }
 
     private void test(
-        Object expected,
-        Object got,
+        @Nullable Object expected,
+        @Nullable Object got,
         int rowNum,
         int colNum) {
       if ((expected == null) && (got == null)) {
@@ -1281,8 +1273,8 @@ public class ConcurrentTestCommandGenerator {
         expectedOut.append(" |");
         resultOut.append(" |");
 
-        fullMessage.append('\n').append(expectedOut.toString()).append(
-            '\n').append(resultOut.toString());
+        fullMessage.append('\n').append(expectedOut)
+            .append('\n').append(resultOut);
 
         rowNum++;
       }
@@ -1296,7 +1288,7 @@ public class ConcurrentTestCommandGenerator {
    * {@link Statement#executeUpdate(String)}.
    */
   private static class InsertCommand extends CommandWithTimeout {
-    private String sql;
+    private final String sql;
 
     private InsertCommand(
         int timeout,
@@ -1344,7 +1336,7 @@ public class ConcurrentTestCommandGenerator {
    * {@link #doExecute(ConcurrentTestCommandExecutor)}.
    */
   private static class DdlCommand extends AbstractCommand {
-    private String sql;
+    private final String sql;
 
     private DdlCommand(String sql) {
       this.sql = sql;
@@ -1362,5 +1354,3 @@ public class ConcurrentTestCommandGenerator {
     }
   }
 }
-
-// End ConcurrentTestCommandGenerator.java

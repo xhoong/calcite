@@ -16,7 +16,6 @@
  */
 package org.apache.calcite.adapter.cassandra;
 
-import org.apache.calcite.adapter.java.JavaTypeFactory;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.plan.RelOptPlanner;
@@ -28,9 +27,16 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.Pair;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Implementation of {@link org.apache.calcite.rel.core.Project}
@@ -39,7 +45,7 @@ import java.util.Map;
 public class CassandraProject extends Project implements CassandraRel {
   public CassandraProject(RelOptCluster cluster, RelTraitSet traitSet,
       RelNode input, List<? extends RexNode> projects, RelDataType rowType) {
-    super(cluster, traitSet, input, projects, rowType);
+    super(cluster, traitSet, ImmutableList.of(), input, projects, rowType, ImmutableSet.of());
     assert getConvention() == CassandraRel.CONVENTION;
     assert getConvention() == input.getConvention();
   }
@@ -50,25 +56,24 @@ public class CassandraProject extends Project implements CassandraRel {
         rowType);
   }
 
-  @Override public RelOptCost computeSelfCost(RelOptPlanner planner,
+  @Override public @Nullable RelOptCost computeSelfCost(RelOptPlanner planner,
       RelMetadataQuery mq) {
-    return super.computeSelfCost(planner, mq).multiplyBy(0.1);
+    final RelOptCost cost = super.computeSelfCost(planner, mq);
+    return requireNonNull(cost, "cost").multiplyBy(0.1);
   }
 
-  public void implement(Implementor implementor) {
+  @Override public void implement(Implementor implementor) {
     implementor.visitChild(0, getInput());
     final CassandraRules.RexToCassandraTranslator translator =
         new CassandraRules.RexToCassandraTranslator(
-            (JavaTypeFactory) getCluster().getTypeFactory(),
             CassandraRules.cassandraFieldNames(getInput().getRowType()));
     final Map<String, String> fields = new LinkedHashMap<>();
     for (Pair<RexNode, String> pair : getNamedProjects()) {
+      final RexNode node = pair.left;
       final String name = pair.right;
-      final String originalName = pair.left.accept(translator);
+      final String originalName = node.accept(translator);
       fields.put(originalName, name);
     }
     implementor.add(fields, null);
   }
 }
-
-// End CassandraProject.java

@@ -16,13 +16,14 @@
  */
 package org.apache.calcite.adapter.csv;
 
-import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
-import org.apache.calcite.rel.core.RelFactories;
+import org.apache.calcite.plan.RelRule;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexNode;
-import org.apache.calcite.tools.RelBuilderFactory;
+
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.immutables.value.Value;
 
 import java.util.List;
 
@@ -30,28 +31,22 @@ import java.util.List;
  * Planner rule that projects from a {@link CsvTableScan} scan just the columns
  * needed to satisfy a projection. If the projection's expressions are trivial,
  * the projection is removed.
+ *
+ * @see CsvRules#PROJECT_SCAN
  */
-public class CsvProjectTableScanRule extends RelOptRule {
-  public static final CsvProjectTableScanRule INSTANCE =
-      new CsvProjectTableScanRule(RelFactories.LOGICAL_BUILDER);
+@Value.Enclosing
+public class CsvProjectTableScanRule
+    extends RelRule<CsvProjectTableScanRule.Config> {
 
-  /**
-   * Creates a CsvProjectTableScanRule.
-   *
-   * @param relBuilderFactory Builder for relational expressions
-   */
-  public CsvProjectTableScanRule(RelBuilderFactory relBuilderFactory) {
-    super(
-        operand(LogicalProject.class,
-            operand(CsvTableScan.class, none())),
-        relBuilderFactory,
-        "CsvProjectTableScanRule");
+  /** Creates a CsvProjectTableScanRule. */
+  protected CsvProjectTableScanRule(Config config) {
+    super(config);
   }
 
   @Override public void onMatch(RelOptRuleCall call) {
     final LogicalProject project = call.rel(0);
     final CsvTableScan scan = call.rel(1);
-    int[] fields = getProjectFields(project.getProjects());
+    @Nullable int[] fields = getProjectFields(project.getProjects());
     if (fields == null) {
       // Project contains expressions more complex than just field references.
       return;
@@ -64,7 +59,7 @@ public class CsvProjectTableScanRule extends RelOptRule {
             fields));
   }
 
-  private int[] getProjectFields(List<RexNode> exps) {
+  private static int @Nullable [] getProjectFields(List<RexNode> exps) {
     final int[] fields = new int[exps.size()];
     for (int i = 0; i < exps.size(); i++) {
       final RexNode exp = exps.get(i);
@@ -76,6 +71,18 @@ public class CsvProjectTableScanRule extends RelOptRule {
     }
     return fields;
   }
-}
 
-// End CsvProjectTableScanRule.java
+  /** Rule configuration. */
+  @Value.Immutable(singleton = false)
+  public interface Config extends RelRule.Config {
+    Config DEFAULT = ImmutableCsvProjectTableScanRule.Config.builder()
+        .withOperandSupplier(b0 ->
+            b0.operand(LogicalProject.class).oneInput(b1 ->
+                b1.operand(CsvTableScan.class).noInputs()))
+        .build();
+
+    @Override default CsvProjectTableScanRule toRule() {
+      return new CsvProjectTableScanRule(this);
+    }
+  }
+}

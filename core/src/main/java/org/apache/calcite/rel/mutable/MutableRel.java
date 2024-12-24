@@ -24,8 +24,11 @@ import org.apache.calcite.rel.type.RelDataType;
 import com.google.common.base.Equivalence;
 import com.google.common.collect.Lists;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /** Mutable equivalent of {@link RelNode}.
  *
@@ -37,7 +40,7 @@ import java.util.Objects;
  * than their {@code RelNode} counterparts.
  * But, you don't need to copy a {@code MutableRel} in order to change it.
  * For this reason, you should use {@code MutableRel} for short-lived
- * operations, and transcribe back to {@code RelNode} when you are done.</p>
+ * operations, and transcribe back to {@code RelNode} when you are done.
  */
 public abstract class MutableRel {
 
@@ -64,17 +67,17 @@ public abstract class MutableRel {
   public final RelDataType rowType;
   protected final MutableRelType type;
 
-  protected MutableRel parent;
+  protected @Nullable MutableRel parent;
   protected int ordinalInParent;
 
   protected MutableRel(RelOptCluster cluster,
       RelDataType rowType, MutableRelType type) {
-    this.cluster = Objects.requireNonNull(cluster);
-    this.rowType = Objects.requireNonNull(rowType);
-    this.type = Objects.requireNonNull(type);
+    this.cluster = requireNonNull(cluster, "cluster");
+    this.rowType = requireNonNull(rowType, "rowType");
+    this.type = requireNonNull(type, "type");
   }
 
-  public MutableRel getParent() {
+  public @Nullable MutableRel getParent() {
     return parent;
   }
 
@@ -82,7 +85,7 @@ public abstract class MutableRel {
 
   public abstract List<MutableRel> getInputs();
 
-  public abstract MutableRel clone();
+  @Override public abstract MutableRel clone();
 
   public abstract void childrenAccept(MutableRelVisitor visitor);
 
@@ -94,7 +97,7 @@ public abstract class MutableRel {
    *
    * @return The parent
    */
-  public MutableRel replaceInParent(MutableRel child) {
+  public @Nullable MutableRel replaceInParent(MutableRel child) {
     final MutableRel parent = this.parent;
     if (this != child) {
       if (parent != null) {
@@ -120,11 +123,11 @@ public abstract class MutableRel {
    * Implementation of MutableVisitor that dumps the details
    * of a MutableRel tree.
    */
-  private class MutableRelDumper extends MutableRelVisitor {
+  private static class MutableRelDumper extends MutableRelVisitor {
     private final StringBuilder buf = new StringBuilder();
     private int level;
 
-    @Override public void visit(MutableRel node) {
+    @Override public void visit(@Nullable MutableRel node) {
       Spaces.append(buf, level * 2);
       if (node == null) {
         buf.append("null");
@@ -144,5 +147,3 @@ public abstract class MutableRel {
   }
 
 }
-
-// End MutableRel.java

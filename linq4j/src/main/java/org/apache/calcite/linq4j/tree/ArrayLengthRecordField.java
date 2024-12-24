@@ -16,49 +16,52 @@
  */
 package org.apache.calcite.linq4j.tree;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.lang.reflect.Array;
 import java.lang.reflect.Type;
 import java.util.Objects;
 
+import static java.util.Objects.requireNonNull;
+
 /**
- * Represents a length field of a RecordType
+ * Length field of a RecordType.
  */
+@SuppressWarnings("rawtypes")
 public class ArrayLengthRecordField implements Types.RecordField {
   private final String fieldName;
   private final Class clazz;
 
   public ArrayLengthRecordField(String fieldName, Class clazz) {
-    assert fieldName != null : "fieldName should not be null";
-    assert clazz != null : "clazz should not be null";
-    this.fieldName = fieldName;
-    this.clazz = clazz;
+    this.fieldName = requireNonNull(fieldName, "fieldName");
+    this.clazz = requireNonNull(clazz, "clazz");
   }
 
-  public boolean nullable() {
+  @Override public boolean nullable() {
     return false;
   }
 
-  public String getName() {
+  @Override public String getName() {
     return fieldName;
   }
 
-  public Type getType() {
+  @Override public Type getType() {
     return int.class;
   }
 
-  public int getModifiers() {
+  @Override public int getModifiers() {
     return 0;
   }
 
-  public Object get(Object o) throws IllegalAccessException {
-    return Array.getLength(o);
+  @Override public Object get(@Nullable Object o) {
+    return Array.getLength(requireNonNull(o, "o"));
   }
 
-  public Type getDeclaringClass() {
+  @Override public Type getDeclaringClass() {
     return clazz;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override public boolean equals(@Nullable Object o) {
     if (this == o) {
       return true;
     }
@@ -67,20 +70,11 @@ public class ArrayLengthRecordField implements Types.RecordField {
     }
 
     ArrayLengthRecordField that = (ArrayLengthRecordField) o;
-
-    if (!clazz.equals(that.clazz)) {
-      return false;
-    }
-    if (!fieldName.equals(that.fieldName)) {
-      return false;
-    }
-
-    return true;
+    return clazz.equals(that.clazz)
+        && fieldName.equals(that.fieldName);
   }
 
   @Override public int hashCode() {
     return Objects.hash(fieldName, clazz);
   }
 }
-
-// End ArrayLengthRecordField.java

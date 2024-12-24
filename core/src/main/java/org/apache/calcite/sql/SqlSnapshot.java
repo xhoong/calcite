@@ -21,8 +21,11 @@ import org.apache.calcite.sql.util.SqlBasicVisitor;
 import org.apache.calcite.sql.util.SqlVisitor;
 import org.apache.calcite.util.ImmutableNullableList;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
+
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * Parse tree node for "{@code FOR SYSTEM_TIME AS OF}" temporal clause.
@@ -39,8 +42,8 @@ public class SqlSnapshot extends SqlCall {
   /** Creates a SqlSnapshot. */
   public SqlSnapshot(SqlParserPos pos, SqlNode tableRef, SqlNode period) {
     super(pos);
-    this.tableRef = Objects.requireNonNull(tableRef);
-    this.period = Objects.requireNonNull(period);
+    this.tableRef = requireNonNull(tableRef, "tableRef");
+    this.period = requireNonNull(period, "period");
   }
 
   // ~ Methods
@@ -61,13 +64,13 @@ public class SqlSnapshot extends SqlCall {
     return period;
   }
 
-  @Override public void setOperand(int i, SqlNode operand) {
+  @Override public void setOperand(int i, @Nullable SqlNode operand) {
     switch (i) {
     case OPERAND_TABLE_REF:
-      tableRef = Objects.requireNonNull(operand);
+      tableRef = requireNonNull(operand, "operand");
       break;
     case OPERAND_PERIOD:
-      period = Objects.requireNonNull(operand);
+      period = requireNonNull(operand, "operand");
       break;
     default:
       throw new AssertionError(i);
@@ -93,10 +96,11 @@ public class SqlSnapshot extends SqlCall {
       return SqlSyntax.SPECIAL;
     }
 
+    @SuppressWarnings("argument.type.incompatible")
     @Override public SqlCall createCall(
-        SqlLiteral functionQualifier,
+        @Nullable SqlLiteral functionQualifier,
         SqlParserPos pos,
-        SqlNode... operands) {
+        @Nullable SqlNode... operands) {
       assert functionQualifier == null;
       assert operands.length == 2;
       return new SqlSnapshot(pos, operands[0], operands[1]);
@@ -124,12 +128,25 @@ public class SqlSnapshot extends SqlCall {
         int leftPrec,
         int rightPrec) {
       final SqlSnapshot snapshot = (SqlSnapshot) call;
+      SqlNode tableRef = snapshot.tableRef;
 
-      snapshot.tableRef.unparse(writer, 0, 0);
+      if (tableRef instanceof SqlBasicCall
+          && ((SqlBasicCall) tableRef).getOperator() instanceof SqlAsOperator) {
+        SqlBasicCall basicCall = (SqlBasicCall) tableRef;
+        basicCall.operand(0).unparse(writer, 0, 0);
+        writer.setNeedWhitespace(true);
+        writeForSystemTimeAsOf(writer, snapshot);
+        writer.keyword("AS");
+        basicCall.operand(1).unparse(writer, 0, 0);
+      } else {
+        tableRef.unparse(writer, 0, 0);
+        writeForSystemTimeAsOf(writer, snapshot);
+      }
+    }
+
+    private static void writeForSystemTimeAsOf(SqlWriter writer, SqlSnapshot snapshot) {
       writer.keyword("FOR SYSTEM_TIME AS OF");
       snapshot.period.unparse(writer, 0, 0);
     }
   }
 }
-
-// End SqlSnapshot.java

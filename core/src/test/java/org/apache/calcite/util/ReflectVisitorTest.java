@@ -16,89 +16,78 @@
  */
 package org.apache.calcite.util;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.closeTo;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * ReflectVisitorTest tests {@link ReflectUtil#invokeVisitor} and
  * {@link ReflectiveVisitor} and provides a contrived example of how to use
  * them.
  */
-public class ReflectVisitorTest {
-  //~ Constructors -----------------------------------------------------------
-
-  public ReflectVisitorTest() {
-  }
-
-  //~ Methods ----------------------------------------------------------------
-
+class ReflectVisitorTest {
   /**
    * Tests CarelessNumberNegater.
    */
-  @Test public void testCarelessNegater() {
+  @Test void testCarelessNegater() {
     NumberNegater negater = new CarelessNumberNegater();
     Number result;
 
     // verify that negater is capable of handling integers
     result = negater.negate(5);
-    assertEquals(
-        -5,
-        result.intValue());
+    assertThat(result.intValue(), is(-5));
   }
 
   /**
    * Tests CarefulNumberNegater.
    */
-  @Test public void testCarefulNegater() {
+  @Test void testCarefulNegater() {
     NumberNegater negater = new CarefulNumberNegater();
     Number result;
 
     // verify that negater is capable of handling integers,
     // and that result comes back with same type
     result = negater.negate(5);
-    assertEquals(
-        -5,
-        result.intValue());
-    assertTrue(result instanceof Integer);
+    assertThat(result.intValue(), is(-5));
+    assertThat(result, instanceOf(Integer.class));
 
     // verify that negater is capable of handling longs;
     // even though it doesn't provide an explicit implementation,
     // it should inherit the one from CarelessNumberNegater
     result = negater.negate(5L);
-    assertEquals(
-        -5L,
-        result.longValue());
+    assertThat(result.longValue(), is(-5L));
   }
 
   /**
    * Tests CluelessNumberNegater.
    */
-  @Test public void testCluelessNegater() {
+  @Test void testCluelessNegater() {
     NumberNegater negater = new CluelessNumberNegater();
     Number result;
 
     // verify that negater is capable of handling shorts,
     // and that result comes back with same type
     result = negater.negate((short) 5);
-    assertEquals(
-        -5,
-        result.shortValue());
-    assertTrue(result instanceof Short);
+    assertThat(result.shortValue(), is((short) -5));
+    assertThat(result, instanceOf(Short.class));
 
     // verify that negater is NOT capable of handling integers
     result = negater.negate(5);
-    assertEquals(null, result);
+    assertThat(result, nullValue());
   }
 
   /**
    * Tests for ambiguity detection in method lookup.
    */
-  @Test public void testAmbiguity() {
+  @Test void testAmbiguity() {
     NumberNegater negater = new IndecisiveNumberNegater();
     Number result;
 
@@ -116,15 +105,12 @@ public class ReflectVisitorTest {
    * Tests that ambiguity detection in method lookup does not kick in when a
    * better match is available.
    */
-  @Test public void testNonAmbiguity() {
+  @Test void testNonAmbiguity() {
     NumberNegater negater = new SomewhatIndecisiveNumberNegater();
     Number result;
 
     result = negater.negate(new SomewhatAmbiguousNumber());
-    assertEquals(
-        0.0,
-        result.doubleValue(),
-        0.001);
+    assertThat(result.doubleValue(), closeTo(0.0, 0.001));
   }
 
   //~ Inner Interfaces -------------------------------------------------------
@@ -292,5 +278,3 @@ public class ReflectVisitorTest {
       implements DiceyNumber {
   }
 }
-
-// End ReflectVisitorTest.java

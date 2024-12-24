@@ -60,7 +60,7 @@
  * <p>The supported conversion contexts are:
  * <a href="https://docs.google.com/document/d/1g2RUnLXyp_LjUlO-wbblKuP5hqEu3a_2Mt2k4dh6RwU/edit?usp=sharing">Conversion Expressions</a>
  *
- * <p>Strategies for Finding Common Type:</p>
+ * <p>Strategies for Finding Common Type:
  * <ul>
  *   <li>If the operator has expected data types, just take them as the desired one. i.e. the UDF.
  *   </li>
@@ -79,9 +79,4 @@
  *
  * <p>See <a href="https://docs.google.com/spreadsheets/d/1GhleX5h5W8-kJKh7NMJ4vtoE78pwfaZRJl88ULX_MgU/edit?usp=sharing">CalciteImplicitCasts</a>.
  */
-@PackageMarker
 package org.apache.calcite.sql.validate.implicit;
-
-import org.apache.calcite.avatica.util.PackageMarker;
-
-// End package-info.java

@@ -19,6 +19,8 @@ package org.apache.calcite.sql.type;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFamily;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * SQL map type.
  */
@@ -37,10 +39,8 @@ public class MapSqlType extends AbstractSqlType {
   public MapSqlType(
       RelDataType keyType, RelDataType valueType, boolean isNullable) {
     super(SqlTypeName.MAP, isNullable, null);
-    assert keyType != null;
-    assert valueType != null;
-    this.keyType = keyType;
-    this.valueType = valueType;
+    this.keyType = requireNonNull(keyType, "keyType");
+    this.valueType = requireNonNull(valueType, "valueType");
     computeDigest();
   }
 
@@ -55,7 +55,7 @@ public class MapSqlType extends AbstractSqlType {
   }
 
   // implement RelDataTypeImpl
-  protected void generateTypeString(StringBuilder sb, boolean withDetail) {
+  @Override protected void generateTypeString(StringBuilder sb, boolean withDetail) {
     sb.append("(")
         .append(
             withDetail
@@ -70,9 +70,7 @@ public class MapSqlType extends AbstractSqlType {
   }
 
   // implement RelDataType
-  public RelDataTypeFamily getFamily() {
+  @Override public RelDataTypeFamily getFamily() {
     return this;
   }
 }
-
-// End MapSqlType.java
