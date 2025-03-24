@@ -30,11 +30,17 @@ import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlTimeLiteral;
 import org.apache.calcite.sql.SqlTimestampLiteral;
 import org.apache.calcite.sql.SqlWriter;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.type.BasicSqlType;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.util.RelToSqlConverterUtil;
 
 import org.checkerframework.checker.nullness.qual.Nullable;
+
+import java.util.Locale;
+
+import static org.apache.calcite.util.RelToSqlConverterUtil.unparseBoolLiteralToCondition;
 
 import static java.util.Objects.requireNonNull;
 
@@ -52,6 +58,10 @@ public class ClickHouseSqlDialect extends SqlDialect {
   /** Creates a ClickHouseSqlDialect. */
   public ClickHouseSqlDialect(Context context) {
     super(context);
+  }
+
+  @Override public boolean supportsApproxCountDistinct() {
+    return true;
   }
 
   @Override public boolean supportsCharSet() {
@@ -78,6 +88,10 @@ public class ClickHouseSqlDialect extends SqlDialect {
     if (type instanceof BasicSqlType) {
       SqlTypeName typeName = type.getSqlTypeName();
       switch (typeName) {
+      case CHAR:
+        return createSqlDataTypeSpecByName(
+            String.format(Locale.ROOT, "FixedString(%s)",
+            type.getPrecision()), typeName, type.isNullable());
       case VARCHAR:
         return createSqlDataTypeSpecByName("String", typeName, type.isNullable());
       case TINYINT:
@@ -138,6 +152,15 @@ public class ClickHouseSqlDialect extends SqlDialect {
     writer.literal(toFunc + "('" + literal.toFormattedString() + "')");
   }
 
+  @Override public void unparseBoolLiteral(SqlWriter writer, SqlLiteral literal, int leftPrec,
+      int rightPrec) {
+    Boolean value = (Boolean) literal.getValue();
+    if (value == null) {
+      return;
+    }
+    unparseBoolLiteralToCondition(writer, value);
+  }
+
   @Override public void unparseOffsetFetch(SqlWriter writer, @Nullable SqlNode offset,
       @Nullable SqlNode fetch) {
     requireNonNull(fetch, "fetch");
@@ -158,6 +181,12 @@ public class ClickHouseSqlDialect extends SqlDialect {
 
   @Override public void unparseCall(SqlWriter writer, SqlCall call,
       int leftPrec, int rightPrec) {
+    if (call.getOperator() == SqlStdOperatorTable.APPROX_COUNT_DISTINCT) {
+      RelToSqlConverterUtil.specialOperatorByName("UNIQ")
+          .unparse(writer, call, 0, 0);
+      return;
+    }
+
     switch (call.getKind()) {
     case FLOOR:
       if (call.operandCount() != 2) {

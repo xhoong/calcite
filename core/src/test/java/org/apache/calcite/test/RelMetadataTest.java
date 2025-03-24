@@ -143,6 +143,7 @@ import java.util.stream.IntStream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import static org.apache.calcite.test.Matchers.hasFieldNames;
+import static org.apache.calcite.test.Matchers.hasTree;
 import static org.apache.calcite.test.Matchers.isAlmost;
 import static org.apache.calcite.test.Matchers.sortsAs;
 
@@ -456,6 +457,39 @@ public class RelMetadataTest {
     assertThat(columnOrigin.getOriginColumnOrdinal(), equalTo(5));
     assertThat(columnOrigin.getOriginTable().getRowType().getFieldNames().get(5),
         equalTo("SAL"));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6744">[CALCITE-6744]
+   * RelMetadataQuery.getColumnOrigins should return null when column origin
+   * includes correlation variables</a>. */
+  @Test void testColumnOriginsForCorrelate() {
+    final String sql = "select (select max(dept.name || '_' || emp.ename)"
+        + "from dept where emp.deptno = dept.deptno) from emp";
+    final RelMetadataFixture fixture = sql(sql);
+
+    final HepProgramBuilder programBuilder = HepProgram.builder();
+    programBuilder.addRuleInstance(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE);
+    final HepPlanner planner = new HepPlanner(programBuilder.build());
+    planner.setRoot(fixture.toRel());
+    final RelNode relNode = planner.findBestExp();
+
+    String expect = "LogicalProject(EXPR$0=[$9])\n"
+        + "  LogicalCorrelate(correlation=[$cor1], joinType=[left], requiredColumns=[{1, 7}])\n"
+        + "    LogicalTableScan(table=[[CATALOG, SALES, EMP]])\n"
+        + "    LogicalAggregate(group=[{}], EXPR$0=[MAX($0)])\n"
+        + "      LogicalProject($f0=[||(||($1, '_'), $cor1.ENAME)])\n"
+        + "        LogicalFilter(condition=[=($cor1.DEPTNO, $0)])\n"
+        + "          LogicalTableScan(table=[[CATALOG, SALES, DEPT]])\n";
+    assertThat(relNode, hasTree(expect));
+
+    // check correlate input column origins
+    final RelMetadataFixture.MetadataConfig metadataConfig = fixture.metadataConfig;
+    final RelMetadataQuery mq =
+        new RelMetadataQuery(metadataConfig.getDefaultHandlerProvider());
+    Aggregate aggregate = (Aggregate) relNode.getInput(0).getInput(1);
+    Set<RelColumnOrigin> origins = mq.getColumnOrigins(aggregate, 0);
+    assertNull(origins);
   }
 
   // ----------------------------------------------------------------------
@@ -1205,6 +1239,48 @@ public class RelMetadataTest {
         .assertThatAreColumnsUnique(bitSetOf(10), is(true))
         .assertThatAreColumnsUnique(bitSetOf(), is(true))
         .assertThatUniqueKeysAre(bitSetOf());
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6727">[CALCITE-6727]
+   * Column uniqueness constrain should only apply to inner join</a>. */
+  @Test void testColumnUniquenessForLeftJoinOnLimit1() {
+    final String sql = ""
+        + "select A.empno as a_empno,\n"
+        + " A.ename as a_ename,\n"
+        + " B.empno as b_empno,\n"
+        + " B.ename as b_ename\n"
+        + "from emp A\n"
+        + "left join (\n"
+        + "  select * from emp\n"
+        + "  limit 1) B\n"
+        + "on A.empno = B.empno";
+    sql(sql)
+        .assertThatAreColumnsUnique(bitSetOf(0), is(true))
+        .assertThatAreColumnsUnique(bitSetOf(1), is(false))
+        .assertThatAreColumnsUnique(bitSetOf(2), is(false))
+        .assertThatAreColumnsUnique(bitSetOf(3), is(false));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6727">[CALCITE-6727]
+   * Column uniqueness constrain should only apply to inner join</a>. */
+  @Test void testColumnUniquenessForRightJoinOnLimit1() {
+    final String sql = ""
+        + "select A.empno as a_empno,\n"
+        + " A.ename as a_ename,\n"
+        + " B.empno as b_empno,\n"
+        + " B.ename as b_ename\n"
+        + "from emp A\n"
+        + "right join (\n"
+        + "  select * from emp\n"
+        + "  limit 1) B\n"
+        + "on A.empno = B.empno";
+    sql(sql)
+        .assertThatAreColumnsUnique(bitSetOf(0), is(false))
+        .assertThatAreColumnsUnique(bitSetOf(1), is(false))
+        .assertThatAreColumnsUnique(bitSetOf(2), is(true))
+        .assertThatAreColumnsUnique(bitSetOf(3), is(true));
   }
 
   @Test void testColumnUniquenessForJoinOnAggregation() {
@@ -2932,6 +3008,45 @@ public class RelMetadataTest {
     final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
     assertThat(mq.getPulledUpPredicates(rel).pulledUpPredicates,
         sortsAs("[IS NULL($0), IS NULL($1)]"));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6649">[CALCITE-6649]
+   * Enhance RelMdPredicates pull up predicate from PROJECT</a>. */
+  @Test void testPullUpPredicatesFromProject2() {
+    final String sql = "select comm <> 2, comm = 2 from emp where comm = 2";
+    final Project rel = (Project) sql(sql).toRel();
+    final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
+    RelOptPredicateList inputSet = mq.getPulledUpPredicates(rel);
+    ImmutableList<RexNode> pulledUpPredicates = inputSet.pulledUpPredicates;
+    assertThat(pulledUpPredicates, sortsAs("[]"));
+  }
+
+  @Test void testPullUpPredicatesFromProject3() {
+    final String sql = "select comm is null, comm is not null from emp where comm = 2";
+    final Project rel = (Project) sql(sql).toRel();
+    final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
+    RelOptPredicateList inputSet = mq.getPulledUpPredicates(rel);
+    ImmutableList<RexNode> pulledUpPredicates = inputSet.pulledUpPredicates;
+    assertThat(pulledUpPredicates, sortsAs("[=($0, false), =($1, true)]"));
+  }
+
+  @Test void testPullUpPredicatesFromProject4() {
+    final String sql = "select comm = 2, empno <> 1 from emp where comm = 2 and empno = 1";
+    final Project rel = (Project) sql(sql).toRel();
+    final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
+    RelOptPredicateList inputSet = mq.getPulledUpPredicates(rel);
+    ImmutableList<RexNode> pulledUpPredicates = inputSet.pulledUpPredicates;
+    assertThat(pulledUpPredicates, sortsAs("[]"));
+  }
+
+  @Test void testPullUpPredicatesFromProject5() {
+    final String sql = "select mgr=2, comm=2 from emp where mgr is null and empno = 1";
+    final Project rel = (Project) sql(sql).toRel();
+    final RelMetadataQuery mq = rel.getCluster().getMetadataQuery();
+    RelOptPredicateList inputSet = mq.getPulledUpPredicates(rel);
+    ImmutableList<RexNode> pulledUpPredicates = inputSet.pulledUpPredicates;
+    assertThat(pulledUpPredicates, sortsAs("[]"));
   }
 
   /** Test case for

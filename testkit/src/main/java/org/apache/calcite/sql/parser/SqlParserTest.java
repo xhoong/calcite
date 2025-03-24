@@ -571,6 +571,7 @@ public class SqlParserTest {
       "USAGE",                         "92", "99",
       "USER",                          "92", "99", "2003", "2011", "2014", "c",
       "USING",                         "92", "99", "2003", "2011", "2014", "c",
+      "UUID",                                                              "c",
       "VALUE",                         "92", "99", "2003", "2011", "2014", "c",
       "VALUES",                        "92", "99", "2003", "2011", "2014", "c",
       "VALUE_OF",                                                  "2014", "c",
@@ -5739,6 +5740,19 @@ public class SqlParserTest {
         .ok("SELECT TRANSLATE(`COL` USING `UTF8`)\n"
             + "FROM (SELECT 'a' AS `COL`\n"
             + "FROM (VALUES (ROW(TRUE))))");
+  }
+
+  @Test void testConvertOracle() {
+    // If there are 3 params in CONVERT_ORACLE operator, it's valid when
+    // the ORACLE function library is enabled ('fun=oracle').
+    // But the parser can always parse it.
+    expr("convert('abc', utf8, gbk)")
+        .ok("CONVERT('abc', `UTF8`, `GBK`)");
+    expr("convert('abc', utf8)")
+        .ok("CONVERT('abc', `UTF8`)");
+    sql("select convert(name, latin1) as newName from t")
+        .ok("SELECT CONVERT(`NAME`, `LATIN1`) AS `NEWNAME`\n"
+            + "FROM `T`");
   }
 
   @Test void testTranslate3() {

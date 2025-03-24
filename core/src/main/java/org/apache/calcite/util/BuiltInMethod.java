@@ -145,6 +145,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TimeZone;
+import java.util.UUID;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -411,6 +412,7 @@ public enum BuiltInMethod {
   TO_CODE_POINTS(SqlFunctions.class, "toCodePoints", String.class),
   CONVERT(SqlFunctions.class, "convertWithCharset", String.class, String.class,
       String.class),
+  CONVERT_ORACLE(SqlFunctions.class, "convertOracle", String.class, String[].class),
   EXP(SqlFunctions.class, "exp", double.class),
   MOD(SqlFunctions.class, "mod", long.class, long.class),
   POWER(SqlFunctions.class, "power", double.class, double.class),
@@ -433,9 +435,12 @@ public enum BuiltInMethod {
   FROM_BASE64(SqlFunctions.class, "fromBase64", String.class),
   TO_BASE32(SqlFunctions.class, "toBase32", String.class),
   FROM_BASE32(SqlFunctions.class, "fromBase32", String.class),
+  HEX(SqlFunctions.class, "hex", String.class),
   TO_HEX(SqlFunctions.class, "toHex", ByteString.class),
   FROM_HEX(SqlFunctions.class, "fromHex", String.class),
+  BIN(SqlFunctions.class, "bin", long.class),
   MD5(SqlFunctions.class, "md5", String.class),
+  CRC32(SqlFunctions.class, "crc32", String.class),
   SHA1(SqlFunctions.class, "sha1", String.class),
   SHA256(SqlFunctions.class, "sha256", String.class),
   SHA512(SqlFunctions.class, "sha512", String.class),
@@ -491,6 +496,10 @@ public enum BuiltInMethod {
   IS_JSON_ARRAY(JsonFunctions.class, "isJsonArray", String.class),
   IS_JSON_SCALAR(JsonFunctions.class, "isJsonScalar", String.class),
   ST_GEOM_FROM_EWKT(SpatialTypeFunctions.class, "ST_GeomFromEWKT", String.class),
+  UUID_FROM_STRING(UUID.class, "fromString", String.class),
+  UUID_TO_STRING(SqlFunctions.class, "uuidToString", UUID.class),
+  UUID_TO_BINARY(SqlFunctions.class, "uuidToBinary", UUID.class),
+  BINARY_TO_UUID(SqlFunctions.class, "binaryToUuid", ByteString.class),
   INITCAP(SqlFunctions.class, "initcap", String.class),
   SUBSTRING(SqlFunctions.class, "substring", String.class, int.class,
       int.class),
@@ -580,7 +589,7 @@ public enum BuiltInMethod {
   TRIM(SqlFunctions.class, "trim", boolean.class, boolean.class, String.class,
       String.class, boolean.class),
   REPLACE(SqlFunctions.class, "replace", String.class, String.class,
-      String.class),
+      String.class, boolean.class),
   TRANSLATE_WITH_CHARSET(SqlFunctions.class, "translateWithCharset", String.class, String.class),
   TRANSLATE3(SqlFunctions.class, "translate3", String.class, String.class, String.class),
   LTRIM(SqlFunctions.class, "ltrim", String.class),
@@ -857,6 +866,7 @@ public enum BuiltInMethod {
   ARRAY_INTERSECT(SqlFunctions.class, "arrayIntersect", List.class, List.class),
   ARRAY_UNION(SqlFunctions.class, "arrayUnion", List.class, List.class),
   ARRAY_REVERSE(SqlFunctions.class, "reverse", List.class),
+  ARRAY_SLICE(SqlFunctions.class, "arraySlice", List.class, int.class, int.class),
   ARRAYS_OVERLAP(SqlFunctions.class, "arraysOverlap", List.class, List.class),
   ARRAYS_ZIP(SqlFunctions.class, "arraysZip", List.class, List.class),
   EXISTS(SqlFunctions.class, "exists", List.class, Function1.class),

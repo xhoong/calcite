@@ -147,6 +147,9 @@ public enum SqlKind {
   /** {@code CONVERT} function. */
   CONVERT,
 
+  /** Oracle's {@code CONVERT} function. */
+  CONVERT_ORACLE,
+
   /** {@code TRANSLATE} function. */
   TRANSLATE,
 
@@ -475,10 +478,10 @@ public enum SqlKind {
   /** {@code NVL2} function (Oracle, Spark). */
   NVL2,
 
-  /** {@code GREATEST} function (Oracle, Spark). */
+  /** {@code GREATEST} function (Oracle). */
   GREATEST,
 
-  /** {@code GREATEST} function (PostgreSQL). */
+  /** {@code GREATEST} function (PostgreSQL, Spark). */
   GREATEST_PG,
 
   /** The two-argument {@code CONCAT} function (Oracle). */
@@ -503,7 +506,7 @@ public enum SqlKind {
   /** {@code LEAST} function (Oracle). */
   LEAST,
 
-  /** {@code LEAST} function (PostgreSQL). */
+  /** {@code LEAST} function (PostgreSQL, Spark). */
   LEAST_PG,
 
   /** {@code LOG} function. (Mysql, Spark). */
@@ -826,6 +829,9 @@ public enum SqlKind {
 
   /** {@code ARRAY_SIZE} function (Spark semantics). */
   ARRAY_SIZE,
+
+  /** {@code ARRAY_SLICE} function (Hive semantics). */
+  ARRAY_SLICE,
 
   /** {@code ARRAY_TO_STRING} function (BigQuery semantics). */
   ARRAY_TO_STRING,
@@ -1455,8 +1461,8 @@ public enum SqlKind {
   public static final Set<SqlKind> EXPRESSION =
       EnumSet.complementOf(
           concat(
-              EnumSet.of(AS, ARGUMENT_ASSIGNMENT, CONVERT, TRANSLATE, DEFAULT,
-                  RUNNING, FINAL, LAST, FIRST, PREV, NEXT,
+              EnumSet.of(AS, ARGUMENT_ASSIGNMENT, CONVERT, CONVERT_ORACLE, TRANSLATE,
+                  DEFAULT, RUNNING, FINAL, LAST, FIRST, PREV, NEXT,
                   FILTER, WITHIN_GROUP, IGNORE_NULLS, RESPECT_NULLS, SEPARATOR,
                   DESCENDING, CUBE, ROLLUP, GROUPING_SETS, EXTEND, LATERAL,
                   SELECT, JOIN, OTHER_FUNCTION, POSITION, CAST, TRIM, FLOOR, CEIL,
@@ -1821,6 +1827,7 @@ public enum SqlKind {
     case ARRAY_REPEAT:
     case ARRAY_REVERSE:
     case ARRAY_SIZE:
+    case ARRAY_SLICE:
     case ARRAY_TO_STRING:
     case ARRAY_UNION:
     case ARRAYS_OVERLAP:

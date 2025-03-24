@@ -73,6 +73,7 @@ import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.fun.SqlTrimFunction;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
+import org.apache.calcite.sql.validate.SqlConformanceEnum;
 import org.apache.calcite.sql.validate.SqlUserDefinedAggFunction;
 import org.apache.calcite.sql.validate.SqlUserDefinedFunction;
 import org.apache.calcite.sql.validate.SqlUserDefinedTableFunction;
@@ -151,12 +152,15 @@ import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_REMOVE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_REPEAT;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_REVERSE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_SIZE;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_SLICE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_TO_STRING;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ARRAY_UNION;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ASIND;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ASINH;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ATAND;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ATANH;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.BASE64;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.BIN;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.BITAND_AGG;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.BITOR_AGG;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.BIT_COUNT_BIG_QUERY;
@@ -181,9 +185,11 @@ import static org.apache.calcite.sql.fun.SqlLibraryOperators.CONCAT_WS_MSSQL;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CONCAT_WS_POSTGRESQL;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CONCAT_WS_SPARK;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CONTAINS_SUBSTR;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.CONVERT_ORACLE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.COSD;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.COSH;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.COTH;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.CRC32;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CSC;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CSCH;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.CURRENT_DATETIME;
@@ -213,6 +219,7 @@ import static org.apache.calcite.sql.fun.SqlLibraryOperators.FROM_BASE32;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.FROM_BASE64;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.FROM_HEX;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.GETBIT;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.HEX;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.ILIKE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.IS_INF;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.IS_NAN;
@@ -332,6 +339,7 @@ import static org.apache.calcite.sql.fun.SqlLibraryOperators.UNIX_DATE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.UNIX_MICROS;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.UNIX_MILLIS;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.UNIX_SECONDS;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.UN_BASE64;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.URL_DECODE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.URL_ENCODE;
 import static org.apache.calcite.sql.fun.SqlLibraryOperators.XML_TRANSFORM;
@@ -682,11 +690,16 @@ public class RexImpTable {
       defineMethod(INITCAP, BuiltInMethod.INITCAP.method, NullPolicy.STRICT);
       defineMethod(TO_BASE64, BuiltInMethod.TO_BASE64.method, NullPolicy.STRICT);
       defineMethod(FROM_BASE64, BuiltInMethod.FROM_BASE64.method, NullPolicy.STRICT);
+      defineMethod(BASE64, BuiltInMethod.TO_BASE64.method, NullPolicy.STRICT);
+      defineMethod(UN_BASE64, BuiltInMethod.FROM_BASE64.method, NullPolicy.STRICT);
       defineMethod(TO_BASE32, BuiltInMethod.TO_BASE32.method, NullPolicy.STRICT);
       defineMethod(FROM_BASE32, BuiltInMethod.FROM_BASE32.method, NullPolicy.STRICT);
+      defineMethod(HEX, BuiltInMethod.HEX.method, NullPolicy.STRICT);
       defineMethod(TO_HEX, BuiltInMethod.TO_HEX.method, NullPolicy.STRICT);
       defineMethod(FROM_HEX, BuiltInMethod.FROM_HEX.method, NullPolicy.STRICT);
+      defineMethod(BIN, BuiltInMethod.BIN.method, NullPolicy.STRICT);
       defineMethod(MD5, BuiltInMethod.MD5.method, NullPolicy.STRICT);
+      defineMethod(CRC32, BuiltInMethod.CRC32.method, NullPolicy.STRICT);
       defineMethod(SHA1, BuiltInMethod.SHA1.method, NullPolicy.STRICT);
       defineMethod(SHA256, BuiltInMethod.SHA256.method, NullPolicy.STRICT);
       defineMethod(SHA512, BuiltInMethod.SHA512.method, NullPolicy.STRICT);
@@ -698,7 +711,7 @@ public class RexImpTable {
       defineMethod(RPAD, BuiltInMethod.RPAD.method, NullPolicy.STRICT);
       defineMethod(STARTS_WITH, BuiltInMethod.STARTS_WITH.method, NullPolicy.STRICT);
       defineMethod(ENDS_WITH, BuiltInMethod.ENDS_WITH.method, NullPolicy.STRICT);
-      defineMethod(REPLACE, BuiltInMethod.REPLACE.method, NullPolicy.STRICT);
+      define(REPLACE, new ReplaceImplementor());
       defineMethod(TRANSLATE3, BuiltInMethod.TRANSLATE3.method, NullPolicy.STRICT);
       defineMethod(CHR, BuiltInMethod.CHAR_FROM_UTF8.method, NullPolicy.STRICT);
       defineMethod(CHARACTER_LENGTH, BuiltInMethod.CHAR_LENGTH.method,
@@ -740,6 +753,7 @@ public class RexImpTable {
       defineMethod(CONCAT_WS_SPARK,
           BuiltInMethod.MULTI_TYPE_STRING_ARRAY_CONCAT_WITH_SEPARATOR.method,
           NullPolicy.ARG0);
+      defineMethod(CONVERT_ORACLE, BuiltInMethod.CONVERT_ORACLE.method, NullPolicy.ARG0);
       defineMethod(OVERLAY, BuiltInMethod.OVERLAY.method, NullPolicy.STRICT);
       defineMethod(POSITION, BuiltInMethod.POSITION.method, NullPolicy.STRICT);
       defineMethod(ASCII, BuiltInMethod.ASCII.method, NullPolicy.STRICT);
@@ -1052,6 +1066,7 @@ public class RexImpTable {
       defineMethod(ARRAY_REPEAT, BuiltInMethod.ARRAY_REPEAT.method, NullPolicy.NONE);
       defineMethod(ARRAY_REVERSE, BuiltInMethod.ARRAY_REVERSE.method, NullPolicy.STRICT);
       defineMethod(ARRAY_SIZE, BuiltInMethod.COLLECTION_SIZE.method, NullPolicy.STRICT);
+      defineMethod(ARRAY_SLICE, BuiltInMethod.ARRAY_SLICE.method, NullPolicy.STRICT);
       defineMethod(ARRAY_TO_STRING, BuiltInMethod.ARRAY_TO_STRING.method,
           NullPolicy.STRICT);
       defineMethod(ARRAY_UNION, BuiltInMethod.ARRAY_UNION.method, NullPolicy.ANY);
@@ -4940,7 +4955,7 @@ public class RexImpTable {
         List<Expression> argValueList) {
       final Expression target =
           Expressions.new_(BuiltInMethod.TO_CHAR_PG.method.getDeclaringClass(),
-              new ParameterExpression(0, DataContext.class, "root"));
+              translator.getRoot());
       final Expression operand0 = argValueList.get(0);
       final Expression operand1 = argValueList.get(1);
       return Expressions.call(target, BuiltInMethod.TO_CHAR_PG.method, operand0, operand1);
@@ -4959,11 +4974,28 @@ public class RexImpTable {
     @Override Expression implementSafe(RexToLixTranslator translator, RexCall call,
         List<Expression> argValueList) {
       final Expression target =
-          Expressions.new_(method.getDeclaringClass(),
-              new ParameterExpression(0, DataContext.class, "root"));
+          Expressions.new_(method.getDeclaringClass(), translator.getRoot());
       final Expression operand0 = argValueList.get(0);
       final Expression operand1 = argValueList.get(1);
       return Expressions.call(target, method, operand0, operand1);
+    }
+  }
+
+  /** Implementor for the {@code REPLACE} function for Oracle, PostgreSQL and
+   * Microsoft SQL Server. And search pattern for SQL Server is case-insensitive. */
+  private static class ReplaceImplementor extends AbstractRexCallImplementor {
+    ReplaceImplementor() {
+      super("replace", NullPolicy.STRICT, false);
+    }
+
+    @Override Expression implementSafe(RexToLixTranslator translator, RexCall call,
+        List<Expression> argValueList) {
+      boolean isCaseSensitive = translator.conformance != SqlConformanceEnum.SQL_SERVER_2008;
+      final Expression operand0 = argValueList.get(0);
+      final Expression operand1 = argValueList.get(1);
+      final Expression operand2 = argValueList.get(2);
+      return Expressions.call(BuiltInMethod.REPLACE.method,
+          operand0, operand1, operand2, Expressions.constant(isCaseSensitive));
     }
   }
 }

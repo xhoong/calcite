@@ -122,6 +122,9 @@ import java.util.stream.Stream;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import static org.apache.calcite.rex.RexLiteral.stringValue;
+import static org.apache.calcite.sql.SqlKind.EXISTS;
+import static org.apache.calcite.sql.SqlKind.IN;
+import static org.apache.calcite.sql.SqlKind.NOT;
 import static org.apache.calcite.util.Util.last;
 
 import static java.util.Objects.requireNonNull;
@@ -308,10 +311,11 @@ public class RelToSqlConverter extends SqlImplementor
               sqlCondition);
     }
     sqlSelect.setWhere(sqlCondition);
-    final SqlNode resultNode =
-        leftResult.neededAlias == null ? sqlSelect
-            : as(sqlSelect, leftResult.neededAlias);
-    return result(resultNode,  ImmutableList.of(Clause.FROM), e, null);
+
+    if (leftResult.neededAlias != null && sqlSelect.getFrom() != null) {
+      sqlSelect.setFrom(as(sqlSelect.getFrom(), leftResult.neededAlias));
+    }
+    return result(sqlSelect, ImmutableList.of(Clause.FROM), e, null);
   }
 
   /** Returns whether this join should be unparsed as a {@link JoinType#COMMA}.
@@ -405,13 +409,29 @@ public class RelToSqlConverter extends SqlImplementor
             .resetAlias(e.getCorrelVariable(), e.getInput(0).getRowType());
     parseCorrelTable(e, leftResult);
     final Result rightResult = visitInput(e, 1);
-    final SqlNode rightLateral =
-        SqlStdOperatorTable.LATERAL.createCall(POS, rightResult.node);
-    final SqlNode rightLateralAs =
-        SqlStdOperatorTable.AS.createCall(POS, rightLateral,
-            new SqlIdentifier(
-                requireNonNull(rightResult.neededAlias,
-                    () -> "rightResult.neededAlias is null, node is " + rightResult.node), POS));
+    final SqlNode rightResultNode = rightResult.node;
+    final SqlIdentifier id =
+        new SqlIdentifier(
+            requireNonNull(rightResult.neededAlias,
+                () -> "rightResult.neededAlias is null, node is " + rightResultNode), POS);
+    SqlNode rightLateral =
+        SqlStdOperatorTable.LATERAL.createCall(POS, rightResultNode);
+    SqlNode rightLateralAs;
+    if (rightResultNode.getKind() == SqlKind.AS) {
+      // If node already is an AS node, we need to replace the alias
+      // For example:
+      // Before: AS "t1" ("xs") AS "t10"
+      // Now：AS "t10" ("xs")
+      SqlCall sqlRightCall = (SqlCall) rightResultNode;
+      List<SqlNode> operands = new ArrayList<>(sqlRightCall.getOperandList());
+      rightLateral =
+          SqlStdOperatorTable.LATERAL.createCall(POS, operands.get(0));
+      operands.set(0, rightLateral);
+      operands.set(1, id);
+      rightLateralAs =  SqlStdOperatorTable.AS.createCall(POS, operands);
+    } else {
+      rightLateralAs =  SqlStdOperatorTable.AS.createCall(POS, rightLateral, id);
+    }
 
     final SqlNode join =
         new SqlJoin(POS,
@@ -440,7 +460,12 @@ public class RelToSqlConverter extends SqlImplementor
               builder.context.toSql(null, e.getCondition())));
       return builder.result();
     } else {
-      final Result x = visitInput(e, 0, Clause.WHERE);
+      Result x = visitInput(e, 0, Clause.WHERE);
+      if (e.getCondition().getKind() == NOT
+          || e.getCondition().getKind() == EXISTS
+          || e.getCondition().getKind() == IN) {
+        x = x.resetAlias();
+      }
       parseCorrelTable(e, x);
       final Builder builder = x.builder(e);
       if (input instanceof Join) {
@@ -500,7 +525,10 @@ public class RelToSqlConverter extends SqlImplementor
         }
         addSelect(selectList, sqlExpr, e.getRowType());
       }
-
+      // We generate "SELECT 1 FROM EMP" replace "SELECT FROM EMP"
+      if (selectList.isEmpty()) {
+        selectList.add(SqlLiteral.createExactNumeric("1", POS));
+      }
       final SqlNodeList selectNodeList = new SqlNodeList(selectList, POS);
       if (builder.select.getGroup() == null
           && builder.select.getHaving() == null

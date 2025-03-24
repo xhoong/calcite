@@ -779,6 +779,35 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
     expr("_UTF16'a'||_UTF16'b'||_UTF16'c'").ok();
   }
 
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-6779">[CALCITE-6779]
+   * Casts from UUID to DATE should be invalid</a>. */
+  @Test void testUuidCasts() {
+    final String error = "Cast function cannot convert value of type UUID to type.*";
+    expr("^CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS TIME)^").fails(error);
+    expr("^CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS DATE)^").fails(error);
+    expr("^CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS TIMESTAMP)^").fails(error);
+    expr("^CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS INT)^").fails(error);
+    expr("^CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS DOUBLE)^").fails(error);
+
+    final String error2 = "Cast function cannot convert value of type.* to type UUID.*";
+    expr("^CAST(TIME '10:00:00' AS UUID)^").fails(error2);
+    expr("^CAST(DATE '2024-01-01' AS UUID)^").fails(error2);
+    expr("^CAST(TIMESTAMP '2024-01-01 00:00:00' AS UUID)^").fails(error2);
+    expr("^CAST(2 AS UUID)^").fails(error2);
+    expr("^CAST(2.0e0 AS UUID)^").fails(error2);
+
+    expr("CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS UUID)").ok();
+    expr("CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS VARCHAR)").ok();
+    expr("CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS CHAR(2))").ok();
+    expr("CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS BINARY(2))").ok();
+    expr("CAST(UUID '123e4567-e89b-12d3-a456-426655440000' AS VARBINARY)").ok();
+
+    expr("CAST('123e4567-e89b-12d3-a456-426655440000' AS UUID)").ok();
+    expr("CAST(CAST('123e4567-e89b-12d3-a456-426655440000' AS VARCHAR) AS UUID)").ok();
+    expr("CAST(x'123e4567e89b12d3a456426655440000' AS UUID)").ok();
+    expr("CAST(CAST(x'123e4567e89b12d3a456426655440000' AS VARBINARY) AS UUID)").ok();
+  }
+
   @Test void testConcatWithCharset() {
     sql("_UTF16'a'||_UTF16'b'||_UTF16'c'")
         .assertCharset(isCharset("UTF-16LE"));
@@ -1026,6 +1055,56 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
         .withOperatorTable(opTable)
         .fails("Invalid number of arguments to function 'TRANSLATE3'. "
             + "Was expecting 3 arguments");
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6813">
+   * [CALCITE-6813] UNNEST infers incorrect nullability for the result when applied to
+   * an array that contains nullable ROW values</a>. */
+  @Test void testUnnestRow() {
+    sql("with orders(data) as\n"
+        + "  (values (ARRAY[ROW(1, 'Alice'), ROW(2, NULL), ROW(NULL, 'Bob'), NULL]))\n"
+        + "select e.EXPR$0\n"
+        + "from orders, UNNEST(orders.data) as e")
+        .type(actualType -> {
+          // Unfortunately the string representation does not contain nullability information
+          assertThat(actualType, hasToString("RecordType(INTEGER EXPR$0)"));
+          assertTrue(actualType.isStruct());
+          assertThat(actualType.getFieldCount(), is(1));
+          // The field type should be nullable
+          assertTrue(actualType.getFieldList().get(0).getType().isNullable());
+        });
+    sql("with orders(data) as\n"
+        + "  (values (ARRAY[ROW(1, 'Alice'), ROW(2, NULL), ROW(NULL, 'Bob'), NULL]))\n"
+        + "select e.*\n"
+        + "from orders, UNNEST(orders.data) as e")
+        .type(actualType -> {
+          assertThat(actualType, hasToString("RecordType(INTEGER EXPR$0, CHAR(5) EXPR$1)"));
+          assertTrue(actualType.isStruct());
+          assertTrue(actualType.getFieldList().get(0).getType().isNullable());
+          assertTrue(actualType.getFieldList().get(1).getType().isNullable());
+        });
+    sql("with orders(data) as\n"
+        + "  (values (ARRAY[ROW(1, 'Alice'), ROW(2, NULL)]))\n"
+        + "select e.*\n"
+        + "from orders, UNNEST(orders.data) as e")
+        .type(actualType -> {
+          // The array unnested is not nullable
+          assertThat(actualType, hasToString("RecordType(INTEGER EXPR$0, CHAR(5) EXPR$1)"));
+          assertTrue(actualType.isStruct());
+          assertThat(actualType.getFieldList().get(0).getType().isNullable(), is(false));
+          assertTrue(actualType.getFieldList().get(1).getType().isNullable());
+        });
+    sql("with orders(data) as\n"
+        + "  (values (ARRAY[ARRAY[ROW(1, 'Alice'), ROW(2, NULL)], NULL]))\n"
+        + "select e.*\n"
+        + "from orders, UNNEST(orders.data[1]) as e")
+        .type(actualType -> {
+          // The inner array that is unnested is nullable in this example
+          assertThat(actualType, hasToString("RecordType(INTEGER EXPR$0, CHAR(5) EXPR$1)"));
+          assertTrue(actualType.isStruct());
+          assertThat(actualType.getFieldList().get(0).getType().isNullable(), is(false));
+          assertTrue(actualType.getFieldList().get(1).getType().isNullable());
+        });
   }
 
   @Test void testOverlay() {
@@ -1602,7 +1681,7 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
         .fails("No match found for function signature "
             + "CONVERT_TIMEZONE\\(<CHARACTER>, <CHARACTER>, <TIMESTAMP>\\)");
 
-    final SqlOperatorTable opTable = operatorTableFor(SqlLibrary.POSTGRESQL);
+    final SqlOperatorTable opTable = operatorTableFor(SqlLibrary.REDSHIFT);
     expr("CONVERT_TIMEZONE('UTC', 'America/Los_Angeles',\n"
         + "  CAST('2000-01-01' AS TIMESTAMP))")
         .withOperatorTable(opTable)
@@ -4514,6 +4593,28 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
     sql("select * from emp where ^deptno in "
         + "(select deptno,deptno from dept^)")
         .fails("Values passed to IN operator must have compatible types");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-5626">[CALCITE-5626]
+   * Sub-query with fully-qualified table name throws 'table not found' during
+   * validation</a>. */
+  @Test void testInSubQueryWithFullyQualifiedName() {
+    // Minimal test case requires fully-qualified column name in WHERE clause of
+    // subquery; sub-query.iq contains further non-minimal test cases.
+    sql("select *\n"
+        + "from emp\n"
+        + "where deptno in (select deptno\n"
+        + "  from sales.dept\n"
+        + "  where sales.dept.deptno > 15)").ok();
+
+    // If we change 'sales.dept' to 'sales.dept2', query is genuinely invalid.
+    sql("select *\n"
+        + "from emp\n"
+        + "where deptno in (select deptno\n"
+        + "  from sales.dept\n"
+        + "  where ^sales.dept2^.deptno > 15)")
+        .fails("Table 'SALES.DEPT2' not found");
   }
 
   @Test void testAnyList() {
@@ -12435,10 +12536,10 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
             + "  where empno = 1)\n"
             + "where j = 'doctor'")
         .ok();
-      // Deceitful alias #2. Filter on 'job' is a filter on the underlying
-      // 'ename', so the underlying 'job' is missing a filter.
+    // Deceitful alias #2. Filter on 'job' is a filter on the underlying
+    // 'slacker', so the underlying 'job' is missing a filter.
     fixture.withSql("^select * from (\n"
-            + "  select job as j, ename as job\n"
+            + "  select job as j, slacker as job\n"
             + "  from emp\n"
             + "  where empno = 1)\n"
             + "where job = 'doctor'^")
@@ -12587,6 +12688,359 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
             + "and job = 'doctor'")
         .ok();
     fixture.withSql("WITH cte AS (\n"
+            + "  select * from emp where empno = 1)\n"
+            + "SELECT *\n"
+            + "from cte\n"
+            + "where job = 'doctor'")
+        .ok();
+    fixture.withSql("WITH cte AS (\n"
+            + "  select empno, job from emp)\n"
+            + "SELECT *\n"
+            + "from cte\n"
+            + "where empno = 1\n"
+            + "and job = 'doctor'")
+        .ok();
+
+    // Filters are missing on EMPNO and JOB, but the error message only
+    // complains about JOB because EMPNO is in the SELECT clause, and could
+    // theoretically be filtered by an enclosing query.
+    fixture.withSql("^select empno\n"
+            + "from emp^")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("^select empno,\n"
+            + "  sum(sal) over (order by mgr)\n"
+            + "from emp^")
+        .fails(missingFilters("JOB"));
+  }
+
+  /**
+   * Tests validation of must-filter columns with the inclusion of bypass fields.
+   *
+   * <p>If a table that implements
+   * {@link org.apache.calcite.sql.validate.SemanticTable} tags fields as
+   * 'must-filter', and the SQL query does not contain a WHERE or HAVING clause
+   * on each of the tagged columns, the validator should throw an error.
+   * If any bypass field for a table is in a WHERE or HAVING clause for that
+   * SELECT statement, the must-filter requirements for that table are
+   * disabled.
+   */
+  @Test void testMustFilterColumnsWithBypass() {
+    final SqlValidatorFixture fixture = fixture()
+        .withParserConfig(c -> c.withQuoting(Quoting.BACK_TICK))
+        .withOperatorTable(operatorTableFor(SqlLibrary.BIG_QUERY))
+        .withCatalogReader(MustFilterMockCatalogReader::create);
+
+    // Basic query
+    fixture.withSql("select empno\n"
+            + "from emp\n"
+            + "where job = 'doctor'\n"
+            + "and empno = 1")
+        .ok();
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "where concat(emp.empno, ' ') = 'abc'^")
+        .fails(missingFilters("JOB"));
+
+    // ENAME is a bypass field
+    fixture.withSql("select *\n"
+            + "from emp\n"
+            + "where concat(emp.ename, ' ') = 'abc'^")
+        .ok();
+
+    // SUBQUERIES
+    fixture.withSql("select * from (\n"
+            + "  select * from emp where empno = 1)\n"
+            + "where job = 'doctor'")
+        .ok();
+    fixture.withSql("^select * from (\n"
+            + "  select ename from emp where empno = 1)^")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("select * from (\n"
+            + "  select job, ename from emp where empno = 1)"
+            + "where ename = '1'")
+        .ok();
+    fixture.withSql("select * from (\n"
+            + "  select empno, job from emp)\n"
+            + "where job = 'doctor' and empno = 1")
+        .ok();
+
+    // Deceitful alias #1. Filter on 'j' is a filter on the underlying 'job'.
+    fixture.withSql("select * from (\n"
+            + "  select job as j, ename as job\n"
+            + "  from emp\n"
+            + "  where empno = 1)\n"
+            + "where j = 'doctor'")
+        .ok();
+
+    // Deceitful alias #2. Filter on 'job' is a filter on the underlying
+    // 'slacker', so the underlying 'job' is missing a filter.
+    fixture.withSql("^select * from (\n"
+            + "  select job as j, slacker as job\n"
+            + "  from emp\n"
+            + "  where empno = 1)\n"
+            + "where job = 'doctor'^")
+        .fails(missingFilters("J"));
+
+    // Deceitful alias #3. Filter on 'job' is a filter on the underlying
+    // 'ename', which is a bypass field thus no exception.
+    fixture.withSql("select * from (\n"
+            + "  select job as j, ename as job\n"
+            + "  from emp\n"
+            + "  where empno = 1)\n"
+            + "where job = 'doctor'^")
+        .ok();
+    fixture.withSql("select * from (\n"
+            + "  select * from emp where job = 'doctor')\n"
+            + "where empno = 1")
+        .ok();
+    fixture.withSql("select * from (\n"
+            + "  select empno from emp where job = 'doctor')\n"
+            + "where empno = 1")
+        .ok();
+    fixture.withSql("^select * from (\n"
+            + "  select * from emp where empno = 1)^")
+        .fails(missingFilters("JOB"));
+
+    // Query is valid because ENAME is a bypass field
+    fixture.withSql("select * from (\n"
+            + "  select * from emp where ename = 1)^")
+        .ok();
+    fixture.withSql("^select * from (select * from `SALES`.`EMP`) as a1^ ")
+        .fails(missingFilters("EMPNO", "JOB"));
+    fixture.withSql("select *\n"
+            + "from (select * from `SALES`.`EMP`) as a1\n"
+            + "where ename = '1'^ ")
+        .ok();
+
+    // JOINs
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "join dept on emp.deptno = dept.deptno^")
+        .fails(missingFilters("EMPNO", "JOB", "NAME"));
+
+    // Query is invalid because ENAME is a bypass field for EMP table, but not
+    // the DEPT table.
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "join dept on emp.deptno = dept.deptno where ename = '1'^")
+        .fails(missingFilters("NAME"));
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "join dept on emp.deptno = dept.deptno\n"
+            + "where emp.empno = 1^")
+        .fails(missingFilters("JOB", "NAME"));
+    fixture.withSql("select *\n"
+            + "from emp\n"
+            + "join dept on emp.deptno = dept.deptno\n"
+            + "where emp.empno = 1\n"
+            + "and emp.job = 'doctor'\n"
+            + "and dept.name = 'ACCOUNTING'")
+        .ok();
+    fixture.withSql("select *\n"
+            + "from emp\n"
+            + "join dept on emp.deptno = dept.deptno\n"
+            + "where empno = 1\n"
+            + "and job = 'doctor'\n"
+            + "and dept.name = 'ACCOUNTING'")
+        .ok();
+
+    // Self-join
+    fixture.withSql("^select *\n"
+            + "from `SALES`.emp a1\n"
+            + "join `SALES`.emp a2 on a1.empno = a2.empno^")
+        .fails(missingFilters("EMPNO", "EMPNO0", "JOB", "JOB0"));
+
+    // Query is invalid because filtering on a bypass field in a1 disables
+    // must-filter for a1, but a2 must-filters are still required.
+    fixture.withSql("^select *\n"
+            + "from `SALES`.emp a1\n"
+            + "join `SALES`.emp a2 on a1.empno = a2.empno\n"
+            + "where a1.ename = '1'^")
+            .fails(missingFilters("EMPNO0", "JOB0"));
+
+    // Query is invalid because here are two JOB columns but only one is
+    // filtered.
+    fixture.withSql("^select *\n"
+            + "from emp a1\n"
+            + "join emp a2 on a1.empno = a2.empno\n"
+            + "where a2.empno = 1\n"
+            + "and a1.empno = 1\n"
+            + "and a2.job = 'doctor'^")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("select *\n"
+            + "from emp a1\n"
+            + "join emp a2 on a1.empno = a2.empno\n"
+            + "where a2.empno = 1\n"
+            + "and a1.empno = 1\n"
+            + "and a2.job = 'doctor'^\n"
+            + "and a1.ename = '1'")
+        .ok();
+    fixture.withSql("select *\n"
+            + "from emp a1\n"
+            + "join emp a2 on a1.empno = a2.empno\n"
+            + "where a1.empno = 1\n"
+            + "and a1.job = 'doctor'\n"
+            + "and a2.empno = 2\n"
+            + "and a2.job = 'undertaker'\n")
+        .ok();
+    fixture.withSql("^select *\n"
+            + " from (select * from `SALES`.`EMP`) as a1\n"
+            + "join (select * from `SALES`.`EMP`) as a2\n"
+            + "  on a1.`EMPNO` = a2.`EMPNO`^")
+        .fails(missingFilters("EMPNO", "EMPNO0", "JOB", "JOB0"));
+
+    // Query is invalid because filtering on a bypass field in a1 disables
+    // must-filter for a1, but a2 must-filters are still required.
+    fixture.withSql("^select *\n"
+            + " from (select * from `SALES`.`EMP`) as a1\n"
+            + "join (select * from `SALES`.`EMP`) as a2\n"
+            + "  on a1.`EMPNO` = a2.`EMPNO`\n"
+            + "where a1.ename = '1'^")
+        .fails(missingFilters("EMPNO0", "JOB0"));
+    fixture.withSql("^select *\n"
+            + " from (select * from `SALES`.`EMP` where `ENAME` = '1') as a1\n"
+            + "join (select * from `SALES`.`EMP`) as a2\n"
+            + "  on a1.`EMPNO` = a2.`EMPNO`^")
+        .fails(missingFilters("EMPNO0", "JOB0"));
+
+    // USING
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "join dept using(deptno)\n"
+            + "where emp.empno = 1^")
+        .fails(missingFilters("JOB", "NAME"));
+
+    // Query is invalid because ENAME is bypass field for EMP, but not for DEPT.
+    fixture.withSql("^select *\n"
+            + "from emp\n"
+            + "join dept using(deptno)\n"
+            + "where emp.ename = '1'^")
+        .fails(missingFilters("NAME"));
+    fixture.withSql("select *\n"
+            + "from emp\n"
+            + "join dept using(deptno)\n"
+            + "where emp.empno = 1\n"
+            + "and emp.job = 'doctor'\n"
+            + "and dept.name = 'ACCOUNTING'")
+        .ok();
+
+    // GROUP BY (HAVING)
+    fixture.withSql("select *\n"
+            + "from dept\n"
+            + "group by deptno, name\n"
+            + "having name = 'accounting_dept'")
+        .ok();
+    fixture.withSql("^select *\n"
+            + "from dept\n"
+            + "group by deptno, name^")
+        .fails(missingFilters("NAME"));
+
+    // Query is valid because DEPTNO is bypass field.
+    fixture.withSql("select *\n"
+            + "from dept\n"
+            + "group by deptno, name\n"
+            + "having deptno > '1'")
+        .ok();
+    fixture.withSql("select name\n"
+            + "from dept\n"
+            + "group by name\n"
+            + "having name = 'accounting'")
+        .ok();
+    fixture.withSql("^select name\n"
+            + "from dept\n"
+            + "group by name^ ")
+        .fails(missingFilters("NAME"));
+    fixture.withSql("select sum(sal)\n"
+            + "from emp\n"
+            + "where empno > 10\n"
+            + "and job = 'doctor'\n"
+            + "group by empno\n"
+            + "having sum(sal) > 100")
+        .ok();
+    fixture.withSql("^select sum(sal)\n"
+            + "from emp\n"
+            + "where empno > 10\n"
+            + "group by empno\n"
+            + "having sum(sal) > 100^")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("^select sum(sal)\n"
+            + "from emp\n"
+            + "where empno > 10\n"
+            + "group by empno\n"
+            + "having sum(sal) > 100^")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("select sum(sal), job\n"
+            + "from emp\n"
+            + "where empno > 10\n"
+            + "group by job\n"
+            + "having job = 'undertaker'")
+        .ok();
+    fixture.withSql("select sum(sal), ename\n"
+            + "from emp\n"
+            + "where empno > 10\n"
+            + "group by empno, ename\n"
+            + "having ename = '1'")
+        .ok();
+    fixture.withSql("select sum(sal)\n"
+            + "from emp\n"
+            + "where ename = '1'\n"
+            + "group by empno, ename\n"
+            + "having sum(sal) > 100")
+        .ok();
+
+    // CTE
+    fixture.withSql("^WITH cte AS (\n"
+            + "  select * from emp order by empno)^\n"
+            + "SELECT * from cte")
+        .fails(missingFilters("EMPNO", "JOB"));
+
+    // Query is valid because ENAME is a bypass field.
+    fixture.withSql("WITH cte AS (\n"
+            + "  select * from emp where ename = '1' order by empno)^\n"
+            + "SELECT * from cte")
+        .ok();
+
+    // Query is valid because ENAME is a bypass field.
+    fixture.withSql("WITH cte AS (\n"
+        + "  select * from emp order by empno)^\n"
+        + "SELECT * from cte where ename = '1'")
+        .ok();
+    fixture.withSql("^WITH cte AS (\n"
+            + "  select * from emp where empno = 1)^\n"
+            + "SELECT * from cte")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("WITH cte AS (\n"
+            + "  select *\n"
+            + "  from emp\n"
+            + "  where empno = 1\n"
+            + "  and job = 'doctor')\n"
+            + "SELECT * from cte")
+        .ok();
+    fixture.withSql("^WITH cte AS (\n"
+            + "  select * from emp)^\n"
+            + "SELECT *\n"
+            + "from cte\n"
+            + "where empno = 1")
+        .fails(missingFilters("JOB"));
+    fixture.withSql("WITH cte AS (\n"
+            + "  select * from emp where ename = '1')^\n"
+            + "SELECT *\n"
+            + "from cte\n")
+        .ok();
+    fixture.withSql("WITH cte AS (\n"
+            + "  select * from emp)^\n"
+            + "SELECT *\n"
+            + "from cte\n"
+            + "where ename = '1'")
+        .ok();
+    fixture.withSql("WITH cte AS (\n"
+            + "  select * from emp)\n"
+            + "SELECT *\n"
+            + "from cte\n"
+            + "where empno = 1\n"
+            + "and job = 'doctor'")
+        .ok();
+    fixture.withSql("WITH cte AS (\n"
         + "  select * from emp where empno = 1)\n"
         + "SELECT *\n"
         + "from cte\n"
@@ -12600,9 +13054,9 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
             + "and job = 'doctor'")
         .ok();
 
-    // Filters are missing on EMPNO and JOB, but the error message only
-    // complains about JOB because EMPNO is in the SELECT clause, and could
-    // theoretically be filtered by an enclosing query.
+    // Query is invalid because filters are missing on EMPNO and JOB.
+    // The error message only complains about JOB because EMPNO is in the SELECT
+    // clause, and could theoretically be filtered by an enclosing query.
     fixture.withSql("^select empno\n"
             + "from emp^")
         .fails(missingFilters("JOB"));

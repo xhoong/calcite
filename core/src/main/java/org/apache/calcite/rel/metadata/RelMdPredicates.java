@@ -114,7 +114,7 @@ import static java.util.Objects.requireNonNull;
  * select a from R1 where a &gt; 7
  *   &rarr; "a &gt; 7" is pulled up from the Projection.
  * select a + 1 from R1 where a + 1 &gt; 7
- *   &rarr; "a + 1 gt; 7" is not pulled up
+ *   &rarr; "a + 1 &gt; 7" is not pulled up
  * </pre>
  *
  * <li> There are several restrictions on Joins:
@@ -308,18 +308,11 @@ public class RelMdPredicates
     final RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
     final RelOptPredicateList inputInfo = mq.getPulledUpPredicates(input);
 
-    // Simplify condition using RexSimplify.
-    final RexNode condition = filter.getCondition();
-    final RexExecutor executor =
-        Util.first(filter.getCluster().getPlanner().getExecutor(), RexUtil.EXECUTOR);
-    final RexSimplify simplify = new RexSimplify(rexBuilder, RelOptPredicateList.EMPTY, executor);
-    final RexNode simplifiedCondition = simplify.simplify(condition);
-
     return Util.first(inputInfo, RelOptPredicateList.EMPTY)
         .union(rexBuilder,
             RelOptPredicateList.of(rexBuilder,
                 RexUtil.retainDeterministic(
-                    RelOptUtil.conjunctions(simplifiedCondition))));
+                    RelOptUtil.conjunctions(filter.getCondition()))));
   }
 
   /**

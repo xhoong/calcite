@@ -50,6 +50,7 @@ import static org.apache.calcite.runtime.SqlFunctions.concatMultiTypeWithSeparat
 import static org.apache.calcite.runtime.SqlFunctions.concatMultiWithNull;
 import static org.apache.calcite.runtime.SqlFunctions.concatMultiWithSeparator;
 import static org.apache.calcite.runtime.SqlFunctions.concatWithNull;
+import static org.apache.calcite.runtime.SqlFunctions.convertOracle;
 import static org.apache.calcite.runtime.SqlFunctions.fromBase64;
 import static org.apache.calcite.runtime.SqlFunctions.greater;
 import static org.apache.calcite.runtime.SqlFunctions.initcap;
@@ -62,6 +63,7 @@ import static org.apache.calcite.runtime.SqlFunctions.ltrim;
 import static org.apache.calcite.runtime.SqlFunctions.md5;
 import static org.apache.calcite.runtime.SqlFunctions.overlay;
 import static org.apache.calcite.runtime.SqlFunctions.position;
+import static org.apache.calcite.runtime.SqlFunctions.replace;
 import static org.apache.calcite.runtime.SqlFunctions.rtrim;
 import static org.apache.calcite.runtime.SqlFunctions.sha1;
 import static org.apache.calcite.runtime.SqlFunctions.sha256;
@@ -319,6 +321,11 @@ class SqlFunctionsTest {
     assertThat(concatMultiObjectWithSeparator("abc", null, null), is(""));
   }
 
+  @Test void testConvertOracle() {
+    assertThat(convertOracle("a", "UTF8", "LATIN1"), is("a"));
+    assertThat(convertOracle("a", "UTF8"), is("a"));
+  }
+
   @Test void testPosixRegex() {
     final SqlFunctions.PosixRegexFunction f =
         new SqlFunctions.PosixRegexFunction();
@@ -550,6 +557,18 @@ class SqlFunctionsTest {
       assertThat(e.getMessage(),
           is("Invalid integer input '-4' for argument 'occurrence_position' in REGEXP_INSTR"));
     }
+  }
+
+  @Test void testReplace() {
+    assertThat(replace("", "ciao", "ci", true), is(""));
+    assertThat(replace("ciao", "ciao", "", true), is(""));
+    assertThat(replace("ciao", "", "ciao", true), is("ciao"));
+    assertThat(replace("ci ao", " ", "ciao", true), is("ciciaoao"));
+    assertThat(replace("ciAao", "a", "ciao", true), is("ciAciaoo"));
+    assertThat(replace("ciAao", "A", "ciao", true), is("ciciaoao"));
+    assertThat(replace("ciAao", "a", "ciao", false), is("ciciaociaoo"));
+    assertThat(replace("ciAao", "A", "ciao", false), is("ciciaociaoo"));
+    assertThat(replace("hello world", "o", "", true), is("hell wrld"));
   }
 
   @Test void testRegexpReplace() {

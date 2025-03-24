@@ -125,6 +125,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BinaryOperator;
 import java.util.function.Consumer;
@@ -132,6 +133,7 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.zip.CRC32;
 
 import static org.apache.calcite.config.CalciteSystemProperty.FUNCTION_LEVEL_CACHE_MAX_SIZE;
 import static org.apache.calcite.linq4j.Nullness.castNonNull;
@@ -277,12 +279,34 @@ public class SqlFunctions {
     return condition;
   }
 
-  /** SQL TO_BASE64(string) function. */
+  public static String uuidToString(UUID uuid) {
+    return uuid.toString();
+  }
+
+  public static UUID binaryToUuid(ByteString bytes) {
+    if (bytes.length() < 16) {
+      throw new IllegalArgumentException("Need at least 16 bytes for UUID");
+    }
+    ByteBuffer byteBuffer = ByteBuffer.wrap(bytes.getBytes());
+    long mostSignificantBits = byteBuffer.getLong();
+    long leastSignificantBits = byteBuffer.getLong();
+    return new UUID(mostSignificantBits, leastSignificantBits);
+  }
+
+  public static ByteString uuidToBinary(UUID uuid) {
+    byte[] dest = new byte[16];
+    ByteBuffer byteBuffer = ByteBuffer.wrap(dest);
+    byteBuffer.putLong(uuid.getMostSignificantBits());
+    byteBuffer.putLong(uuid.getLeastSignificantBits());
+    return new ByteString(dest);
+  }
+
+  /** SQL TO_BASE64(string)/BASE64(string) function. */
   public static String toBase64(String string) {
     return toBase64_(string.getBytes(UTF_8));
   }
 
-  /** SQL TO_BASE64(string) function for binary string. */
+  /** SQL TO_BASE64(string)/BASE64(string) function for binary string. */
   public static String toBase64(ByteString string) {
     return toBase64_(string.getBytes());
   }
@@ -297,7 +321,7 @@ public class SqlFunctions {
     return str.substring(0, str.length() - 1);
   }
 
-  /** SQL FROM_BASE64(string) function. */
+  /** SQL FROM_BASE64(string)/UNBASE64(string) function. */
   public static @Nullable ByteString fromBase64(String base64) {
     try {
       base64 = FROM_BASE64_REGEXP.matcher(base64).replaceAll("");
@@ -339,6 +363,46 @@ public class SqlFunctions {
   /** SQL TO_HEX(binary) function. */
   public static String toHex(ByteString byteString) {
     return Hex.encodeHexString(byteString.getBytes());
+  }
+
+  /** SQL HEX(varchar) function. */
+  public static String hex(String value) {
+    return Hex.encodeHexString(value.getBytes(UTF_8));
+  }
+
+  /** SQL BIN(long) function. */
+  public static String bin(long value) {
+    int zeros = Long.numberOfLeadingZeros(value);
+    if (zeros == Long.SIZE) {
+      return "0";
+    } else {
+      int length = Long.SIZE - zeros;
+      byte[] bytes = new byte[length];
+      for (int index = length - 1; index >= 0; index--) {
+        bytes[index] = (byte) ((value & 0x1) == 1 ? '1' : '0');
+        value >>>= 1;
+      }
+      //CHECKSTYLE: IGNORE 1
+      return new String(bytes, UTF_8);
+    }
+  }
+
+  /** SQL CRC32(string) function. */
+  public static long crc32(String value)  {
+    final CRC32 crc32 = new CRC32();
+    crc32.reset();
+    byte[] bytes = value.getBytes(UTF_8);
+    crc32.update(bytes, 0, bytes.length);
+    return crc32.getValue();
+  }
+
+  /** SQL CRC32(string) function for binary string. */
+  public static long crc32(ByteString value)  {
+    final CRC32 crc32 = new CRC32();
+    crc32.reset();
+    byte[] bytes = value.getBytes();
+    crc32.update(bytes, 0, bytes.length);
+    return crc32.getValue();
   }
 
   /** SQL MD5(string) function. */
@@ -1681,6 +1745,29 @@ public class SqlFunctions {
     }
   }
 
+  /** Oracle's {@code CONVERT(charValue, destCharsetName[, srcCharsetName])} function,
+   * return null if s is null or empty. */
+  public static String convertOracle(String s, String... args) {
+    final Charset src;
+    final Charset dest;
+    if (args.length == 1) {
+      // srcCharsetName is not specified
+      src = Charset.defaultCharset();
+      dest = SqlUtil.getCharset(args[0]);
+    } else {
+      dest = SqlUtil.getCharset(args[0]);
+      src = SqlUtil.getCharset(args[1]);
+    }
+    byte[] bytes = s.getBytes(src);
+    final CharsetDecoder decoder = dest.newDecoder();
+    final ByteBuffer buffer = ByteBuffer.wrap(bytes);
+    try {
+      return decoder.decode(buffer).toString();
+    } catch (CharacterCodingException ex) {
+      throw RESOURCE.charsetEncoding(s, dest.name()).ex();
+    }
+  }
+
   /** State for {@code PARSE_URL}. */
   @Deterministic
   public static class ParseUrlFunction {
@@ -1772,7 +1859,7 @@ public class SqlFunctions {
   public static String trim(boolean left, boolean right, String seek,
       String s, boolean strict) {
     if (strict && seek.length() != 1) {
-      throw RESOURCE.trimError().ex();
+      throw RESOURCE.trimError(seek).ex();
     }
     int j = s.length();
     if (right) {
@@ -4271,6 +4358,10 @@ public class SqlFunctions {
     return v == null ? castNonNull(null) : toInt(v);
   }
 
+  // Method tagged as non-deterministic because it can throw.
+  // The DeterministicCodeOptimizer may otherwise try to lift it out of try-catch blocks.
+  // See https://issues.apache.org/jira/browse/CALCITE-6753
+  @NonDeterministic
   public static int toInt(String s) {
     return parseInt(s.trim());
   }
@@ -5731,8 +5822,16 @@ public class SqlFunctions {
   }
 
   /** SQL {@code REPLACE(string, search, replacement)} function. */
-  public static String replace(String s, String search, String replacement) {
-    return s.replace(search, replacement);
+  public static String replace(String s, String search, String replacement,
+      boolean isCaseSensitive) {
+    if (search.isEmpty()) {
+      return s;
+    }
+    if (isCaseSensitive) {
+      return s.replace(search, replacement);
+    }
+    // for MSSQL's REPLACE function, search pattern is case-insensitive during matching
+    return org.apache.commons.lang3.StringUtils.replaceIgnoreCase(s, search, replacement);
   }
 
   /** Helper for "array element reference". Caller has already ensured that
@@ -6423,6 +6522,15 @@ public class SqlFunctions {
   public static List reverse(List list) {
     Collections.reverse(list);
     return list;
+  }
+
+  /** SQL {@code ARRAY_SLICE(array, start, length)} function. */
+  public static List arraySlice(List list, int start, int length) {
+    // return empty list if start/length are out of range of the array
+    if (start + length > list.size()) {
+      return Collections.emptyList();
+    }
+    return list.subList(start, start + length);
   }
 
   /** SQL {@code ARRAY_TO_STRING(array, delimiter)} function. */

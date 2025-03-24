@@ -1697,7 +1697,13 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
   public static final SqlFunction SUBSTRING = new SqlSubstringFunction();
 
   /** The {@code REPLACE(string, search, replace)} function. Not standard SQL,
-   * but in Oracle and Postgres. */
+   * but in Oracle, PostgreSQL and Microsoft SQL Server.
+   *
+   * <p>REPLACE behaves a little different in Microsoft SQL Server,
+   * whose search pattern is case-insensitive during matching.
+   *
+   * <p>For example, {@code REPLACE(('ciAao', 'a', 'ciao'))} returns "ciAciaoo" in both
+   * Oracle and PostgreSQL, but returns "ciciaociaoo" in Microsoft SQL Server. */
   public static final SqlFunction REPLACE =
       SqlBasicFunction.create("REPLACE", ReturnTypes.VARCHAR_NULLABLE,
           OperandTypes.STRING_STRING_STRING, SqlFunctionCategory.STRING);
@@ -2830,6 +2836,17 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
       return floor ? SqlLibraryOperators.FLOOR_BIG_QUERY : SqlLibraryOperators.CEIL_BIG_QUERY;
     } else {
       return floor ? SqlStdOperatorTable.FLOOR : SqlStdOperatorTable.CEIL;
+    }
+  }
+
+  /** Returns the operator for standard {@code CONVERT} and Oracle's {@code CONVERT}
+   * with the given library. */
+  public static SqlOperator getConvertFuncByConformance(SqlConformance conformance) {
+    if (SqlConformanceEnum.ORACLE_10 == conformance
+        || SqlConformanceEnum.ORACLE_12 == conformance) {
+      return SqlLibraryOperators.CONVERT_ORACLE;
+    } else {
+      return SqlStdOperatorTable.CONVERT;
     }
   }
 }

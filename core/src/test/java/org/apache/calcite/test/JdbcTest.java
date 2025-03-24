@@ -18,6 +18,7 @@ package org.apache.calcite.test;
 
 import org.apache.calcite.DataContexts;
 import org.apache.calcite.adapter.clone.CloneSchema;
+import org.apache.calcite.adapter.enumerable.EnumerableRules;
 import org.apache.calcite.adapter.generate.RangeTable;
 import org.apache.calcite.adapter.java.AbstractQueryableTable;
 import org.apache.calcite.adapter.java.JavaTypeFactory;
@@ -29,7 +30,6 @@ import org.apache.calcite.avatica.AvaticaConnection;
 import org.apache.calcite.avatica.AvaticaStatement;
 import org.apache.calcite.avatica.Handler;
 import org.apache.calcite.avatica.HandlerImpl;
-import org.apache.calcite.avatica.Meta;
 import org.apache.calcite.avatica.util.Casing;
 import org.apache.calcite.avatica.util.Quoting;
 import org.apache.calcite.config.CalciteConnectionConfig;
@@ -38,7 +38,6 @@ import org.apache.calcite.config.CalciteSystemProperty;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.config.NullCollation;
 import org.apache.calcite.jdbc.CalciteConnection;
-import org.apache.calcite.jdbc.CalciteMetaImpl;
 import org.apache.calcite.jdbc.CalcitePrepare;
 import org.apache.calcite.jdbc.CalciteSchema;
 import org.apache.calcite.jdbc.Driver;
@@ -47,7 +46,6 @@ import org.apache.calcite.linq4j.Linq4j;
 import org.apache.calcite.linq4j.Ord;
 import org.apache.calcite.linq4j.QueryProvider;
 import org.apache.calcite.linq4j.Queryable;
-import org.apache.calcite.linq4j.function.Function0;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.prepare.CalcitePrepareImpl;
@@ -74,6 +72,7 @@ import org.apache.calcite.schema.impl.AbstractTableQueryable;
 import org.apache.calcite.schema.impl.DelegatingSchema;
 import org.apache.calcite.schema.impl.TableMacroImpl;
 import org.apache.calcite.schema.impl.ViewTable;
+import org.apache.calcite.schema.lookup.LikePattern;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDialect;
 import org.apache.calcite.sql.SqlKind;
@@ -85,6 +84,7 @@ import org.apache.calcite.sql.parser.SqlParser;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.sql.parser.impl.SqlParserImpl;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.sql.validate.SqlConformanceEnum;
 import org.apache.calcite.sql2rel.SqlToRelConverter.Config;
 import org.apache.calcite.test.schemata.catchall.CatchallSchema;
 import org.apache.calcite.test.schemata.foodmart.FoodmartSchema;
@@ -902,17 +902,7 @@ public class JdbcTest {
     checkMockDdl(counter, true,
         driver2.withPrepareFactory(() -> new CountingPrepare(counter)));
 
-    // MockDdlDriver2 implements commit if we override its createPrepareFactory
-    // method. The method is deprecated but override still needs to work.
-    checkMockDdl(counter, true,
-        new MockDdlDriver2(counter) {
-          @SuppressWarnings("deprecation")
-          @Override protected Function0<CalcitePrepare> createPrepareFactory() {
-            return () -> new CountingPrepare(counter);
-          }
-        });
-
-    // MockDdlDriver2 implements commit if we override its createPrepareFactory
+    // MockDdlDriver2 implements commit if we override its createPrepare
     // method.
     checkMockDdl(counter, true,
         new MockDdlDriver2(counter) {
@@ -1000,7 +990,7 @@ public class JdbcTest {
     final int driverMajor = metaData.getDriverMajorVersion();
     final int driverMinor = metaData.getDriverMinorVersion();
     assertThat(driverMajor, is(1));
-    assertTrue(driverMinor >= 0 && driverMinor < 40);
+    assertThat(driverMinor, is(40));
 
     assertThat(metaData.getDatabaseProductName(), is("Calcite"));
     final String databaseVersion =
@@ -1078,7 +1068,7 @@ public class JdbcTest {
   }
 
   /** Unit test for
-   * {@link org.apache.calcite.jdbc.CalciteMetaImpl#likeToRegex(org.apache.calcite.avatica.Meta.Pat)}. */
+   * {@link LikePattern#likeToRegex(org.apache.calcite.avatica.Meta.Pat)}. */
   @Test void testLikeToRegex() {
     checkLikeToRegex(true, "%", "abc");
     checkLikeToRegex(true, "abc", "abc");
@@ -1103,8 +1093,8 @@ public class JdbcTest {
   }
 
   private void checkLikeToRegex(boolean b, String pattern, String abc) {
-    final Pattern regex = CalciteMetaImpl.likeToRegex(Meta.Pat.of(pattern));
-    assertThat(b, is(regex.matcher(abc).matches()));
+    final Pattern regex = LikePattern.likeToRegex(pattern);
+    assertTrue(b == regex.matcher(abc).matches());
   }
 
   /** Tests driver's implementation of {@link DatabaseMetaData#getColumns},
@@ -1218,7 +1208,7 @@ public class JdbcTest {
         connection.unwrap(CalciteConnection.class);
     final SchemaPlus rootSchema = calciteConnection.getRootSchema();
     final SchemaPlus foodmart =
-        requireNonNull(rootSchema.getSubSchema("foodmart"));
+        requireNonNull(rootSchema.subSchemas().get("foodmart"));
     rootSchema.add("foodmart2", new CloneSchema(foodmart));
     Statement statement = connection.createStatement();
     ResultSet resultSet =
@@ -1236,10 +1226,10 @@ public class JdbcTest {
     final CalciteConnection calciteConnection =
         connection.unwrap(CalciteConnection.class);
     final SchemaPlus rootSchema = calciteConnection.getRootSchema();
-    final SchemaPlus foodmart = rootSchema.getSubSchema("foodmart");
+    final SchemaPlus foodmart = rootSchema.subSchemas().get("foodmart");
     assertThat(foodmart, notNullValue());
     final JdbcTable timeByDay =
-        requireNonNull((JdbcTable) foodmart.getTable("time_by_day"));
+        requireNonNull((JdbcTable) foodmart.tables().get("time_by_day"));
     final int rows = timeByDay.scan(DataContexts.of(calciteConnection, rootSchema)).count();
     assertThat(rows, OrderingComparison.greaterThan(0));
   }
@@ -3936,6 +3926,30 @@ public class JdbcTest {
         .returnsUnordered("empid=150; name=Sebastian");
   }
 
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExist() {
+    final String sql = ""
+            + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
+            + "intersect\n"
+            + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"empid\">=150";
+    CalciteAssert.hr()
+        .query(sql)
+        .withHook(Hook.PLANNER, (Consumer<RelOptPlanner>)
+            p -> {
+              p.removeRule(CoreRules.INTERSECT_TO_DISTINCT);
+              p.removeRule(EnumerableRules.ENUMERABLE_INTERSECT_RULE);
+              p.removeRule(EnumerableRules.ENUMERABLE_FILTER_RULE);
+              p.addRule(CoreRules.INTERSECT_TO_EXISTS);
+              p.addRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE);
+              p.addRule(CoreRules.FILTER_TO_CALC);
+            })
+        .explainContains("")
+        .returnsUnordered("empid=150; name=Sebastian");
+  }
+
   @Test void testExcept() {
     final String sql = ""
         + "select \"empid\", \"name\" from \"hr\".\"emps\" where \"deptno\"=10\n"
@@ -4790,6 +4804,19 @@ public class JdbcTest {
             "deptno=10; empid=110; commission=250; R=3; RCNF=3; RCNL=2; R=2; RD=2",
             "deptno=10; empid=150; commission=null; R=2; RCNF=1; RCNL=3; R=3; RD=1",
             "deptno=20; empid=200; commission=500; R=1; RCNF=1; RCNL=1; R=1; RD=1");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6837">[CALCITE-6837]
+   * Invalid code generated for ROW_NUMBER function in Enumerable convention</a>. */
+  @Test void testWinRowNumber1() {
+    CalciteAssert.that()
+        .with(CalciteAssert.Config.JDBC_SCOTT)
+        .query("select row_number() over () from dept")
+        .returnsUnordered("EXPR$0=1",
+            "EXPR$0=2",
+            "EXPR$0=3",
+            "EXPR$0=4");
   }
 
   /** Tests UNBOUNDED PRECEDING clause. */
@@ -7352,6 +7379,47 @@ public class JdbcTest {
         .throws_("No match found for function signature NVL(<NUMERIC>, <NUMERIC>)");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6730">[CALCITE-6730]
+   * Add CONVERT function(enabled in Oracle library)</a>. */
+  @Test void testConvertOracle() {
+    CalciteAssert.AssertThat withOracle10 =
+        CalciteAssert.hr()
+            .with(SqlConformanceEnum.ORACLE_10);
+    testConvertOracleInternal(withOracle10);
+
+    CalciteAssert.AssertThat withOracle12
+        = withOracle10.with(SqlConformanceEnum.ORACLE_12);
+    testConvertOracleInternal(withOracle12);
+  }
+
+  private void testConvertOracleInternal(CalciteAssert.AssertThat with) {
+    with.query("select \"name\", \"empid\" from \"hr\".\"emps\"\n"
+            + "where convert(\"name\", GBK)=_GBK'Eric'")
+        .returns("name=Eric; empid=200\n");
+    with.query("select \"name\", \"empid\" from \"hr\".\"emps\"\n"
+            + "where _BIG5'Eric'=convert(\"name\", LATIN1)")
+        .throws_("Cannot apply operation '=' to strings with "
+            + "different charsets 'Big5' and 'ISO-8859-1'");
+    // use LATIN1 as dest charset, not BIG5
+    with.query("select \"name\", \"empid\" from \"hr\".\"emps\"\n"
+            + "where _BIG5'Eric'=convert(\"name\", LATIN1, BIG5)")
+        .throws_("Cannot apply operation '=' to strings with "
+            + "different charsets 'Big5' and 'ISO-8859-1'");
+
+    // check cast
+    with.query("select \"name\", \"empid\" from \"hr\".\"emps\"\n"
+            + "where cast(convert(\"name\", LATIN1, UTF8) as varchar)='Eric'")
+        .returns("name=Eric; empid=200\n");
+    // the result of convert(\"name\", GBK) has GBK charset
+    // while CHAR(5) has ISO-8859-1 charset, which is not allowed to cast
+    with.query("select \"name\", \"empid\" from \"hr\".\"emps\"\n"
+            + "where cast(convert(\"name\", GBK) as varchar)='Eric'")
+        .throws_(
+            "cannot convert value of type "
+                + "JavaType(class java.lang.String CHARACTER SET \"GBK\") to type VARCHAR NOT NULL");
+  }
+
   @Test void testIf() {
     CalciteAssert.that(CalciteAssert.Config.REGULAR)
         .with(CalciteConnectionProperty.FUN, "bigquery")
@@ -7495,7 +7563,7 @@ public class JdbcTest {
     aSchema.setCacheEnabled(true);
 
     // explicit should win implicit.
-    assertThat(aSchema.getSubSchemaNames(), hasSize(1));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(1));
   }
 
   @Test void testSimpleCalciteSchema() {
@@ -7516,13 +7584,54 @@ public class JdbcTest {
     // add implicit schema "/a/c"
     aSubSchemaMap.put("c", new AbstractSchema());
 
-    assertThat(aSchema.getSubSchema("c"), notNullValue());
-    assertThat(aSchema.getSubSchema("b"), notNullValue());
+    assertThat(aSchema.subSchemas().get("c"), notNullValue());
+    assertThat(aSchema.subSchemas().get("b"), notNullValue());
 
     // add implicit schema "/a/b"
     aSubSchemaMap.put("b", new AbstractSchema());
     // explicit should win implicit.
-    assertThat(aSchema.getSubSchemaNames(), hasSize(2));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(2));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6903">[CALCITE-6903]
+   * CalciteSchema#getSubSchemaMap must consider implicit sub-schemas</a>. */
+  @Test void testCalciteSchemaGetSubSchemaMapCache() {
+    checkCalciteSchemaGetSubSchemaMap(true);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6903">[CALCITE-6903]
+   * CalciteSchema#getSubSchemaMap must consider implicit sub-schemas</a>. */
+  @Test void testCalciteSchemaGetSubSchemaMapNoCache() {
+    checkCalciteSchemaGetSubSchemaMap(false);
+  }
+
+  void checkCalciteSchemaGetSubSchemaMap(boolean cache) {
+    final CalciteSchema calciteSchema = CalciteSchema.createRootSchema(false, cache);
+
+    // create schema "/a"
+    final Map<String, Schema> aSubSchemaMap = new HashMap<>();
+    final CalciteSchema aSchema =
+        calciteSchema.add("a", new AbstractSchema() {
+          @Override protected Map<String, Schema> getSubSchemaMap() {
+            return aSubSchemaMap;
+          }
+        });
+
+    // add explicit schema "/a/b".
+    aSchema.add("b", new AbstractSchema());
+
+    // add implicit schema "/a/c"
+    aSubSchemaMap.put("c", new AbstractSchema());
+
+    assertThat(aSchema.subSchemas().get("c"), notNullValue());
+    assertThat(aSchema.subSchemas().get("b"), notNullValue());
+
+    final Map<String, CalciteSchema> subSchemaMap = aSchema.getSubSchemaMap();
+    assertThat(subSchemaMap.values(), hasSize(2));
+    assertThat(subSchemaMap.get("c"), notNullValue());
+    assertThat(subSchemaMap.get("b"), notNullValue());
   }
 
   @Test void testCaseSensitiveConfigurableSimpleCalciteSchema() {
@@ -7583,7 +7692,7 @@ public class JdbcTest {
         });
     // add view definition
     final String viewName = "V";
-    final SchemaPlus a = rootSchema.getSubSchema("a");
+    final SchemaPlus a = rootSchema.subSchemas().get("a");
     assertThat(a, notNullValue());
     final org.apache.calcite.schema.Function view =
         ViewTable.viewMacro(a,
@@ -7621,33 +7730,33 @@ public class JdbcTest {
       }
     });
     aSchema.setCacheEnabled(true);
-    assertThat(aSchema.getSubSchemaNames(), hasSize(0));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(0));
 
     // first call, to populate the cache
-    assertThat(aSchema.getSubSchemaNames(), hasSize(0));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(0));
 
     // create schema "/a/b1". Appears only when we disable caching.
     aSubSchemaMap.put("b1", new AbstractSchema());
-    assertThat(aSchema.getSubSchemaNames(), hasSize(0));
-    assertThat(aSchema.getSubSchema("b1"), nullValue());
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(0));
+    assertThat(aSchema.subSchemas().get("b1"), nullValue());
     aSchema.setCacheEnabled(false);
-    assertThat(aSchema.getSubSchemaNames(), hasSize(1));
-    assertThat(aSchema.getSubSchema("b1"), notNullValue());
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(1));
+    assertThat(aSchema.subSchemas().get("b1"), notNullValue());
 
     // create schema "/a/b2". Appears immediately, because caching is disabled.
     aSubSchemaMap.put("b2", new AbstractSchema());
-    assertThat(aSchema.getSubSchemaNames(), hasSize(2));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(2));
 
     // an explicit sub-schema appears immediately, even if caching is enabled
     aSchema.setCacheEnabled(true);
-    assertThat(aSchema.getSubSchemaNames(), hasSize(2));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(2));
     aSchema.add("b3", new AbstractSchema()); // explicit
     aSubSchemaMap.put("b4", new AbstractSchema()); // implicit
-    assertThat(aSchema.getSubSchemaNames(), hasSize(3));
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(3));
     aSchema.setCacheEnabled(false);
-    assertThat(aSchema.getSubSchemaNames(), hasSize(4));
-    for (String name : aSchema.getSubSchemaNames()) {
-      assertThat(aSchema.getSubSchema(name), notNullValue());
+    assertThat(aSchema.subSchemas().getNames(LikePattern.any()), hasSize(4));
+    for (String name : aSchema.subSchemas().getNames(LikePattern.any())) {
+      assertThat(aSchema.subSchemas().get(name), notNullValue());
     }
 
     // create schema "/a2"
@@ -7658,21 +7767,21 @@ public class JdbcTest {
       }
     });
     a2Schema.setCacheEnabled(true);
-    assertThat(a2Schema.getSubSchemaNames(), hasSize(0));
+    assertThat(a2Schema.subSchemas().getNames(LikePattern.any()), hasSize(0));
 
     // create schema "/a2/b3". Change not visible since caching is enabled.
     a2SubSchemaMap.put("b3", new AbstractSchema());
-    assertThat(a2Schema.getSubSchemaNames(), hasSize(0));
+    assertThat(a2Schema.subSchemas().getNames(LikePattern.any()), hasSize(0));
     Thread.sleep(1);
-    assertThat(a2Schema.getSubSchemaNames(), hasSize(0));
+    assertThat(a2Schema.subSchemas().getNames(LikePattern.any()), hasSize(0));
 
     // Change visible after we turn off caching.
     a2Schema.setCacheEnabled(false);
-    assertThat(a2Schema.getSubSchemaNames(), hasSize(1));
+    assertThat(a2Schema.subSchemas().getNames(LikePattern.any()), hasSize(1));
     a2SubSchemaMap.put("b4", new AbstractSchema());
-    assertThat(a2Schema.getSubSchemaNames(), hasSize(2));
-    for (String name : aSchema.getSubSchemaNames()) {
-      assertThat(aSchema.getSubSchema(name), notNullValue());
+    assertThat(a2Schema.subSchemas().getNames(LikePattern.any()), hasSize(2));
+    for (String name : aSchema.subSchemas().getNames(LikePattern.any())) {
+      assertThat(aSchema.subSchemas().get(name), notNullValue());
     }
 
     // add tables and retrieve with various case sensitivities
@@ -7682,7 +7791,7 @@ public class JdbcTest {
     a2Schema.add("TABLE1", table);
     a2Schema.add("tabLe1", table);
     a2Schema.add("tabLe2", table);
-    assertThat(a2Schema.getTableNames(), hasSize(4));
+    assertThat(a2Schema.tables().getNames(LikePattern.any()), hasSize(4));
     final CalciteSchema a2CalciteSchema = CalciteSchema.from(a2Schema);
     assertThat(a2CalciteSchema.getTable("table1", true), notNullValue());
     assertThat(a2CalciteSchema.getTable("table1", false), notNullValue());
@@ -8815,7 +8924,7 @@ public class JdbcTest {
     }
 
     public final Table customer =
-        requireNonNull(getTable("customer"));
+        requireNonNull(tables().get("customer"));
   }
 
   public static class Customer {

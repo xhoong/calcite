@@ -304,8 +304,8 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
       ConstantExpression format) {
     Expression convert = getConvertExpression(sourceType, targetType, operand, format);
     Expression convert2 = checkExpressionPadTruncate(convert, sourceType, targetType);
-    Expression convert3 = expressionHandlingSafe(convert2, safe, targetType);
-    return scaleValue(sourceType, targetType, convert3);
+    Expression convert3 = scaleValue(sourceType, targetType, convert2);
+    return expressionHandlingSafe(convert3, safe, targetType);
   }
 
   private Expression getConvertExpression(
@@ -377,7 +377,8 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
       case VARCHAR:
         return Expressions.call(BuiltInMethod.STRING_TO_BINARY.method, operand,
             new ConstantExpression(Charset.class, sourceType.getCharset()));
-
+      case UUID:
+        return Expressions.call(BuiltInMethod.UUID_TO_BINARY.method, operand);
       default:
         return defaultExpression.get();
       }
@@ -416,12 +417,26 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
       default:
         return defaultExpression.get();
       }
-
+    case UUID:
+      switch (sourceType.getSqlTypeName()) {
+      case UUID:
+        return operand;
+      case CHAR:
+      case VARCHAR:
+        return Expressions.call(BuiltInMethod.UUID_FROM_STRING.method, operand);
+      case BINARY:
+      case VARBINARY:
+        return Expressions.call(BuiltInMethod.BINARY_TO_UUID.method, operand);
+      default:
+        return defaultExpression.get();
+      }
     case CHAR:
     case VARCHAR:
       final SqlIntervalQualifier interval =
           sourceType.getIntervalQualifier();
       switch (sourceType.getSqlTypeName()) {
+      case UUID:
+        return Expressions.call(BuiltInMethod.UUID_TO_STRING.method, operand);
       // If format string is supplied, return formatted date/time/timestamp
       case DATE:
         return RexImpTable.optimize2(operand, Expressions.isConstantNull(format)
@@ -563,9 +578,14 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
     case TINYINT:
     case SMALLINT: {
       if (SqlTypeName.NUMERIC_TYPES.contains(sourceType.getSqlTypeName())) {
+        Type javaClass = typeFactory.getJavaClass(targetType);
+        Primitive primitive = Primitive.of(javaClass);
+        if (primitive == null) {
+          primitive = Primitive.ofBox(javaClass);
+        }
         return Expressions.call(
             BuiltInMethod.INTEGER_CAST_ROUNDING_MODE.method,
-            Expressions.constant(Primitive.of(typeFactory.getJavaClass(targetType))),
+            Expressions.constant(primitive),
             operand, Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
       }
       return defaultExpression.get();
@@ -1014,6 +1034,9 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
     case VARCHAR:
       value2 = literal.getValueAs(String.class);
       break;
+    case UUID:
+      return Expressions.call(null, BuiltInMethod.UUID_FROM_STRING.method,
+          Expressions.constant(literal.getValueAs(String.class)));
     case BINARY:
     case VARBINARY:
       return Expressions.new_(
@@ -1190,7 +1213,7 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
     final SqlTypeFamily sourceFamily = sourceType.getSqlTypeName().getFamily();
     if (targetFamily == SqlTypeFamily.NUMERIC
         // multiplyDivide cannot handle DECIMALs, but for DECIMAL
-        // destination types the result is already scaled.
+        // target types the result is already scaled.
         && targetType.getSqlTypeName() != SqlTypeName.DECIMAL
         && (sourceFamily == SqlTypeFamily.INTERVAL_YEAR_MONTH
             || sourceFamily == SqlTypeFamily.INTERVAL_DAY_TIME)) {
@@ -1198,6 +1221,14 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
       final BigDecimal multiplier = BigDecimal.ONE;
       final BigDecimal divider =
           sourceType.getSqlTypeName().getEndUnit().multiplier;
+      return RexImpTable.multiplyDivide(operand, multiplier, divider);
+    }
+    if (SqlTypeName.INTERVAL_TYPES.contains(targetType.getSqlTypeName())
+        && !SqlTypeName.INTERVAL_TYPES.contains(sourceType.getSqlTypeName())) {
+      // Conversion between intervals is only allowed if the intervals have the same type,
+      // and then it should be a no-op.
+      final BigDecimal multiplier = targetType.getSqlTypeName().getEndUnit().multiplier;
+      final BigDecimal divider = BigDecimal.ONE;
       return RexImpTable.multiplyDivide(operand, multiplier, divider);
     }
     return operand;
@@ -1522,6 +1553,7 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
         new BlockBuilder(true, currentBlockBuilder);
     final RexToLixTranslator ifTrueTranslator =
         currentTranslator.setBlock(ifTrueBlockBuilder);
+    ifTrueTranslator.rexResultMap.putAll(currentTranslator.rexResultMap);
     final Expression ifTrueRes =
         implementCallOperand2(ifTrueNode, storageTypes.get(pos + 1),
             ifTrueTranslator);
@@ -1542,6 +1574,7 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
         new BlockBuilder(true, currentBlockBuilder);
     final RexToLixTranslator ifFalseTranslator =
         currentTranslator.setBlock(ifFalseBlockBuilder);
+    ifFalseTranslator.rexResultMap.putAll(currentTranslator.rexResultMap);
     implementRecursively(ifFalseTranslator, operandList, valueVariable, pos + 2);
     final BlockStatement ifFalse = ifFalseBlockBuilder.toBlock();
     currentBlockBuilder.add(

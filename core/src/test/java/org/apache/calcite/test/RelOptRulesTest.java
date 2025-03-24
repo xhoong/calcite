@@ -26,6 +26,8 @@ import org.apache.calcite.adapter.enumerable.EnumerableSort;
 import org.apache.calcite.config.CalciteConnectionConfig;
 import org.apache.calcite.plan.Contexts;
 import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptCost;
+import org.apache.calcite.plan.RelOptCostImpl;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
@@ -52,6 +54,7 @@ import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.Minus;
 import org.apache.calcite.rel.core.Project;
+import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.hint.HintPredicates;
 import org.apache.calcite.rel.hint.HintStrategyTable;
@@ -61,6 +64,7 @@ import org.apache.calcite.rel.logical.LogicalCorrelate;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.logical.LogicalTableModify;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.rules.AggregateExpandWithinDistinctRule;
 import org.apache.calcite.rel.rules.AggregateExtractProjectRule;
 import org.apache.calcite.rel.rules.AggregateProjectConstantToDummyJoinRule;
@@ -77,6 +81,7 @@ import org.apache.calcite.rel.rules.FilterMultiJoinMergeRule;
 import org.apache.calcite.rel.rules.FilterProjectTransposeRule;
 import org.apache.calcite.rel.rules.JoinAssociateRule;
 import org.apache.calcite.rel.rules.JoinCommuteRule;
+import org.apache.calcite.rel.rules.LoptOptimizeJoinRule;
 import org.apache.calcite.rel.rules.MeasureRules;
 import org.apache.calcite.rel.rules.MultiJoin;
 import org.apache.calcite.rel.rules.ProjectCorrelateTransposeRule;
@@ -347,6 +352,22 @@ class RelOptRulesTest extends RelOptTestBase {
   }
 
   /**
+   * Test case for <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6746">
+   * [CALCITE-6746] Optimization rule ProjectWindowTranspose is unsound</a>. */
+  @Test void testConstantWindow() {
+    final String sql = "with empsalary(dept, empno, salary, enroll_date) as "
+        + "(VALUES ('x', 10, 5200, DATE '2007-08-01'), (NULL, NULL, NULL, NULL))\n"
+        + "select sum(salary) "
+        + "OVER (order by enroll_date range between INTERVAL 365 DAYS preceding and "
+        + "INTERVAL 365 DAYS following),\n"
+        + "salary, enroll_date FROM empsalary";
+    sql(sql)
+        .withPreRule(CoreRules.PROJECT_TO_LOGICAL_PROJECT_AND_WINDOW)
+        .withRule(CoreRules.PROJECT_WINDOW_TRANSPOSE)
+        .checkUnchanged();
+  }
+
+  /**
    * Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-5813">[CALCITE-5813]
    * Type inference for sql functions REPEAT, SPACE, XML_TRANSFORM,
@@ -505,6 +526,28 @@ class RelOptRulesTest extends RelOptTestBase {
   }
 
   /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6873">[CALCITE-6873]
+   * FilterProjectTransposeRule should not push the Filter past the Project
+   * when the Filter contains a Subquery with correlation</a>. */
+  @Test void testFilterProjectTransposeRule2() {
+    final String sql = "select * from (select deptno from emp) as d\n"
+        + "where NOT EXISTS (\n"
+        + "  select count(*) from emp e where e.deptno = d.deptno)";
+    sql(sql)
+        .withRule(CoreRules.FILTER_PROJECT_TRANSPOSE)
+        .checkUnchanged();
+  }
+
+  @Test void testFilterProjectTransposeRule3() {
+    final String sql = "select * from (select deptno from emp) as d\n"
+        + "where NOT EXISTS (\n"
+        + "  select count(*) from emp e)";
+    sql(sql)
+        .withRule(CoreRules.FILTER_PROJECT_TRANSPOSE)
+        .check();
+  }
+
+  /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-6031">[CALCITE-6031]
    * Add the planner rule that pushes the Filter past a Sample</a>. */
   @Test void testFilterSampleTransposeWithBernoulli() {
@@ -533,6 +576,45 @@ class RelOptRulesTest extends RelOptTestBase {
     sql(sql)
         .withRule(CoreRules.FILTER_SAMPLE_TRANSPOSE)
         .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6878">[CALCITE-6878]
+   * Implement FilterSortTransposeRule</a>. */
+  @Test void testFilterSortTranspose() {
+    final Function<RelBuilder, RelNode> relFn = b -> b
+            .scan("EMP")
+            .project(b.field(0))
+            .sort(b.field(0))
+            .filter(b.lessThan(b.field(0), b.literal(10)))
+            .build();
+    relFn(relFn).withRule(CoreRules.FILTER_SORT_TRANSPOSE).check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6878">[CALCITE-6878]
+   * Implement FilterSortTransposeRule</a>. */
+  @Test void testFilterSortTransposeFetch() {
+    final Function<RelBuilder, RelNode> relFn = b -> b
+        .scan("EMP")
+        .project(b.field(0))
+        .sortLimit(0, 1, b.field(0))
+        .filter(b.lessThan(b.field(0), b.literal(10)))
+        .build();
+    relFn(relFn).withRule(CoreRules.FILTER_SORT_TRANSPOSE).checkUnchanged();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6878">[CALCITE-6878]
+   * Implement FilterSortTransposeRule</a>. */
+  @Test void testFilterSortTransposeOffset() {
+    final Function<RelBuilder, RelNode> relFn = b -> b
+        .scan("EMP")
+        .project(b.field(0))
+        .sortLimit(1, 0, b.field(0))
+        .filter(b.lessThan(b.field(0), b.literal(10)))
+        .build();
+    relFn(relFn).withRule(CoreRules.FILTER_SORT_TRANSPOSE).checkUnchanged();
   }
 
   @Test void testReduceOrCaseWhen() {
@@ -5854,6 +5936,7 @@ class RelOptRulesTest extends RelOptTestBase {
         + "where deptno is not distinct from 10";
     sql(sql).withPre(getTransitiveProgram())
         .withRule(CoreRules.JOIN_PUSH_TRANSITIVE_PREDICATES,
+            CoreRules.FILTER_REDUCE_EXPRESSIONS,
             CoreRules.PROJECT_REDUCE_EXPRESSIONS)
         .check();
   }
@@ -5864,6 +5947,7 @@ class RelOptRulesTest extends RelOptTestBase {
         + "where mgr is not distinct from null";
     sql(sql).withPre(getTransitiveProgram())
         .withRule(CoreRules.JOIN_PUSH_TRANSITIVE_PREDICATES,
+            CoreRules.FILTER_REDUCE_EXPRESSIONS,
             CoreRules.PROJECT_REDUCE_EXPRESSIONS)
         .check();
   }
@@ -5905,6 +5989,31 @@ class RelOptRulesTest extends RelOptTestBase {
     sql(sql).withPre(getTransitiveProgram())
         .withRule(CoreRules.JOIN_PUSH_TRANSITIVE_PREDICATES,
             CoreRules.FILTER_REDUCE_EXPRESSIONS)
+        .check();
+  }
+
+  @Test void testPullUpPredicatesFromUnionWithProject() {
+    final String sql = "select empno = null from emp where comm = 2\n"
+        + "union all\n"
+        + "select comm = 2 from emp where comm = 2";
+    sql(sql).withPre(getTransitiveProgram())
+        .withRule(CoreRules.FILTER_REDUCE_EXPRESSIONS,
+            CoreRules.PROJECT_REDUCE_EXPRESSIONS)
+          .check();
+  }
+
+  @Test void testPullUpPredicatesFromProject1() {
+    final String sql = "select comm <> 2, comm = 2 from emp where comm = 2";
+    sql(sql).withPre(getTransitiveProgram())
+        .withRule(CoreRules.PROJECT_REDUCE_EXPRESSIONS)
+        .check();
+  }
+
+  @Test void testPullUpPredicatesFromProject2() {
+    final String sql = "select comm = 2, empno <> 1 from emp where comm = 2 and empno = 1";
+    sql(sql).withPre(getTransitiveProgram())
+        .withRule(CoreRules.FILTER_REDUCE_EXPRESSIONS,
+            CoreRules.PROJECT_REDUCE_EXPRESSIONS)
         .check();
   }
 
@@ -8535,6 +8644,111 @@ class RelOptRulesTest extends RelOptTestBase {
   }
 
   /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateProjectWithFetchOne() {
+    final String query = "SELECT name, "
+        + "(SELECT sal FROM emp where dept.deptno = emp.deptno order by sal limit 1) "
+        + "FROM dept";
+    sql(query).withRule(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateProjectWithFetchOneDesc() {
+    final String query = "SELECT name, "
+        + "(SELECT emp.sal FROM emp WHERE dept.deptno = emp.deptno "
+        + "ORDER BY emp.sal desc nulls last LIMIT 1) "
+        + "FROM dept";
+    sql(query).withRule(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateFilterWithFetchOne() {
+    final String query = "SELECT name FROM dept "
+        + "WHERE 10 > (SELECT emp.sal FROM emp where dept.deptno = emp.deptno "
+        + "ORDER BY emp.sal limit 1)";
+    sql(query).withRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateFilterWithFetchOneDesc() {
+    final String query = "SELECT name FROM dept "
+        + "WHERE 10 > (SELECT emp.sal FROM emp where dept.deptno = emp.deptno "
+        + "ORDER BY emp.sal desc nulls last limit 1)";
+    sql(query).withRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateFilterWithFetchOneDesc1() {
+    final String query = "SELECT name FROM dept "
+        + "WHERE 10 > (SELECT emp.sal FROM emp where dept.deptno = emp.deptno "
+        + "ORDER BY emp.sal desc limit 1)";
+    sql(query).withRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateProjectWithMultiKeyAndFetchOne() {
+    final String query = "SELECT name, "
+        + "(SELECT sal FROM emp where dept.deptno = emp.deptno "
+        + "order by year(hiredate), emp.sal limit 1) FROM dept";
+    sql(query).withRule(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateProjectWithMultiKeyAndFetchOne1() {
+    final String query = "SELECT name, "
+        + "(SELECT sal FROM emp where dept.deptno = emp.deptno and dept.name = emp.ename "
+        + "order by year(hiredate), emp.sal limit 1) FROM dept";
+    sql(query).withRule(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6652">[CALCITE-6652]
+   * RelDecorrelator can't decorrelate query with limit 1</a>.
+   */
+  @Test void testDecorrelateFilterWithMultiKeyAndFetchOne() {
+    final String query = "SELECT name FROM dept "
+        + "WHERE 10 > (SELECT emp.sal FROM emp where dept.deptno = emp.deptno "
+        + "order by year(hiredate), emp.sal desc limit 1)";
+    sql(query).withRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE)
+        .withLateDecorrelate(true)
+        .check();
+  }
+
+  /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-434">[CALCITE-434]
    * Converting predicates on date dimension columns into date ranges</a>,
    * specifically a rule that converts {@code EXTRACT(YEAR FROM ...) = constant}
@@ -9073,6 +9287,55 @@ class RelOptRulesTest extends RelOptTestBase {
         .check();
   }
 
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6824">[CALCITE-6824]
+   * Subquery in join conditions rewrite fails if referencing a column
+   * from the right-hand side table</a>. */
+  @Test void testJoinSubQueryRemoveRuleWithNotIn() {
+    final String sql = "SELECT empno FROM emp JOIN dept on "
+        + "emp.deptno not in (SELECT deptno FROM dept)";
+    sql(sql)
+        .withRule(CoreRules.JOIN_SUB_QUERY_TO_CORRELATE)
+        .check();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6824">[CALCITE-6824]
+   * Subquery in join conditions rewrite fails if referencing a column
+   * from the right-hand side table</a>. */
+  @Test void testJoinSubQueryRemoveRuleWithQuantifierSome() {
+    final String sql = "SELECT empno FROM emp JOIN dept on "
+        + "emp.deptno >= SOME(SELECT deptno FROM dept)";
+    sql(sql)
+        .withRule(CoreRules.JOIN_SUB_QUERY_TO_CORRELATE)
+        .check();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6824">[CALCITE-6824]
+   * Subquery in join conditions rewrite fails if referencing a column
+   * from the right-hand side table</a>. */
+  @Test void testJoinSubQueryRewriteWithBothSidesColumns() {
+    final String sql = "SELECT empno FROM emp JOIN dept on "
+        + "emp.deptno + dept.deptno >= SOME(SELECT deptno FROM dept)";
+    sql(sql)
+        .withRule(CoreRules.JOIN_SUB_QUERY_TO_CORRELATE)
+        .checkUnchanged();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-2295">[CALCITE-2295]
+   * Correlated SubQuery with Project will generate error plan</a>. */
+  @Test public void testDecorrelationWithProject() throws Exception {
+    final String sql = "select sal,\n"
+        + "exists (select * from emp_b where emp.deptno = emp_b.deptno)\n"
+        + "from sales.emp";
+    sql(sql).withSubQueryRules().withLateDecorrelate(true).check();
+  }
+
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-3296">[CALCITE-3296]
    * Decorrelator gives empty result after decorrelating sort rel with
@@ -9101,6 +9364,63 @@ class RelOptRulesTest extends RelOptTestBase {
     sql(sql)
         .withRule(CoreRules.FILTER_TO_CALC,
             CoreRules.CALC_REDUCE_DECIMALS)
+        .check();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6870">[CALCITE-6870]
+   * The FilterToCalcRule/ProjectToCalcRule should not convert a Filter/Project to Calc
+   * when it contains Subquery</a>. */
+  @Test void testFilterToCalc() {
+    final String sql = "select ename from emp where sal > all (select comm from emp)";
+    sql(sql)
+        .withRule(CoreRules.FILTER_TO_CALC)
+        .checkUnchanged();
+  }
+
+  @Test void testProjectToCalc() {
+    final String sql = "select  sal > all (select comm from emp) from emp";
+    sql(sql)
+        .withRule(CoreRules.PROJECT_TO_CALC)
+        .checkUnchanged();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6875">[CALCITE-6875]
+   * EnumerableFilterRule/EnumerableProjectRule should not convert a Logical Filter/Project
+   * to Enumerable Filter/Project when it contains Subquery</a>. */
+  @Test void testEnumerableFilterRule() {
+    final String sql = "select R_REGIONKEY from SALES.CUSTOMER\n"
+        + "where R_REGIONKEY > all (select R_REGIONKEY from SALES.CUSTOMER)";
+    sql(sql)
+        .withVolcanoPlanner(false, p -> {
+          p.addRelTraitDef(RelDistributionTraitDef.INSTANCE);
+          p.addRule(CoreRules.FILTER_SUB_QUERY_TO_CORRELATE);
+          p.addRule(EnumerableRules.ENUMERABLE_FILTER_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_PROJECT_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_TABLE_SCAN_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_JOIN_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_AGGREGATE_RULE);
+        })
+        .withDynamicTable()
+        .check();
+  }
+
+  @Test void testEnumerableProjectRule() {
+    final String sql = "select R_REGIONKEY > all (select R_REGIONKEY from SALES.CUSTOMER)\n"
+        + "from SALES.CUSTOMER";
+    sql(sql)
+        .withVolcanoPlanner(false, p -> {
+          p.addRelTraitDef(RelDistributionTraitDef.INSTANCE);
+          p.addRule(CoreRules.PROJECT_SUB_QUERY_TO_CORRELATE);
+          p.addRule(EnumerableRules.ENUMERABLE_PROJECT_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_TABLE_SCAN_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_JOIN_RULE);
+          p.addRule(EnumerableRules.ENUMERABLE_AGGREGATE_RULE);
+        })
+        .withDynamicTable()
         .check();
   }
 
@@ -9492,5 +9812,240 @@ class RelOptRulesTest extends RelOptTestBase {
         .withPre(program)
         .withRule(CoreRules.MULTI_JOIN_OPTIMIZE)
         .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6788">[CALCITE-6788]
+   * LoptOptimizeJoinRule should be able to delegate costs to the planner</a>. */
+  @Test void testLoptOptimizeJoinRuleWithDefaultCost() {
+    // Use the default rule
+    checkLoptOptimizeJoinRule(CoreRules.MULTI_JOIN_OPTIMIZE);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6788">[CALCITE-6788]
+   * LoptOptimizeJoinRule should be able to delegate costs to the planner</a>. */
+  @Test void testLoptOptimizeJoinRuleWithSpecialCost() {
+    // Use an ad-hoc version of the rule that uses planner#getCost instead of mq#getCumulativeCost
+    checkLoptOptimizeJoinRule(LoptOptimizeJoinRule.Config.DEFAULT
+        .withCostFunction((c, r) -> c.getPlanner().getCost(r, c.getMetadataQuery()))
+        .toRule());
+  }
+
+  private void checkLoptOptimizeJoinRule(LoptOptimizeJoinRule rule) {
+    final HepProgram preProgram = new HepProgramBuilder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.JOIN_TO_MULTI_JOIN)
+        .build();
+
+    final HepProgram program = HepProgram.builder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(rule)
+        .build();
+
+    // Special planner that artificially favors joins on the same table
+    final HepPlanner planner = new HepPlanner(program) {
+      @Override public RelOptCost getCost(RelNode rel, RelMetadataQuery mq) {
+        if (rel instanceof Join
+            && rel.getInput(0).stripped() instanceof TableScan
+            && rel.getInput(1).stripped() instanceof TableScan) {
+          TableScan left = (TableScan) rel.getInput(0).stripped();
+          TableScan right = (TableScan) rel.getInput(1).stripped();
+          if (left.getTable().equals(right.getTable())) {
+            // Tiny cost for self-joins
+            return getCostFactory().makeTinyCost();
+          }
+        }
+
+        // General case: just define a kind of cumulative cost based on the rowCount (to avoid
+        // the infinite costs from the Logical operators)
+        RelOptCost cost = new RelOptCostImpl(mq.getRowCount(rel));
+        for (RelNode input : rel.getInputs()) {
+          cost = cost.plus(getCost(input, mq));
+        }
+        return cost;
+      }
+    };
+
+    sql("select e1.empno from emp e1"
+        + " inner join dept d1 on d1.deptno = e1.deptno"
+        + " inner join emp e2 on e1.ename = e2.ename"
+        + " inner join dept d2 on d2.deptno = e1.deptno")
+        .withPre(preProgram)
+        .withPlanner(planner)
+        .check();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6874">[CALCITE-6874]
+   * FilterCalcMergeRule/ProjectCalcMergeRule should not merge a Filter/Project to Calc
+   * when it contains Subquery</a>. */
+  @Test void testFilterCalcMergeRule() {
+    final String sql = "select deptno from sales.emp where\n"
+        + "exists (select deptno from sales.emp where empno < 20)\n";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(CoreRules.PROJECT_FILTER_TRANSPOSE)
+        .addRuleInstance(CoreRules.PROJECT_TO_CALC)
+        .build();
+    sql(sql)
+        .withPre(program)
+        .withRule(CoreRules.FILTER_CALC_MERGE)
+        .checkUnchanged();
+  }
+
+  @Test void testProjectCalcMergeRule() {
+    final String sql = "select exists (select deptno from sales.emp)\n"
+        + "from (select deptno from sales.emp where empno < 20)\n";
+    HepProgram program = new HepProgramBuilder()
+        .addRuleInstance(CoreRules.PROJECT_FILTER_TRANSPOSE)
+        .addRuleInstance(CoreRules.FILTER_TO_CALC)
+        .build();
+    sql(sql)
+        .withPre(program)
+        .withRule(CoreRules.PROJECT_CALC_MERGE)
+        .checkUnchanged();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6850">[CALCITE-6850]
+   * ProjectRemoveRule with two Projects
+   * does not keep field names from the top one</a>. */
+  @Test void testProjectRemoveRule() {
+    final Function<RelBuilder, RelNode> relFn = b -> {
+      RelNode r = b.scan("DEPT")
+          .project(
+              b.call(SqlStdOperatorTable.PLUS,
+              ImmutableList.of(b.field(0), b.literal(1))))
+          .build();
+      b.push(r);
+      return LogicalProject.create(r, ImmutableList.of(),
+          ImmutableList.of(b.field(0)),
+          ImmutableList.of("newAlias"), ImmutableSet.of());
+    };
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleInstance(CoreRules.PROJECT_REMOVE);
+    HepPlanner planner =
+        new HepPlanner(builder.build(), null, true, null, RelOptCostImpl.FACTORY);
+    fixture().withRelBuilderConfig(a -> a.withBloat(-1))
+        .relFn(relFn).withPlanner(planner).check();
+  }
+
+  @Test void testChainJoinDphypJoinReorder() {
+    HepProgram program = new HepProgramBuilder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.FILTER_INTO_JOIN)
+        .addRuleInstance(CoreRules.JOIN_TO_HYPER_GRAPH)
+        .build();
+
+    sql("select emp.empno from "
+        + "emp, emp_address, dept, dept_nested "
+        + "where emp.deptno + emp_address.empno = dept.deptno + dept_nested.deptno "
+        + "and emp.empno = emp_address.empno "
+        + "and dept.deptno = dept_nested.deptno")
+        .withPre(program)
+        .withRule(CoreRules.HYPER_GRAPH_OPTIMIZE, CoreRules.PROJECT_REMOVE, CoreRules.PROJECT_MERGE)
+        .check();
+  }
+
+  @Test void testStarJoinDphypJoinReorder() {
+    HepProgram program = new HepProgramBuilder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.FILTER_INTO_JOIN)
+        .addRuleInstance(CoreRules.JOIN_TO_HYPER_GRAPH)
+        .build();
+
+    sql("select emp.empno from "
+        + "emp, emp_b, emp_address, dept, dept_nested "
+        + "where emp.empno = emp_b.empno "
+        + "and emp.empno = emp_address.empno "
+        + "and emp.deptno = dept.deptno "
+        + "and emp.deptno = dept_nested.deptno "
+        + "and emp_b.sal + emp_address.empno = dept.deptno + dept_nested.deptno")
+        .withPre(program)
+        .withRule(CoreRules.HYPER_GRAPH_OPTIMIZE, CoreRules.PROJECT_REMOVE, CoreRules.PROJECT_MERGE)
+        .check();
+  }
+
+  @Test void testCycleJoinDphypJoinReorder() {
+    HepProgram program = new HepProgramBuilder()
+        .addMatchOrder(HepMatchOrder.BOTTOM_UP)
+        .addRuleInstance(CoreRules.FILTER_INTO_JOIN)
+        .addRuleInstance(CoreRules.JOIN_TO_HYPER_GRAPH)
+        .build();
+
+    sql("select emp.empno from "
+        + "emp, emp_b, dept, dept_nested "
+        + "where emp.empno = emp_b.empno "
+        + "and emp_b.deptno = dept.deptno "
+        + "and dept.name = dept_nested.name "
+        + "and dept_nested.deptno = emp.deptno "
+        + "and emp.sal + emp_b.sal = dept.deptno + dept_nested.deptno")
+        .withPre(program)
+        .withRule(CoreRules.HYPER_GRAPH_OPTIMIZE, CoreRules.PROJECT_REMOVE, CoreRules.PROJECT_MERGE)
+        .check();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExistsRuleOneField() {
+    String sql = "SELECT a.ename FROM emp AS a\n"
+        + "INTERSECT\n"
+        + "SELECT b.name FROM dept AS b";
+    sql(sql).withRule(CoreRules.INTERSECT_TO_EXISTS)
+        .check();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExistsRulePrimaryKey() {
+    String sql = "SELECT a.empno FROM emp AS a\n"
+        + "INTERSECT\n"
+        + "SELECT b.empno FROM emp AS b";
+    sql(sql).withRule(CoreRules.INTERSECT_TO_EXISTS)
+        .check();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExistsRuleMultiFields() {
+    String sql = "SELECT a.ename, a.job FROM emp AS a\n"
+        + "INTERSECT\n"
+        + "SELECT b.ename, b.job FROM emp AS b";
+    sql(sql).withRule(CoreRules.INTERSECT_TO_EXISTS)
+        .check();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExistsRuleMultiIntersect() {
+    String sql = "SELECT a.ename FROM emp AS a\n"
+        + "INTERSECT\n"
+        + "SELECT b.name FROM dept AS b\n"
+        + "INTERSECT\n"
+        + "SELECT c.ename FROM emp AS c";
+    sql(sql).withRule(CoreRules.INTERSECT_TO_EXISTS)
+        .check();
+  }
+
+  /**
+   * Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6836">[CALCITE-6836]
+   * Add Rule to convert INTERSECT to EXISTS</a>. */
+  @Test void testIntersectToExistsRuleWithAll() {
+    String sql = "SELECT a.ename FROM emp AS a\n"
+        + "INTERSECT ALL\n"
+        + "SELECT b.name FROM dept AS b";
+    sql(sql).withRule(CoreRules.INTERSECT_TO_EXISTS)
+        .checkUnchanged();
   }
 }
